@@ -103,31 +103,50 @@ export function createScoreViewer(container: HTMLElement, score: ScoreDoc, opts:
     return true;
   }
 
-  function layout(reweigh = true): void {
+  // The page stays hidden until the width model has settled on the first systems, so the
+  // calibration re-breaks are never seen.
+  let settled = false;
+  page.style.visibility = "hidden";
+  const settle = () => {
+    settled = true;
+    page.style.visibility = "";
+  };
+  const settleTimer = window.setTimeout(settle, 3000);
+
+  /** Breaks the score into systems again, keeping systems [0, keep) as they are. */
+  function layout(reweigh = true, keep = 0): void {
     generation++;
-    for (const s of slots) s.osmd = null;
-    page.textContent = "";
-    width = page.clientWidth;
-    units = width / (UNIT_PX * zoom) - 2 * MARGIN;
+    if (keep === 0) {
+      page.textContent = "";
+      width = page.clientWidth;
+      units = width / (UNIT_PX * zoom) - 2 * MARGIN;
+    }
     if (reweigh || weights.length !== score.measureCount) weights = Array.from({ length: score.measureCount }, (_, m) => score.measureWeight(m));
-    const o = params;
-    systems = breakSystems(weights, { ...o, width: units });
-    // The first system also carries the part names.
-    if (systems.length > 1 && score.parts.some((p) => p.name)) {
-      const first = breakSystems(weights, { ...o, width: units - NAMES_WIDTH - TIME_WIDTH })[0];
-      if (first.end < systems[0].end) {
-        systems = [first, ...breakSystems(weights.slice(first.end), { ...o, width: units }).map((r) => ({ start: r.start + first.end, end: r.end + first.end }))];
+    const kept = slots.slice(0, keep);
+    for (const s of slots.slice(keep)) s.el.remove();
+    const from = keep ? systems[keep - 1].end : 0;
+    const shift = (rs: SystemRange[]) => rs.map((r) => ({ start: r.start + from, end: r.end + from }));
+    let fresh = shift(breakSystems(weights.slice(from), { ...params, width: units }));
+    // The first system also carries the part names and the time signature.
+    if (from === 0 && fresh.length > 1 && score.parts.some((p) => p.name)) {
+      const first = breakSystems(weights, { ...params, width: units - NAMES_WIDTH - TIME_WIDTH })[0];
+      if (first.end < fresh[0].end) {
+        fresh = [first, ...breakSystems(weights.slice(first.end), { ...params, width: units }).map((r) => ({ start: r.start + first.end, end: r.end + first.end }))];
       }
     }
+    systems = [...systems.slice(0, keep), ...fresh];
     const h = estimate();
-    slots = systems.map((_, i) => {
-      const el = document.createElement("div");
-      el.className = "sv-system";
-      el.dataset.system = String(i);
-      el.style.minHeight = `${h}px`;
-      page.append(el);
-      return { el, osmd: null, height: h, rendering: false };
-    });
+    slots = [
+      ...kept,
+      ...fresh.map((_, k) => {
+        const el = document.createElement("div");
+        el.className = "sv-system";
+        el.dataset.system = String(keep + k);
+        el.style.minHeight = `${h}px`;
+        page.append(el);
+        return { el, osmd: null, height: h, rendering: false };
+      }),
+    ];
     schedule();
   }
 
@@ -215,7 +234,7 @@ export function createScoreViewer(container: HTMLElement, score: ScoreDoc, opts:
         calibrations++;
         rebreak = true;
       }
-      if (rebreak) {
+      if (rebreak && !settled) {
         layout(false);
         return;
       }
@@ -223,7 +242,17 @@ export function createScoreViewer(container: HTMLElement, score: ScoreDoc, opts:
       slot.height = slot.el.offsetHeight;
       slot.el.style.minHeight = "";
       opts.onSystemRendered?.(i, performance.now() - t0);
+      if (rebreak) {
+        // Already on screen: keep everything drawn, re-break only what follows it.
+        let last = i;
+        slots.forEach((s, k) => (s.osmd || s.rendering) && (last = Math.max(last, k)));
+        layout(false, last + 1);
+      } else if (!settled && (samples.length >= 4 || i === systems.length - 1)) {
+        clearTimeout(settleTimer);
+        settle();
+      }
     } catch (e) {
+      settle();
       opts.onError?.(e);
     } finally {
       slot.rendering = false;
@@ -257,6 +286,7 @@ export function createScoreViewer(container: HTMLElement, score: ScoreDoc, opts:
     relayout: () => layout(true),
     destroy() {
       destroyed = true;
+      clearTimeout(settleTimer);
       ro.disconnect();
       root.removeEventListener("scroll", onScroll);
       clearTimeout(resizeTimer);
