@@ -1,12 +1,15 @@
 import { OpenSheetMusicDisplay } from "opensheetmusicdisplay";
-import { breakSystems, type SystemRange } from "../layout/systems";
+import { breakSystems, systemOf, type SystemRange } from "../layout/systems";
 import type { ScoreDoc } from "../model/score";
 import { kid, kids, text } from "../model/xml";
+import { t } from "../ui/i18n";
 import { injectStyles } from "./styles";
 
 export interface ScoreViewerOptions {
-  /** 1 = OSMD's default size (10 px per staff space). */
+  /** 1 = OSMD's default size (10 px per staff space). Default: 0.6 on a phone-wide container, else 1. */
   zoom?: number;
+  /** Shows a fullscreen button in the bar; the host enters fullscreen and calls setReadingMode. */
+  onFullscreen?(): void;
   onError?(err: unknown): void;
   /** Called after a system finished rendering, with its index and time in ms. */
   onSystemRendered?(index: number, ms: number): void;
@@ -19,6 +22,10 @@ export interface ScoreViewerHandle {
   readonly layoutParams: Readonly<{ measureBase: number; perWeight: number; systemStart: number; width: number }>;
   getZoom(): number;
   setZoom(zoom: number): void;
+  /** The end of the bottom bar, where a host can put its own buttons. */
+  getBarEnd(): HTMLElement;
+  /** Fullscreen reading: the host's buttons in the bar hide. */
+  setReadingMode(on: boolean): void;
   /** Re-breaks the systems and re-renders, e.g. after the score changed. */
   relayout(): void;
   destroy(): void;
@@ -33,6 +40,16 @@ const TIME_WIDTH = 4;
 // How far outside the viewport systems are rendered ahead, and kept, in viewport heights.
 const AHEAD = 1;
 const KEEP = 4;
+const ZOOM_MIN = 0.3;
+const ZOOM_MAX = 3;
+const SLIDER_STEPS = 1000;
+const clampZoom = (z: number) => Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z));
+const sliderToZoom = (v: number) => ZOOM_MIN * (ZOOM_MAX / ZOOM_MIN) ** (v / SLIDER_STEPS);
+const zoomToSlider = (z: number) => Math.round((Math.log(clampZoom(z) / ZOOM_MIN) / Math.log(ZOOM_MAX / ZOOM_MIN)) * SLIDER_STEPS);
+const svgIcon = (inner: string) =>
+  `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${inner}</svg>`;
+const ICON_FS = svgIcon('<polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" x2="14" y1="3" y2="10"/><line x1="3" x2="10" y1="21" y2="14"/>');
+const ICON_FS_EXIT = svgIcon('<polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" x2="21" y1="10" y2="3"/><line x1="3" x2="10" y1="21" y2="14"/>');
 
 interface Slot {
   el: HTMLDivElement;
@@ -45,13 +62,17 @@ interface Slot {
 // the speed of its first screen and an edit re-renders one line, not the whole score.
 export function createScoreViewer(container: HTMLElement, score: ScoreDoc, opts: ScoreViewerOptions = {}): ScoreViewerHandle {
   injectStyles();
-  let zoom = opts.zoom ?? 1;
+  let zoom = clampZoom(opts.zoom ?? (container.clientWidth > 0 && container.clientWidth < 700 ? 0.6 : 1));
+  const shell = document.createElement("div");
+  shell.className = "sv-shell";
   const root = document.createElement("div");
   root.className = "sv-root";
   const page = document.createElement("div");
   page.className = "sv-page";
   root.append(page);
-  container.append(root);
+  const bar = buildBar();
+  shell.append(root, bar.el);
+  container.append(shell);
 
   let systems: SystemRange[] = [];
   let slots: Slot[] = [];
@@ -215,8 +236,9 @@ export function createScoreViewer(container: HTMLElement, score: ScoreDoc, opts:
       r.PageBottomMargin = 0;
       r.RenderMeasureNumbersOnlyAtSystemStart = true;
       // OSMD sizes the title for a printed page; a phone-wide page needs it smaller.
-      const shrink = Math.min(1, units / 140);
-      r.SheetTitleHeight *= shrink;
+      // A title glyph is about 0.7 as wide as it is tall: keep the title within the page.
+      r.SheetTitleHeight = Math.min(r.SheetTitleHeight, (1.2 * units) / Math.max(1, score.title.length));
+      const shrink = Math.min(1, units / 110);
       r.SheetSubtitleHeight *= shrink;
       r.SheetComposerHeight *= shrink;
       osmd.zoom = zoom;
@@ -259,6 +281,115 @@ export function createScoreViewer(container: HTMLElement, score: ScoreDoc, opts:
     }
   }
 
+  // Zoom previews as a CSS scale at once and re-lays the score out when it rests, keeping
+  // the measure at the top of the view at the top.
+  let shown = zoom;
+  let zoomTimer = 0;
+  function previewZoom(z: number, at?: { x: number; y: number }): void {
+    shown = clampZoom(z);
+    const rect = root.getBoundingClientRect();
+    const ox = at ? at.x - rect.left + root.scrollLeft : root.clientWidth / 2;
+    const oy = at ? at.y - rect.top + root.scrollTop : root.scrollTop;
+    page.style.transformOrigin = `${ox}px ${oy}px`;
+    page.style.transform = shown === zoom ? "" : `scale(${shown / zoom})`;
+    bar.sync(shown);
+  }
+  function commitZoom(): void {
+    clearTimeout(zoomTimer);
+    if (shown === zoom) return void (page.style.transform = "");
+    const top = root.scrollTop + page.offsetTop;
+    const at = slots.findIndex((s) => s.el.offsetTop + s.el.offsetHeight > top);
+    const measure = at >= 0 ? systems[at].start : 0;
+    zoom = shown;
+    page.style.transform = "";
+    layout(false);
+    const i = systemOf(systems, measure);
+    root.scrollTop = slots[i] ? slots[i].el.offsetTop - page.offsetTop : 0;
+    schedule();
+  }
+  function zoomTo(z: number, at?: { x: number; y: number }, delay = 250): void {
+    previewZoom(z, at);
+    clearTimeout(zoomTimer);
+    zoomTimer = window.setTimeout(commitZoom, delay);
+  }
+
+  function buildBar() {
+    const el = document.createElement("div");
+    el.className = "sv-bar";
+    const grow = document.createElement("span");
+    grow.className = "sv-bb-grow";
+    const slider = document.createElement("input");
+    slider.type = "range";
+    slider.className = "sv-zoom";
+    slider.min = "0";
+    slider.max = String(SLIDER_STEPS);
+    slider.step = "1";
+    slider.title = t("zoom");
+    slider.setAttribute("aria-label", t("zoom"));
+    slider.addEventListener("input", () => zoomTo(sliderToZoom(Number(slider.value)), undefined, 400));
+    slider.addEventListener("change", () => commitZoom());
+    const label = document.createElement("span");
+    label.className = "sv-zoom-label";
+    el.append(grow, slider, label);
+    let fs: HTMLButtonElement | null = null;
+    if (opts.onFullscreen) {
+      fs = document.createElement("button");
+      fs.type = "button";
+      fs.className = "sv-bb-btn sv-bb-icon";
+      fs.innerHTML = ICON_FS;
+      fs.title = t("fullscreen");
+      fs.setAttribute("aria-label", t("fullscreen"));
+      fs.addEventListener("click", () => opts.onFullscreen?.());
+      el.append(fs);
+    }
+    const end = document.createElement("span");
+    end.className = "sv-bar-end";
+    el.append(end);
+    const sync = (z: number) => {
+      slider.value = String(zoomToSlider(z));
+      label.textContent = `${Math.round(z * 100)}%`;
+    };
+    sync(zoom);
+    return {
+      el,
+      end,
+      sync,
+      reading(on: boolean) {
+        if (!fs) return;
+        const lbl = t(on ? "exitFullscreen" : "fullscreen");
+        fs.innerHTML = on ? ICON_FS_EXIT : ICON_FS;
+        fs.title = lbl;
+        fs.setAttribute("aria-label", lbl);
+      },
+    };
+  }
+
+  // Two fingers zoom about the point between them.
+  const dist = (e: TouchEvent) => Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY) || 1;
+  let pinch: { dist: number; zoom: number } | null = null;
+  const onTouchStart = (e: TouchEvent) => {
+    pinch = e.touches.length === 2 ? { dist: dist(e), zoom: shown } : null;
+  };
+  const onTouchMove = (e: TouchEvent) => {
+    if (!pinch || e.touches.length !== 2) return;
+    e.preventDefault();
+    clearTimeout(zoomTimer);
+    previewZoom(pinch.zoom * (dist(e) / pinch.dist), {
+      x: (e.touches[0].clientX + e.touches[1].clientX) / 2,
+      y: (e.touches[0].clientY + e.touches[1].clientY) / 2,
+    });
+  };
+  const onTouchEnd = (e: TouchEvent) => {
+    if (pinch && e.touches.length < 2) {
+      pinch = null;
+      commitZoom();
+    }
+  };
+  root.addEventListener("touchstart", onTouchStart, { passive: true });
+  root.addEventListener("touchmove", onTouchMove, { passive: false });
+  root.addEventListener("touchend", onTouchEnd, { passive: true });
+  root.addEventListener("touchcancel", onTouchEnd, { passive: true });
+
   const onScroll = () => schedule();
   root.addEventListener("scroll", onScroll, { passive: true });
   let resizeTimer = 0;
@@ -280,8 +411,13 @@ export function createScoreViewer(container: HTMLElement, score: ScoreDoc, opts:
     },
     getZoom: () => zoom,
     setZoom(z: number) {
-      zoom = Math.min(4, Math.max(0.3, z));
-      layout(false);
+      previewZoom(z);
+      commitZoom();
+    },
+    getBarEnd: () => bar.end,
+    setReadingMode(on: boolean) {
+      shell.classList.toggle("sv-reading", on);
+      bar.reading(on);
     },
     relayout: () => layout(true),
     destroy() {
@@ -290,7 +426,8 @@ export function createScoreViewer(container: HTMLElement, score: ScoreDoc, opts:
       ro.disconnect();
       root.removeEventListener("scroll", onScroll);
       clearTimeout(resizeTimer);
-      root.remove();
+      clearTimeout(zoomTimer);
+      shell.remove();
     },
   };
 }

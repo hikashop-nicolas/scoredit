@@ -19,8 +19,8 @@ function open(bytes: Uint8Array, name: string): void {
     const parsed = performance.now() - t0;
     (window as unknown as { viewer?: unknown }).viewer = null;
     viewer = createScoreViewer(host, score, {
-      zoom: window.innerWidth < 700 ? 0.6 : 1,
       onError: (e) => console.error(e),
+      onFullscreen: () => (document.fullscreenElement ? void document.exitFullscreen() : void host.requestFullscreen()),
       onSystemRendered: (i, ms) => {
         rendered++;
         renderMs += ms;
@@ -43,8 +43,6 @@ document.getElementById("file")!.addEventListener("change", async (e) => {
   const f = (e.target as HTMLInputElement).files?.[0];
   if (f) open(new Uint8Array(await f.arrayBuffer()), f.name);
 });
-document.getElementById("in")!.addEventListener("click", () => viewer?.setZoom(viewer.getZoom() * 1.2));
-document.getElementById("out")!.addEventListener("click", () => viewer?.setZoom(viewer.getZoom() / 1.2));
 
 async function openUrl(path: string): Promise<void> {
   const res = await fetch(`corpus/${path}`);
@@ -64,3 +62,5 @@ fetch("corpus-index.json")
     }
   })
   .catch(() => select.remove());
+
+document.addEventListener("fullscreenchange", () => viewer?.setReadingMode(document.fullscreenElement === host));

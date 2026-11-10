@@ -10,3 +10,4 @@ export { readMxl } from "./formats/mxl";
 export { ScoreDoc, type PartInfo } from "./model/score";
 export { breakSystems, systemOf, type SystemRange, type BreakOptions } from "./layout/systems";
 export { createScoreViewer, type ScoreViewerHandle, type ScoreViewerOptions } from "./render/viewer";
+export { setLocale, t } from "./ui/i18n";
