@@ -14,6 +14,11 @@ const CSS = `
 .sv-bb-grow{flex:1 1 auto;min-width:0}
 .sv-zoom{flex:0 1 110px;width:110px;min-width:40px;accent-color:var(--sv-accent,#6e7bff)}
 .sv-zoom-label{flex:0 0 auto;min-width:38px;text-align:right;font-variant-numeric:tabular-nums}
+.sv-lroot{flex:1 1 auto;min-height:0;display:flex;align-items:center;overflow-x:auto;overflow-y:hidden;background:var(--sv-paper,#fff);touch-action:pan-x}
+.sv-strip{display:flex;align-items:flex-start;position:relative;min-width:100%}
+.sv-chunk{flex:0 0 auto;position:relative;overflow:hidden;height:100%}
+.sv-chunk-host{will-change:transform}
+.sv-chunk svg{display:block}
 .sv-bar-end{display:contents}
 .sv-reading .sv-bar-end{display:none}
 `;

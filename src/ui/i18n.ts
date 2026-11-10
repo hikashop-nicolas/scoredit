@@ -4,14 +4,14 @@
 
 export type Dict = Record<string, string>;
 
-const en: Dict = { zoom: "Zoom", fullscreen: "Fullscreen", exitFullscreen: "Exit fullscreen" };
-const fr: Dict = { zoom: "Zoom", fullscreen: "Plein écran", exitFullscreen: "Quitter le plein écran" };
-const ja: Dict = { zoom: "ズーム", fullscreen: "全画面表示", exitFullscreen: "全画面表示を終了" };
-const es: Dict = { zoom: "Zoom", fullscreen: "Pantalla completa", exitFullscreen: "Salir de pantalla completa" };
-const de: Dict = { zoom: "Zoom", fullscreen: "Vollbild", exitFullscreen: "Vollbild beenden" };
-const pt: Dict = { zoom: "Zoom", fullscreen: "Tela cheia", exitFullscreen: "Sair da tela cheia" };
-const ru: Dict = { zoom: "Масштаб", fullscreen: "Во весь экран", exitFullscreen: "Выйти из полноэкранного режима" };
-const zh: Dict = { zoom: "缩放", fullscreen: "全屏", exitFullscreen: "退出全屏" };
+const en: Dict = { pageView: "Page view", lineView: "Line view", zoom: "Zoom", fullscreen: "Fullscreen", exitFullscreen: "Exit fullscreen" };
+const fr: Dict = { pageView: "Vue page", lineView: "Vue en ligne", zoom: "Zoom", fullscreen: "Plein écran", exitFullscreen: "Quitter le plein écran" };
+const ja: Dict = { pageView: "ページ表示", lineView: "横一列表示", zoom: "ズーム", fullscreen: "全画面表示", exitFullscreen: "全画面表示を終了" };
+const es: Dict = { pageView: "Vista de página", lineView: "Vista en línea", zoom: "Zoom", fullscreen: "Pantalla completa", exitFullscreen: "Salir de pantalla completa" };
+const de: Dict = { pageView: "Seitenansicht", lineView: "Zeilenansicht", zoom: "Zoom", fullscreen: "Vollbild", exitFullscreen: "Vollbild beenden" };
+const pt: Dict = { pageView: "Vista de página", lineView: "Vista em linha", zoom: "Zoom", fullscreen: "Tela cheia", exitFullscreen: "Sair da tela cheia" };
+const ru: Dict = { pageView: "Постранично", lineView: "В одну строку", zoom: "Масштаб", fullscreen: "Во весь экран", exitFullscreen: "Выйти из полноэкранного режима" };
+const zh: Dict = { pageView: "页面视图", lineView: "单行视图", zoom: "缩放", fullscreen: "全屏", exitFullscreen: "退出全屏" };
 
 const LOCALES: Record<string, Dict> = { en, fr, ja, es, de, pt, ru, zh };
 

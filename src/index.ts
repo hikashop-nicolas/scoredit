@@ -9,5 +9,6 @@ export { loadScore, type LoadedScore } from "./formats/load";
 export { readMxl } from "./formats/mxl";
 export { ScoreDoc, type PartInfo } from "./model/score";
 export { breakSystems, systemOf, type SystemRange, type BreakOptions } from "./layout/systems";
-export { createScoreViewer, type ScoreViewerHandle, type ScoreViewerOptions } from "./render/viewer";
+export { createScoreViewer, type LayoutMode, type ScoreViewerHandle, type ScoreViewerOptions } from "./render/viewer";
+export type { LineView } from "./render/line-view";
 export { setLocale, t } from "./ui/i18n";
