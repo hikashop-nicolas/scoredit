@@ -1,0 +1,66 @@
+import { createScoreViewer, loadScore, type ScoreViewerHandle } from "../src/index";
+
+const host = document.getElementById("score")!;
+const stats = document.getElementById("stats")!;
+const select = document.getElementById("corpus") as HTMLSelectElement;
+let viewer: ScoreViewerHandle | null = null;
+let rendered = 0;
+let renderMs = 0;
+
+function open(bytes: Uint8Array, name: string): void {
+  viewer?.destroy();
+  viewer = null;
+  host.textContent = "";
+  rendered = 0;
+  renderMs = 0;
+  const t0 = performance.now();
+  try {
+    const { score, format } = loadScore(bytes);
+    const parsed = performance.now() - t0;
+    (window as unknown as { viewer?: unknown }).viewer = null;
+    viewer = createScoreViewer(host, score, {
+      zoom: window.innerWidth < 700 ? 0.6 : 1,
+      onError: (e) => console.error(e),
+      onSystemRendered: (i, ms) => {
+        rendered++;
+        renderMs += ms;
+        const w = window as unknown as { svLog?: string[] };
+        (w.svLog ??= []).push(`system ${i}: ${Math.round(ms)}ms`);
+        show();
+      },
+    });
+    (window as unknown as { viewer?: unknown }).viewer = viewer;
+    const show = () =>
+      (stats.textContent = `${name} · ${format} · ${score.measureCount} measures · ${viewer?.systems.length} systems · parse ${Math.round(parsed)}ms · ${rendered} rendered, avg ${rendered ? Math.round(renderMs / rendered) : 0}ms`);
+    show();
+  } catch (e) {
+    host.innerHTML = `<p class="err"></p>`;
+    host.firstElementChild!.textContent = String(e);
+  }
+}
+
+document.getElementById("file")!.addEventListener("change", async (e) => {
+  const f = (e.target as HTMLInputElement).files?.[0];
+  if (f) open(new Uint8Array(await f.arrayBuffer()), f.name);
+});
+document.getElementById("in")!.addEventListener("click", () => viewer?.setZoom(viewer.getZoom() * 1.2));
+document.getElementById("out")!.addEventListener("click", () => viewer?.setZoom(viewer.getZoom() / 1.2));
+
+async function openUrl(path: string): Promise<void> {
+  const res = await fetch(`corpus/${path}`);
+  open(new Uint8Array(await res.arrayBuffer()), path);
+}
+select.addEventListener("change", () => select.value && void openUrl(select.value));
+
+// The dev server lists the local corpus; the built demo has none.
+fetch("corpus-index.json")
+  .then((r) => (r.ok ? r.json() : []))
+  .then((files: string[]) => {
+    for (const f of files) select.add(new Option(f, f));
+    const want = new URLSearchParams(location.search).get("f");
+    if (want) {
+      select.value = want;
+      void openUrl(want);
+    }
+  })
+  .catch(() => select.remove());

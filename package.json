@@ -1,0 +1,39 @@
+{
+  "name": "scoredit",
+  "version": "0.1.0",
+  "description": "Client-side music score viewer and editor: MuseScore, MusicXML and more, engraved with OpenSheetMusicDisplay one system at a time, with playback and note entry. No server, no framework.",
+  "type": "module",
+  "license": "MIT",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "build:demo": "vite build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "vite",
+    "preview": "vite preview",
+    "test": "vitest run --passWithNoTests",
+    "corpus": "node scripts/fetch-corpus.mjs",
+    "prepare": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "fflate": "^0.8.2",
+    "opensheetmusicdisplay": "2.3.0"
+  },
+  "devDependencies": {
+    "happy-dom": "^20.10.6",
+    "typescript": "^7.0.2",
+    "vite": "^8.0.16",
+    "vitest": "^4.0.0"
+  }
+}

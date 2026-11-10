@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>scoredit demo</title>
+<style>
+  html,body{margin:0;height:100%;font:14px system-ui,sans-serif;background:#e9e9ec;color:#1b1b1f}
+  body{display:flex;flex-direction:column}
+  header{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:8px 12px;background:#fff;border-bottom:1px solid #d5d5db}
+  header select{max-width:60vw}
+  #stats{font:12px ui-monospace,monospace;color:#555}
+  #score{flex:1;min-height:0}
+  .err{padding:16px;color:#a00}
+</style>
+</head>
+<body>
+<header>
+  <input type="file" id="file" accept=".musicxml,.xml,.mxl,.mscz,.mscx">
+  <select id="corpus"><option value="">Corpus…</option></select>
+  <button id="out">−</button><button id="in">+</button>
+  <span id="stats"></span>
+</header>
+<div id="score"></div>
+<script type="module" src="./main.ts"></script>
+</body>
+</html>
