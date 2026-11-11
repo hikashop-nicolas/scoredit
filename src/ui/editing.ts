@@ -187,6 +187,7 @@ export function createEditing(host: EditingHost): Editing {
     pressed(keysBtn, !strip.hidden);
     pressed(dotBtn, dots > 0);
     DURATIONS.forEach(([q], i) => pressed(durBtns[i], q === quarters));
+    view?.root.classList.toggle("sv-inputting", active && input);
     voiceBtn.innerHTML = `<span class="sv-voice sv-voice-${voiceN}">${voiceN}</span>`;
     undoBtn.disabled = !editor.canUndo;
     redoBtn.disabled = !editor.canRedo;
@@ -341,7 +342,26 @@ export function createEditing(host: EditingHost): Editing {
   const bubble = document.createElement("div");
   bubble.className = "sv-loupe";
   bubble.hidden = true;
-  let press: { x: number; y: number; t: number; id: number; held: boolean; timer: number; shift: boolean } | null = null;
+  let press: { x: number; y: number; t: number; id: number; held: boolean; timer: number; shift: boolean; pan?: { x: number; y: number; vx: number; vy: number; t: number } } | null = null;
+  // In note input the page does not pan by itself (a held finger slides to pick a pitch),
+  // so a moving finger scrolls it here, with a fling when it lets go.
+  let touches = 0;
+  let fling = 0;
+  function glide(vx: number, vy: number): void {
+    cancelAnimationFrame(fling);
+    let last = performance.now();
+    const stepF = (now: number) => {
+      const dt = now - last;
+      last = now;
+      if (!view || Math.hypot(vx, vy) < 0.02) return;
+      view.root.scrollBy(-vx * dt, -vy * dt);
+      const k = Math.exp(-dt / 325);
+      vx *= k;
+      vy *= k;
+      fling = requestAnimationFrame(stepF);
+    };
+    fling = requestAnimationFrame(stepF);
+  }
 
   function pitchFor(p: Pick): { caret: Caret; pitch: Pitch | null } {
     const part = toFull(p.part);
@@ -387,6 +407,7 @@ export function createEditing(host: EditingHost): Editing {
 
   const onDown = (e: PointerEvent) => {
     if (!active || !e.isPrimary || e.button > 0) return;
+    cancelAnimationFrame(fling);
     press = { x: e.clientX, y: e.clientY, t: performance.now(), id: e.pointerId, held: false, shift: e.shiftKey, timer: 0 };
     if (input && e.pointerType !== "mouse") {
       const p = press;
@@ -399,9 +420,17 @@ export function createEditing(host: EditingHost): Editing {
   const onMove = (e: PointerEvent) => {
     if (!press || e.pointerId !== press.id) return;
     if (press.held) showBubble(view?.pick(press.x, e.clientY) ?? null, press.x);
-    else if (Math.hypot(e.clientX - press.x, e.clientY - press.y) > 8) {
+    else if (press.pan) {
+      const now = performance.now();
+      const dx = e.clientX - press.pan.x;
+      const dy = e.clientY - press.pan.y;
+      if (touches < 2) view?.root.scrollBy(-dx, -dy);
+      const dt = Math.max(1, now - press.pan.t);
+      press.pan = { x: e.clientX, y: e.clientY, vx: dx / dt, vy: dy / dt, t: now };
+    } else if (Math.hypot(e.clientX - press.x, e.clientY - press.y) > 8) {
       clearTimeout(press.timer);
-      press = null;
+      if (input && e.pointerType !== "mouse") press.pan = { x: e.clientX, y: e.clientY, vx: 0, vy: 0, t: performance.now() };
+      else press = null;
     }
   };
   const onUp = (e: PointerEvent) => {
@@ -410,13 +439,31 @@ export function createEditing(host: EditingHost): Editing {
     bubble.hidden = true;
     if (!p || e.pointerId !== p.id || !view) return;
     clearTimeout(p.timer);
+    if (p.pan) {
+      if (performance.now() - p.pan.t < 80 && touches < 2) glide(p.pan.vx, p.pan.vy);
+      return;
+    }
     const pk = view.pick(p.x, p.held ? e.clientY : p.y);
     if (pk) tap(pk, p.shift || e.shiftKey);
     el.closest<HTMLElement>(".sv-shell")?.focus({ preventScroll: true });
   };
   // Sliding a held finger picks a pitch, so the page must not scroll meanwhile.
   const onTouchMove = (e: TouchEvent) => {
+    touches = e.touches.length;
     if (press?.held) e.preventDefault();
+  };
+  const onTouchStart = (e: TouchEvent) => {
+    touches = e.touches.length;
+    // A second finger is a pinch: no note, no pan.
+    if (touches > 1 && press) {
+      clearTimeout(press.timer);
+      press = null;
+      bubble.hidden = true;
+    }
+  };
+  // Android's own long press (selection, menu) would take the finger away.
+  const onMenu = (e: MouseEvent) => {
+    if (active && input) e.preventDefault();
   };
   const onCancel = () => {
     if (press) clearTimeout(press.timer);
@@ -431,6 +478,9 @@ export function createEditing(host: EditingHost): Editing {
       view.root.removeEventListener("pointerup", onUp);
       view.root.removeEventListener("pointercancel", onCancel);
       view.root.removeEventListener("touchmove", onTouchMove);
+      view.root.removeEventListener("touchstart", onTouchStart);
+      view.root.removeEventListener("contextmenu", onMenu);
+      view.root.classList.remove("sv-inputting");
     }
     view = v;
     if (!v) return;
@@ -439,6 +489,8 @@ export function createEditing(host: EditingHost): Editing {
     v.root.addEventListener("pointerup", onUp);
     v.root.addEventListener("pointercancel", onCancel);
     v.root.addEventListener("touchmove", onTouchMove, { passive: false });
+    v.root.addEventListener("touchstart", onTouchStart, { passive: true });
+    v.root.addEventListener("contextmenu", onMenu);
     if (active) requestAnimationFrame(sync);
   }
 
@@ -535,6 +587,7 @@ export function createEditing(host: EditingHost): Editing {
       active = false;
       el.hidden = true;
       input = false;
+      view?.root.classList.remove("sv-inputting");
       bubble.remove();
       view?.showCaret(null);
       view?.select([]);

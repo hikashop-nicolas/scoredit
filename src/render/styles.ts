@@ -34,6 +34,7 @@ const CSS = `
 .sv-loupe{position:fixed;z-index:20;transform:translate(-50%,calc(-100% - 36px));padding:6px 12px;border-radius:10px;background:var(--sv-chrome,#2b2f36);color:#fff;font:600 22px system-ui,sans-serif;box-shadow:0 4px 14px rgba(0,0,0,.35);pointer-events:none}
 .sv-loupe[hidden]{display:none}
 .sv-shell:focus{outline:none}
+.sv-root.sv-inputting{touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
 .sv-caret{position:absolute;left:0;width:2px;margin-left:-1px;background:var(--sv-caret,#e8710a);border-radius:1px;pointer-events:none;z-index:2;animation:sv-blink 1s steps(2,start) infinite}
 @keyframes sv-blink{to{opacity:.25}}
 @media (prefers-reduced-motion:reduce){.sv-caret{animation:none}}
