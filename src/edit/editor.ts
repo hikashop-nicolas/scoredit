@@ -76,7 +76,11 @@ export class ScoreEditor {
   private entry: Entry | null = null;
   private fine = new Set<number>();
 
-  constructor(readonly score: ScoreDoc) {}
+  /** history: false keeps no undo (for scripted edits of whole scores). */
+  constructor(
+    readonly score: ScoreDoc,
+    private opts: { history?: boolean } = {},
+  ) {}
 
   get canUndo(): boolean {
     return this.done.length > 0;
@@ -403,6 +407,30 @@ export class ScoreEditor {
   }
 
   /** Ties the chord at the caret to the next one (made with the same notes if it differs). */
+  /** Ties the notes of these MIDI pitches at the caret to the same notes in the next event. */
+  tieTo(caret: Caret, midis: number[]): Change {
+    const ev = this.eventAt(caret);
+    if (!ev || ev.rest) return { from: caret.measure, to: caret.measure, appended: 0 };
+    const per = this.info(caret.part, caret.measure).perQuarter;
+    const after = this.advance(caret.part, caret.measure, ev.pos, ev.dur, caret);
+    const next = this.eventAt(after);
+    if (!next || next.rest) return { from: caret.measure, to: caret.measure, appended: 0 };
+    void per;
+    return this.transact(() => {
+      this.touch(caret.part, caret.measure);
+      this.touch(after.part, after.measure);
+      for (const n of ev.notes) {
+        const p = readPitch(n);
+        if (!p || !midis.includes(midiOf(p))) continue;
+        const m = next.notes.find((x) => samePitch(readPitch(x), p));
+        if (!m) continue;
+        setTie(n, "start", true);
+        setTie(m, "stop", true);
+      }
+      return { from: caret.measure, to: after.measure + 1, appended: 0 };
+    });
+  }
+
   tie(caret: Caret): { caret: Caret; change: Change } {
     const ev = this.eventAt(caret);
     if (!ev || ev.rest) return { caret, change: { from: caret.measure, to: caret.measure, appended: 0 } };
@@ -468,11 +496,12 @@ export class ScoreEditor {
     try {
       const out = fn();
       this.mirrorTabs();
-      if (this.entry.before.size || this.entry.appended) {
+      if ((this.entry.before.size || this.entry.appended) && this.opts.history !== false) {
         this.done.push(this.entry);
         this.undone = [];
       }
-      this.score.refresh();
+      // Measures keep their elements through an edit; only added ones need reading again.
+      if (this.entry.appended) this.score.refresh();
       return out;
     } finally {
       this.entry = null;
@@ -515,6 +544,7 @@ export class ScoreEditor {
 
   /** Keeps a copy of a measure before it first changes in this edit. */
   private touch(part: number, measure: number): void {
+    if (this.opts.history === false) return;
     const key = `${part}:${measure}`;
     const e = this.entry;
     if (!e || e.before.has(key) || measure >= this.score.measures[part].length - e.appended) return;

@@ -107,6 +107,37 @@ export const HELPERS = `(() => {
       const x = (f) => open + ((w - open - 4) * f) / 12;
       return { x: r.left + (fret === 0 ? open / 2 : (x(fret - 1) + x(fret)) / 2), y: r.top + 8 + gap * (string - 0.5) };
     },
+    // Rebuilding a score by typing: the plan, in typing order, on an emptied copy.
+    prepareRebuild() {
+      const orig = viewer.score;
+      const ed = new scoreditLib.ScoreEditor(orig, { history: false });
+      const lengths = orig.measures.map((ms, p) => ms.map((_, m) => { const i = ed.info(p, m); return i.length / i.perQuarter; }));
+      const starts = lengths.map((ls) => ls.reduce((a, l, i) => (a.push(i ? a[i - 1] + ls[i - 1] : 0), a), []));
+      const { entries, skipped } = scoreditRebuild.plan(orig);
+      const midi = (p) => (p.octave + 1) * 12 + [0, 2, 4, 5, 7, 9, 11]["CDEFGAB".indexOf(p.step)] + p.alter;
+      const plan = entries.map((e) => ({
+        part: e.at.part, measure: e.at.measure, staff: e.at.staff, voice: e.at.voice, pos: e.at.pos,
+        abs: starts[e.at.part][e.at.measure] + e.at.pos, quarters: e.quarters, tuplet: e.tuplet ?? null, ties: e.ties,
+        notes: e.pitches.map((p) => ({ step: p.step, midi: midi(p), drum: !!p.unpitched })),
+      }));
+      window.__orig = orig;
+      viewer.setScore(scoreditRebuild.emptyCopy(orig));
+      return { plan, skipped, measures: lengths[0].length };
+    },
+    midisAt(part, measure, staff, voice, pos) {
+      const ed = new scoreditLib.ScoreEditor(viewer.score, { history: false });
+      const ev = ed.eventAt({ part, measure, staff, voice, pos });
+      if (!ev || ev.rest) return [];
+      const STEPS7 = [0, 2, 4, 5, 7, 9, 11];
+      return ev.notes.map((n) => { const p = n.getElementsByTagName("pitch")[0]; if (!p) return null; return (Number(txt(p, "octave")) + 1) * 12 + STEPS7["CDEFGAB".indexOf(txt(p, "step"))] + (Number(txt(p, "alter")) || 0); }).filter((x) => x !== null);
+    },
+    finishRebuild() {
+      const r = scoreditRebuild.compareNotes(window.__orig, viewer.score);
+      return { total: r.total, missing: r.missing.length, extra: r.extra.length, examplesMissing: r.missing.slice(0, 6).map((k) => scoreditRebuild.describeNote(k, window.__orig)), examplesExtra: r.extra.slice(0, 6).map((k) => scoreditRebuild.describeNote(k, viewer.score)) };
+    },
+    staffMiddle(bar, staff, part = 0) {
+      return viewer.pointFor(bar - 1, 0, part, staff, 4);
+    },
     paletteLines() {
       const tops = [...document.querySelectorAll(".sv-pal button")].filter((b) => b.offsetParent).map((b) => Math.round(b.getBoundingClientRect().top / 8));
       return new Set(tops).size;
@@ -485,6 +516,135 @@ export const scenarios = [
       await d.button("Done");
       d.check("The edit toolbar is gone", await d.eval("document.querySelector('.sv-edit').hidden"));
       d.check("The player bar is back", await d.eval("!document.querySelector('.sv-bar').hidden"));
+    },
+  },
+  {
+    id: "open-fur-elise",
+    title: "Für Elise opens and scrolls without errors",
+    device: "desktop",
+    corpus: "musescore-com/fur-elise-ms4.musicxml",
+    edit: false,
+    why: "Before typing it back in: the original opens, and every line draws as the page is scrolled to the end, with no error.",
+    look: "The end of Für Elise.",
+    async run(d) {
+      await d.run("Scroll to the end, a screen at a time", "(async () => { const r = document.querySelector('.sv-root'); for (let i = 0; i < 40; i++) { r.scrollTop += r.clientHeight; await new Promise((x) => setTimeout(x, 250)); } })()");
+    },
+  },
+  {
+    id: "type-fur-elise",
+    title: "Typing all of Für Elise back in gives the same piece",
+    device: "desktop",
+    corpus: "musescore-com/fur-elise-ms4.musicxml",
+    edit: false,
+    why: "Every note of Für Elise is removed, then the whole piece is typed back in with the keyboard as a person would in note input: a number key for each note's length, a letter for its name, arrow keys to correct the octave or add a sharp, Shift+letter for chords, Ctrl+3 for triplets, rests where a hand is silent, and ArrowLeft then + to tie notes. At the end every note must be the same as in the original. Grace notes and slurs are left out (edit mode does not enter them yet).",
+    look: "The beginning of Für Elise, typed back in (slurs and the few grace notes missing).",
+    async run(d) {
+      const prep = await d.eval("e2e.prepareRebuild()");
+      d.note(`Empty the score (${prep.measures} bars) and press Edit`);
+      await d.run("Wait for the empty score", "new Promise((r) => setTimeout(r, 1500))");
+      await d.button("Edit");
+      const streams = new Map();
+      for (const e of prep.plan) {
+        const k = `${e.part}|${e.staff}|${e.voice}`;
+        if (!streams.has(k)) streams.set(k, []);
+        streams.get(k).push(e);
+      }
+      const order = [...streams.keys()].sort((a, b) => {
+        const [pa, sa, va] = a.split("|").map(Number);
+        const [pb, sb, vb] = b.split("|").map(Number);
+        return pa - pb || sa - sb || va - vb;
+      });
+      const VALUES = [["8", 8], ["7", 4], ["6", 2], ["5", 1], ["4", 0.5], ["3", 0.25], ["2", 0.125], ["1", 0.0625]];
+      const written = (q) => {
+        for (const [k, base] of VALUES) for (const dots of [0, 1]) if (Math.abs(base * (2 - 2 ** -dots) - q) < 1e-6) return { k, dots };
+        return null;
+      };
+      let cur = { k: null, dots: 0 };
+      let keys = 0;
+      const key = async (k, mods) => {
+        keys++;
+        await d.fastKey(k, mods);
+      };
+      const setLength = async (q) => {
+        const w = written(q);
+        if (!w) return false;
+        if (w.k !== cur.k || w.dots !== cur.dots) {
+          await key(w.k);
+          if (w.dots) await key(".");
+          cur = w;
+        }
+        return true;
+      };
+      let notes = 0;
+      let fixes = 0;
+      let ties = 0;
+      const problems = [];
+      for (const k of order) {
+        const list = streams.get(k).sort((a, b) => a.abs - b.abs);
+        const [part, staff, voice] = k.split("|");
+        const voices = [...new Set(prep.plan.filter((e) => e.part === Number(part) && e.staff === Number(staff)).map((e) => Number(e.voice)))].sort((a, b) => a - b);
+        d.note(`${staff === "1" ? "Upper" : "Lower"} staff, voice ${voices.indexOf(Number(voice)) + 1}: click its first bar, press N${voices.length > 1 ? ` and Ctrl+Alt+${voices.indexOf(Number(voice)) + 1}` : ""}, then type ${list.length} notes and chords`);
+        await key("Escape");
+        await d.click(await d.eval(`e2e.staffMiddle(1, ${staff}, ${part})`));
+        await key("n");
+        await key(String(voices.indexOf(Number(voice)) + 1), { ctrl: true, alt: true });
+        cur = { k: null, dots: 0 };
+        let at = 0;
+        let prev = null;
+        for (const e of list) {
+          // Silence before the note: rests, longest first.
+          let gap = e.abs - at;
+          for (const [, v] of VALUES) {
+            while (gap >= v - 1e-6) {
+              await setLength(v);
+              await key("0");
+              gap -= v;
+            }
+          }
+          if (gap > 1e-6) problems.push(`a silence of ${gap.toFixed(3)} beat before bar ${e.measure + 1} cannot be typed`);
+          if (e.tuplet) {
+            if (e.tuplet.actual === 3 && e.tuplet.normal === 2 && (await setLength(e.tuplet.quarters))) await key("3", { ctrl: true });
+            else problems.push(`bar ${e.measure + 1}: a ${e.tuplet.actual}:${e.tuplet.normal} tuplet cannot be typed`);
+          } else if (written(e.quarters)) await setLength(e.quarters);
+          // (Inside a tuplet the length comes from its slot.)
+          const where = `${e.part}, ${e.measure}, ${e.staff}, ${JSON.stringify(e.voice)}, ${e.pos}`;
+          const placed = [];
+          for (const [i, n] of e.notes.entries()) {
+            await key(n.step.toLowerCase(), i ? { shift: true } : undefined);
+            const now = await d.eval(`e2e.midisAt(${where})`);
+            const rest = [...now];
+            for (const p of placed) rest.splice(rest.indexOf(p), 1);
+            let diff = n.midi - (rest[0] ?? n.midi);
+            while (diff >= 12) (await key("ArrowUp", { ctrl: true }), (diff -= 12), fixes++);
+            while (diff <= -12) (await key("ArrowDown", { ctrl: true }), (diff += 12), fixes++);
+            while (diff > 0) (await key("ArrowUp"), diff--, fixes++);
+            while (diff < 0) (await key("ArrowDown"), diff++, fixes++);
+            placed.push(n.midi);
+          }
+          notes++;
+          if (prev?.ties.length) {
+            const same = prev.notes.map((n) => n.midi).sort().join() === e.notes.map((n) => n.midi).sort().join();
+            if (same && prev.ties.length === prev.notes.length && Math.abs(prev.abs + prev.quarters - e.abs) < 1e-6) {
+              await key("ArrowLeft");
+              await key("+");
+              ties++;
+            } else problems.push(`bar ${prev.measure + 1}: a tie on part of a chord cannot be typed`);
+          }
+          at = e.abs + e.quarters;
+          prev = e;
+        }
+      }
+      d.note(`In all: ${notes} notes and chords, ${keys} key presses (${fixes} arrow corrections, ${ties} ties)`);
+      const during = d.takeErrors();
+      await d.run("Scroll through the whole piece", "(async () => { const r = document.querySelector('.sv-root'); r.scrollTop = 0; for (let i = 0; i < 40; i++) { r.scrollTop += r.clientHeight; await new Promise((x) => setTimeout(x, 250)); } })()");
+      const after = d.takeErrors();
+      d.check("The finished piece draws without errors", !after.length, after[0]?.split("\n")[0] ?? "");
+      if (during.length) d.note(`(While typing, the drawing library reported ${during.length} errors on lines drawn in the middle of an edit.)`);
+      const r = await d.eval("e2e.finishRebuild()");
+      d.check(`All ${r.total} notes of the original are back, in the same place, with the same length`, !r.missing && !r.extra, [r.missing ? `${r.missing} missing, e.g. ${r.examplesMissing.join("; ")}` : "", r.extra ? `${r.extra} not in the original, e.g. ${r.examplesExtra.join("; ")}` : ""].filter(Boolean).join(". "));
+      d.check("Everything could be typed", !problems.length, problems.slice(0, 5).join("; "));
+      const not = Object.entries(prep.skipped).map(([k, n]) => `${n} ${k}`).join(", ");
+      if (not) d.note(`Left out on purpose (not in edit mode yet): ${not}`);
     },
   },
 ];

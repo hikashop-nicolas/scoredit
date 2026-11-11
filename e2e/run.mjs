@@ -98,6 +98,24 @@ function makeDriver(tab, device, record) {
       await fn();
       await settle();
     },
+    /** A key without logging or waiting, for typing a whole piece. */
+    async fastKey(k, mods = {}) {
+      const modifiers = (mods.alt ? 1 : 0) | (mods.ctrl ? 2 : 0) | (mods.shift ? 8 : 0);
+      const single = k.length === 1;
+      const text = single && !mods.ctrl && !mods.alt ? (mods.shift ? k.toUpperCase() : k) : undefined;
+      const code = /^\d$/.test(k) ? `Digit${k}` : single && /[a-z]/i.test(k) ? `Key${k.toUpperCase()}` : k;
+      const vk = KEYCODES[k] ?? (single ? k.toUpperCase().charCodeAt(0) : 0);
+      const key = single && mods.shift ? k.toUpperCase() : k;
+      await tab.send("Input.dispatchKeyEvent", { type: "keyDown", key, code, windowsVirtualKeyCode: vk, modifiers, text });
+      await tab.send("Input.dispatchKeyEvent", { type: "keyUp", key, code, windowsVirtualKeyCode: vk, modifiers });
+    },
+    note(text) {
+      record.steps.push(text);
+    },
+    async click(p) {
+      await press(p.x, p.y);
+      await sleep(200);
+    },
     /** A key, as on a desktop keyboard (mods: shift, ctrl, alt). */
     key(k, mods = {}) {
       const label = [mods.ctrl && "Ctrl", mods.alt && "Alt", mods.shift && "Shift", k === " " ? "Space" : k].filter(Boolean).join("+");
@@ -177,6 +195,10 @@ function makeDriver(tab, device, record) {
       return d.step(text, () => tab.eval(expr));
     },
     eval: (expr) => tab.eval(expr),
+    /** Errors logged so far, which are then forgotten. */
+    takeErrors() {
+      return tab.logs.splice(0);
+    },
 
     // ---- checks
     check(what, ok, detail = "") {
@@ -229,7 +251,7 @@ async function main() {
   rmSync(out, { recursive: true, force: true });
   mkdirSync(out, { recursive: true });
   const results = [];
-  for (const sc of scenarios.filter((s) => !only || s.id.includes(only))) {
+  for (const sc of scenarios.filter((s) => (!only || s.id.includes(only)) && (!s.corpus || existsSync(join(root, "corpus", s.corpus))))) {
     const record = { ...sc, steps: [], checks: [], error: null, shot: null };
     const tab = await openTab(port);
     try {
@@ -237,7 +259,7 @@ async function main() {
       await tab.send("Emulation.setDeviceMetricsOverride", { width: dev.width, height: dev.height, deviceScaleFactor: dev.deviceScaleFactor, mobile: dev.mobile });
       if (dev.touch) await tab.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
       await tab.send("Page.enable");
-      await tab.send("Page.navigate", { url: `${base}?fixture=${sc.fixture}&layout=page` });
+      await tab.send("Page.navigate", { url: sc.corpus ? `${base}?f=${sc.corpus}&layout=page` : `${base}?fixture=${sc.fixture}&layout=page` });
       for (let i = 0; i < 100; i++) {
         await sleep(150);
         if (await tab.eval(`!!(window.viewer && document.querySelector('.sv-system svg') && document.querySelector('.sv-page')?.style.visibility !== 'hidden')`).catch(() => false)) break;

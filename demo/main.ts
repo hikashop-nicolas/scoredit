@@ -1,5 +1,6 @@
 import * as scoreditLib from "../src/index";
 import { layoutKeys, keyRange } from "../src/ui/keyboard";
+import * as scoreditRebuild from "../src/edit/rebuild";
 import { SOUNDS_CDN, createScoreViewer, loadScore, partFamily, remoteSounds, type ScoreViewerHandle } from "../src/index";
 
 // Recorded sounds: from the local corpus copy of scoredit-sounds, or ?sounds=cdn for jsDelivr.
@@ -81,4 +82,4 @@ fetch("corpus-index.json")
 document.addEventListener("fullscreenchange", () => viewer?.setReadingMode(document.fullscreenElement === host));
 
 // For the end-to-end tests (e2e/): the library and the strip's key layout.
-Object.assign(window, { scoreditLib, scoreditKeys: { layoutKeys, keyRange } });
+Object.assign(window, { scoreditLib, scoreditRebuild, scoreditKeys: { layoutKeys, keyRange } });

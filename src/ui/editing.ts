@@ -283,8 +283,13 @@ export function createEditing(host: EditingHost): Editing {
   function enter(pitches: Pitch[] | null, o: { chord?: boolean; insert?: boolean } = {}): void {
     if (!caret) return;
     if (o.chord && pitches && sel) {
-      landed(editor.addToChord(sel.at, pitches[0]));
+      const change = editor.addToChord(sel.at, pitches[0]);
+      // The added note is selected, so arrows move it alone.
+      const ev = editor.eventAt(sel.at);
+      const added = ev?.notes.find((n) => { const p = readPitch(n); return !!p && midiOf(p) === midiOf(pitches[0]); }) ?? null;
+      sel = { at: sel.at, note: added };
       lastPitch = pitches[0];
+      landed(change);
       return;
     }
     const at = { ...caret };

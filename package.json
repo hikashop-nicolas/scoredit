@@ -26,7 +26,8 @@
     "test:corpus": "SCOREDIT_CORPUS=1 NODE_OPTIONS=--max-old-space-size=12288 vitest run src/formats/corpus.test.ts",
     "corpus": "node scripts/fetch-corpus.mjs",
     "prepare": "tsc -p tsconfig.json",
-    "test:e2e": "node e2e/run.mjs"
+    "test:e2e": "node e2e/run.mjs",
+    "test:rebuild": "node scripts/rebuild-corpus.mjs"
   },
   "dependencies": {
     "fflate": "^0.8.2",
