@@ -48,34 +48,42 @@ export function plan(score: ScoreDoc): { entries: Entry[]; skipped: Skipped } {
         const staff = Number(st);
         // A tab staff drawn from a notation staff is written again by the editor.
         if (link && link.tab === staff && link.notation !== null) continue;
-        // A tuplet ends when its length is used up (files do not always mark where).
-        let left = 0;
-        for (const ev of evs) {
-          const ratio = kid(ev.notes[0], "time-modification");
-          let starts: { quarters: number; actual: number; normal: number } | null = null;
-          if (ratio && left <= 1e-6) {
-            const actual = Number(text(ratio, "actual-notes")) || 3;
-            const normal = Number(text(ratio, "normal-notes")) || 2;
-            const type = text(ratio, "normal-type") || text(ev.notes[0], "type");
-            const q = (TYPE_Q[type] ?? 0) * (2 - 2 ** -kids(ev.notes[0], "dot").length);
-            if (q) {
-              starts = { quarters: q * normal, actual, normal };
-              left = q * normal;
-            }
+        // Tuplets: from a start mark to a stop mark, or, unmarked, as soon as the notes so far
+        // make a whole tuplet (their time over the normal count is a plain note value). The
+        // tuplet is as long as its notes together.
+        const starts = new Map<number, { quarters: number; actual: number; normal: number }>();
+        for (let i = 0; i < evs.length; ) {
+          const ratio = kid(evs[i].notes[0], "time-modification");
+          if (!ratio) {
+            i++;
+            continue;
           }
-          if (ratio) left -= ev.dur / per;
-          else left = 0;
+          const actual = Number(text(ratio, "actual-notes")) || 3;
+          const normal = Number(text(ratio, "normal-notes")) || 2;
+          const marked = (e: (typeof evs)[number], type: string) => Array.from(e.notes[0].getElementsByTagName("tuplet")).some((t) => t.getAttribute("type") === type);
+          let j = i;
+          let sum = 0;
+          for (; j < evs.length && kid(evs[j].notes[0], "time-modification"); j++) {
+            sum += evs[j].dur / per;
+            if (marked(evs[j], "stop")) break;
+            if (!marked(evs[i], "start") && Object.values(TYPE_Q).some((q) => Math.abs(sum / normal - q) < 1e-6)) break;
+          }
+          starts.set(i, { quarters: sum, actual, normal });
+          i = j + 1;
+        }
+        evs.forEach((ev, i) => {
+          const start = starts.get(i) ?? null;
           const at0: Caret = { part, measure: m, staff, voice, pos: ev.pos / per };
           // A tuplet that starts with a rest is laid out all the same.
-          if (ev.rest && starts) entries.push({ at: at0, pitches: [], quarters: ev.dur / per, ties: [], tuplet: starts });
-          if (ev.rest) continue;
+          if (ev.rest && start) entries.push({ at: at0, pitches: [], quarters: ev.dur / per, ties: [], tuplet: start });
+          if (ev.rest) return;
           const pitches = ev.notes.map(readPitch).filter((p): p is Pitch => !!p);
-          if (!pitches.length) continue;
+          if (!pitches.length) return;
           const at: Caret = { part, measure: m, staff, voice, pos: ev.pos / per };
           const entry: Entry = { at, pitches, quarters: ev.dur / per, ties: ev.notes.filter((n) => kids(n, "tie").some((t) => t.getAttribute("type") === "start")).map((n) => midiOf(readPitch(n)!)).filter((x) => Number.isFinite(x)) };
-          if (starts) entry.tuplet = starts;
+          if (start) entry.tuplet = start;
           entries.push(entry);
-        }
+        });
       }
     });
   });

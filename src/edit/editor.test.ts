@@ -137,7 +137,8 @@ describe("Entering notes", () => {
     const ed = new ScoreEditor(s);
     ed.tuplet(at(0, 0), 1);
     let c = at(0, 0);
-    for (const step of "CDE") c = ed.enter(c, { pitches: [P(step)], quarters: 0.5 }).caret;
+    // In the model a length is actual time: a third of a beat each.
+    for (const step of "CDE") c = ed.enter(c, { pitches: [P(step)], quarters: 1 / 3 }).caret;
     expect(c.pos).toBeCloseTo(1, 6);
     const notes = Array.from(s.measures[0][0].getElementsByTagName("note")).slice(0, 3);
     expect(notes.map((n) => [text(n, "type"), n.getElementsByTagName("actual-notes")[0]?.textContent])).toEqual([

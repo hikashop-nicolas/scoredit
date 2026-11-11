@@ -65,7 +65,9 @@ interface Entry {
   appendedEls: Element[][];
 }
 
-const FINE = 960;
+// Divisions per quarter after the first edit: fine enough for 128ths, triplets, quintuplets,
+// septuplets and nonuplets (1/18 of a beat).
+const FINE = 10080;
 const gcd = (a: number, b: number): number => (b ? gcd(b, a % b) : a);
 const lcm = (a: number, b: number) => (a / gcd(a, b)) * b;
 const total = (segs: Seg[]) => segs.reduce((s, x) => s + x.len, 0);
@@ -153,20 +155,24 @@ export class ScoreEditor {
         const segs = this.segsOf(caret.part, m, key, length);
         const [before, from] = cut(segs, pos);
         // Written into a tuplet's slot, a note takes the slot's length and ratio.
-        if (m === caret.measure && !opts.insert && from[0]?.tuplet && from[0].intact) {
+        // Written into a tuplet, a note keeps the tuplet's ratio at its own length (a slot, part
+        // of one, or several), within what is left of the tuplet.
+        if (m === caret.measure && !opts.insert && from[0]?.tuplet) {
           const tp = from[0].tuplet;
-          // A note over several slots of the tuplet takes them together (a quarter in an
-          // eighth triplet); one shorter or equal takes the slot.
-          let sum = 0;
-          let k = 0;
-          while (len > from[0].len && k < from.length && from[k].tuplet && sum < len) sum += from[k++].len;
-          const w = k > 1 && sum === len ? writtenFor(Math.round((len * Number(text(tp.ratio, "actual-notes"))) / (Number(text(tp.ratio, "normal-notes")) || 1)), perQuarter) : null;
-          if (w) {
-            const marks = [...tp.marks.filter((x) => x.getAttribute("type") === "start"), ...(from[k - 1].tuplet?.marks ?? []).filter((x) => x.getAttribute("type") === "stop")];
-            incoming = [{ ...incoming[0], len, tuplet: { ratio: tp.ratio, type: w.type, dots: w.dots, marks } }];
-          } else {
-            len = from[0].len;
-            incoming = [{ ...incoming[0], len, tuplet: tp }];
+          let span = 0;
+          for (let k = 0; k < from.length && from[k].tuplet && (k === 0 || !from[k].tuplet!.marks.some((x) => x.getAttribute("type") === "start")); k++) span += from[k].len;
+          const a = Number(text(tp.ratio, "actual-notes")) || 3;
+          const n = Number(text(tp.ratio, "normal-notes")) || 2;
+          if (len <= span && writtenFor(Math.round((len * a) / n), perQuarter)) {
+            let used = 0;
+            let last: Seg | undefined;
+            for (const f of from) {
+              if (used >= len) break;
+              used += f.len;
+              last = f;
+            }
+            const marks = [...tp.marks.filter((x) => x.getAttribute("type") === "start"), ...(used === len && last?.tuplet ? last.tuplet.marks.filter((x) => x.getAttribute("type") === "stop") : [])];
+            incoming = [{ ...incoming[0], len, tuplet: { ratio: tp.ratio, type: "", dots: 0, marks } }];
           }
         }
         const room = length - pos;
@@ -719,7 +725,10 @@ export class ScoreEditor {
         events.push({ pos, dur: length, graces: [], notes: [makeNote(doc, { pitch: null, divs: length, written: null, voice, staff: staves > 1 ? staff : undefined, measureRest: true })], rest: true });
       } else if (seg.tuplet) {
         const tp = seg.tuplet;
-        const w = { type: tp.type, dots: tp.dots, divs: seg.len };
+        const a = Number(text(tp.ratio, "actual-notes")) || 3;
+        const nn = Number(text(tp.ratio, "normal-notes")) || 2;
+        const fit = writtenFor(Math.round((seg.len * a) / nn), perQuarter);
+        const w = { type: fit?.type ?? tp.type, dots: fit?.dots ?? tp.dots, divs: seg.len };
         const notes = seg.notes
           ? seg.notes.map((t) => {
               const c = pieceOf(t, seg.len, w);
@@ -880,8 +889,9 @@ function cut(segs: Seg[], at: number): [Seg[], Seg[]] {
     else {
       const d = at - pos;
       const tied = !!s.notes;
-      before.push({ ...s, len: d, tieOut: tied, intact: null });
-      after.push({ ...s, len: s.len - d, graces: [], tieIn: tied, intact: null });
+      const mark = (type: string): Tuplet | undefined => (s.tuplet ? { ...s.tuplet, marks: s.tuplet.marks.filter((x) => x.getAttribute("type") === type) } : undefined);
+      before.push({ ...s, len: d, tieOut: tied, intact: null, tuplet: mark("start") });
+      after.push({ ...s, len: s.len - d, graces: [], tieIn: tied, intact: null, tuplet: mark("stop") });
     }
     pos += s.len;
   }

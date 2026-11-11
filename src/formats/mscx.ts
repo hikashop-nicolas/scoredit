@@ -27,8 +27,8 @@ const text = (el: Element | null | undefined, tag?: string): string => {
 // Learned from MuseScore files and MuseScore's own MusicXML export of the same scores; the
 // format has no published spec.
 
-/** Divisions per quarter note: divisible by 3, 5 and 7 tuplets down to 128ths. */
-const DIV = 3360;
+/** Divisions per quarter note: exact for tuplets of 3, 5, 7 and 9 down to 128ths. */
+const DIV = 10080;
 
 const DURATION: Record<string, number> = { long: 16, breve: 8, whole: 4, half: 2, quarter: 1, eighth: 0.5, "16th": 0.25, "32nd": 0.125, "64th": 1 / 16, "128th": 1 / 32, "256th": 1 / 64 };
 const TYPE_NAME: Record<string, string> = { long: "long", breve: "breve", whole: "whole", half: "half", quarter: "quarter", eighth: "eighth", "16th": "16th", "32nd": "32nd", "64th": "64th", "128th": "128th", "256th": "256th" };
