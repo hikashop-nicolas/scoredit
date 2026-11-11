@@ -242,3 +242,147 @@ export function pieceOf(note: Element, divs: number, w: Written | null): Element
 }
 
 export { add as addToNote };
+
+// ---- Marks: articulations, ornaments, fermatas, slurs, lyrics.
+
+const NOTATION_ORDER = ["tied", "slur", "tuplet", "glissando", "slide", "ornaments", "technical", "articulations", "dynamics", "fermata", "arpeggiate", "non-arpeggiate", "accidental-mark", "other-notation"];
+
+/** A note's <notations>, made when asked. */
+export function notationsOf(note: Element, create: true): Element;
+export function notationsOf(note: Element, create?: false): Element | null;
+export function notationsOf(note: Element, create = false): Element | null {
+  return kid(note, "notations") ?? (create ? add(note, "notations") : null);
+}
+
+function placeIn(parent: Element, child: Element, order: string[]): Element {
+  const rank = order.indexOf(child.tagName);
+  const before = kids(parent).find((c) => order.indexOf(c.tagName) > rank) ?? null;
+  parent.insertBefore(child, before);
+  return child;
+}
+
+export const ARTICULATIONS = ["accent", "strong-accent", "staccato", "tenuto", "detached-legato", "staccatissimo", "spiccato", "scoop", "plop", "doit", "falloff", "breath-mark", "caesura", "stress", "unstress", "soft-accent"];
+export const ORNAMENTS = ["trill-mark", "turn", "delayed-turn", "inverted-turn", "delayed-inverted-turn", "vertical-turn", "shake", "mordent", "inverted-mordent", "schleifer", "haydn"];
+
+/** The marks on a note: articulation and ornament names, and "fermata". */
+export function marksOf(note: Element): string[] {
+  // A note may have several <notations>.
+  const out: string[] = [];
+  for (const nots of kids(note, "notations")) {
+    for (const g of kids(nots, "articulations")) for (const a of kids(g)) if (ARTICULATIONS.includes(a.tagName)) out.push(a.tagName);
+    for (const g of kids(nots, "ornaments")) for (const o of kids(g)) if (ORNAMENTS.includes(o.tagName)) out.push(o.tagName);
+    if (kid(nots, "fermata")) out.push("fermata");
+  }
+  return out;
+}
+
+/** Puts a mark on a note or takes it off (on omitted: toggles). Returns whether it is on. */
+export function setMark(note: Element, mark: string, on?: boolean): boolean {
+  const doc = note.ownerDocument;
+  const group = mark === "fermata" ? null : ARTICULATIONS.includes(mark) ? "articulations" : "ornaments";
+  // Any of the note's <notations> may hold it.
+  let nots = notationsOf(note);
+  let holder = group && nots ? kid(nots, group) : nots;
+  let have = holder ? kid(holder, mark) : null;
+  for (const n of kids(note, "notations")) {
+    const h = group ? kid(n, group) : n;
+    const m = h ? kid(h, mark) : null;
+    if (m) [nots, holder, have] = [n, h, m];
+  }
+  const want = on ?? !have;
+  if (!want) {
+    have?.remove();
+    if (group && holder && !holder.firstElementChild) holder.remove();
+    if (nots && !nots.firstElementChild) nots.remove();
+    return false;
+  }
+  if (have) return true;
+  const n = notationsOf(note, true);
+  const parent = group ? (kid(n, group) ?? placeIn(n, doc.createElementNS(null, group), NOTATION_ORDER)) : n;
+  const e = doc.createElementNS(null, mark);
+  if (mark === "fermata") e.setAttribute("type", "upright");
+  if (group) parent.appendChild(e);
+  else placeIn(n, e, NOTATION_ORDER);
+  return true;
+}
+
+export interface SlurEnd {
+  type: "start" | "stop";
+  number: number;
+}
+
+export function slursOf(note: Element): SlurEnd[] {
+  return kids(note, "notations")
+    .flatMap((nots) => kids(nots, "slur")).map((s) => ({ type: s.getAttribute("type") === "stop" ? "stop" : "start", number: Number(s.getAttribute("number")) || 1 }) as SlurEnd).filter((s) => s.type === "start" || s.type === "stop");
+}
+
+export function addSlur(note: Element, end: SlurEnd): void {
+  const s = note.ownerDocument.createElementNS(null, "slur");
+  s.setAttribute("type", end.type);
+  s.setAttribute("number", String(end.number));
+  placeIn(notationsOf(note, true), s, NOTATION_ORDER);
+}
+
+export function removeSlur(note: Element, end: SlurEnd): void {
+  const nots = kid(note, "notations");
+  for (const s of kids(note, "notations").flatMap((n) => kids(n, "slur"))) if ((s.getAttribute("type") === "stop" ? "stop" : "start") === end.type && (Number(s.getAttribute("number")) || 1) === end.number) s.remove();
+  if (nots && !nots.firstElementChild) nots.remove();
+}
+
+export interface Lyric {
+  number: string;
+  syllabic: string;
+  text: string;
+}
+
+export function lyricsOf(note: Element): Lyric[] {
+  return kids(note, "lyric").map((l) => ({ number: l.getAttribute("number") ?? "1", syllabic: text(l, "syllabic") || "single", text: kids(l, "text").map((t) => t.textContent ?? "").join("") }));
+}
+
+/** Sets (or, with no text, removes) a note's lyric of one verse. */
+export function setLyric(note: Element, number: string, words: string | null, syllabic = "single"): void {
+  for (const l of kids(note, "lyric")) if ((l.getAttribute("number") ?? "1") === number) l.remove();
+  if (!words) return;
+  const doc = note.ownerDocument;
+  const l = doc.createElementNS(null, "lyric");
+  l.setAttribute("number", number);
+  for (const [tag, v] of [["syllabic", syllabic], ["text", words]] as const) {
+    const e = doc.createElementNS(null, tag);
+    e.textContent = v;
+    l.appendChild(e);
+  }
+  // Verses in order, after the note's other content.
+  const later = kids(note, "lyric").find((x) => Number(x.getAttribute("number") ?? 1) > Number(number)) ?? null;
+  if (later) note.insertBefore(l, later);
+  else placeInNote(note, l);
+}
+
+/** Takes marks off a piece of a split note that are only the first piece's (or the last's). */
+export function keepMarksFor(note: Element, first: boolean, last: boolean): void {
+  if (!first) {
+    for (const l of kids(note, "lyric")) l.remove();
+    const nots = kid(note, "notations");
+    if (nots) {
+      for (const tag of ["articulations", "ornaments", "fermata"]) for (const e of kids(nots, tag)) e.remove();
+      for (const s of kids(nots, "slur")) if (s.getAttribute("type") === "start") s.remove();
+    }
+  }
+  if (!last) {
+    const nots = kid(note, "notations");
+    for (const s of nots ? kids(nots, "slur") : []) if (s.getAttribute("type") === "stop") s.remove();
+  }
+  const nots = kid(note, "notations");
+  if (nots && !nots.firstElementChild) nots.remove();
+}
+
+/** A grace note of a pitch, before a note: slashed (acciaccatura) or not (appoggiatura). */
+export function makeGrace(doc: Document, pitch: Pitch, voice: string, staff: number | undefined, slash: boolean, chord = false): Element {
+  const note = doc.createElementNS(null, "note");
+  add(note, "grace", undefined, slash ? { slash: "yes" } : undefined);
+  if (chord) add(note, "chord");
+  setPitch(note, pitch);
+  add(note, "voice", voice);
+  add(note, "type", "eighth");
+  if (staff) add(note, "staff", staff);
+  return note;
+}

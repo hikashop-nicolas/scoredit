@@ -86,7 +86,7 @@ function makeDriver(tab, device, record) {
     await tab.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
   };
   const press = (x, y) => (dev.touch ? touch(x, y) : mouse(x, y));
-  const KEYCODES = { ArrowUp: 38, ArrowDown: 40, ArrowLeft: 37, ArrowRight: 39, Escape: 27, Delete: 46, Backspace: 8, ".": 190, "+": 187, "0": 48 };
+  const KEYCODES = { "/": 191, ArrowUp: 38, ArrowDown: 40, ArrowLeft: 37, ArrowRight: 39, Escape: 27, Delete: 46, Backspace: 8, ".": 190, "+": 187, "0": 48 };
   const point = async (expr, what) => {
     const p = await tab.eval(expr);
     if (!p) throw new Error(`could not find ${what} on the page`);
@@ -103,7 +103,7 @@ function makeDriver(tab, device, record) {
       const modifiers = (mods.alt ? 1 : 0) | (mods.ctrl ? 2 : 0) | (mods.shift ? 8 : 0);
       const single = k.length === 1;
       const text = single && !mods.ctrl && !mods.alt ? (mods.shift ? k.toUpperCase() : k) : undefined;
-      const code = /^\d$/.test(k) ? `Digit${k}` : single && /[a-z]/i.test(k) ? `Key${k.toUpperCase()}` : k;
+      const code = k === "/" ? "Slash" : /^\d$/.test(k) ? `Digit${k}` : single && /[a-z]/i.test(k) ? `Key${k.toUpperCase()}` : k;
       const vk = KEYCODES[k] ?? (single ? k.toUpperCase().charCodeAt(0) : 0);
       const key = single && mods.shift ? k.toUpperCase() : k;
       await tab.send("Input.dispatchKeyEvent", { type: "keyDown", key, code, windowsVirtualKeyCode: vk, modifiers, text });
@@ -123,7 +123,7 @@ function makeDriver(tab, device, record) {
         const modifiers = (mods.alt ? 1 : 0) | (mods.ctrl ? 2 : 0) | (mods.shift ? 8 : 0);
         const single = k.length === 1;
         const text = single && !mods.ctrl && !mods.alt ? (mods.shift ? k.toUpperCase() : k) : undefined;
-        const code = /^\d$/.test(k) ? `Digit${k}` : single && /[a-z]/i.test(k) ? `Key${k.toUpperCase()}` : k;
+        const code = k === "/" ? "Slash" : /^\d$/.test(k) ? `Digit${k}` : single && /[a-z]/i.test(k) ? `Key${k.toUpperCase()}` : k;
         const vk = KEYCODES[k] ?? (single ? k.toUpperCase().charCodeAt(0) : 0);
         const key = single && mods.shift ? k.toUpperCase() : k;
         await tab.send("Input.dispatchKeyEvent", { type: "keyDown", key, code, windowsVirtualKeyCode: vk, modifiers, text });

@@ -1,8 +1,8 @@
 import { ScoreEditor, type Caret, type Change, type Clip } from "../edit/editor";
 import { readMeasure, voiceKey, type Event } from "../edit/measure";
-import { keyAlter, midiOf, readPitch, spellMidi, type Pitch } from "../edit/notes";
+import { keyAlter, lyricsOf, marksOf, midiOf, readPitch, spellMidi, type Pitch } from "../edit/notes";
 import type { ScoreDoc } from "../model/score";
-import { kids, text } from "../model/xml";
+import { kid, kids, text } from "../model/xml";
 import type { PageView, Pick } from "../render/page-view";
 import { t } from "./i18n";
 import { partFamily } from "../model/score";
@@ -48,6 +48,17 @@ const ICONS = {
   rest: svg('<path d="M10 3l4 5-4 4 4 5c-3-1-5 0-4 4"/>'),
   dot: svg('<circle cx="12" cy="12" r="3" fill="currentColor"/>'),
   tie: svg('<path d="M4 11c4 6 12 6 16 0"/>'),
+  marks: svg('<polyline points="5 5 12 9 5 13"/><circle cx="16" cy="18" r="2" fill="currentColor"/>'),
+  accent: svg('<polyline points="5 7 19 12 5 17"/>'),
+  staccato: svg('<circle cx="12" cy="12" r="3" fill="currentColor"/>'),
+  tenuto: svg('<line x1="5" x2="19" y1="12" y2="12" stroke-width="3"/>'),
+  marcato: svg('<polyline points="6 18 12 6 18 18"/>'),
+  fermata: svg('<path d="M4 16a8 8 0 0 1 16 0"/><circle cx="12" cy="15" r="1.8" fill="currentColor"/>'),
+  trill: svg('<text x="12" y="17" text-anchor="middle" font-size="13" font-style="italic" font-weight="700" fill="currentColor" stroke="none">tr</text>'),
+  mordent: svg('<polyline points="3 14 7 9 10 14 14 9 17 14 21 9"/><line x1="12" x2="12" y1="5" y2="19"/>'),
+  slur: svg('<path d="M3 15c5-9 13-9 18 0"/>'),
+  grace: svg('<ellipse cx="9" cy="17" rx="3.2" ry="2.3" transform="rotate(-20 9 17)" fill="currentColor"/><line x1="12" x2="12" y1="16" y2="5"/><path d="M12 5q4 2 3 6"/><line x1="7" x2="17" y1="12" y2="7"/>'),
+  lyrics: svg('<text x="12" y="17" text-anchor="middle" font-size="12" font-weight="700" fill="currentColor" stroke="none">Aa</text>'),
   triplet: svg('<polyline points="4 9 4 5 20 5 20 9"/><text x="12" y="19" text-anchor="middle" font-size="11" font-weight="700" fill="currentColor" stroke="none">3</text>'),
   del: svg('<polyline points="4 7 20 7"/><path d="M6 7l1 13h10l1-13"/><path d="M9 7V4h6v3"/>'),
   undo: svg('<polyline points="9 14 4 9 9 4"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/>'),
@@ -119,6 +130,8 @@ export function createEditing(host: EditingHost): Editing {
   // The selected event (or one note of it), and the last note entered counts as selected.
   let sel: { at: Caret; note: Element | null; end?: Caret } | null = null;
   let clip: Clip[] = [];
+  // In note input, S opens a slur at the last note and S again closes it at the latest one.
+  let slurFrom: Caret | null = null;
   let quarters = 1;
   let dots = 0;
   let input = false;
@@ -191,8 +204,23 @@ export function createEditing(host: EditingHost): Editing {
   // The two groups share a line when there is room (desktop), else stack (phone).
   const rows = document.createElement("div");
   rows.className = "sv-pal";
-  rows.append(row1, row2);
-  el.append(strip, rows);
+  const row3 = document.createElement("div");
+  row3.className = "sv-pal-row sv-pal-marks";
+  row3.hidden = true;
+  rows.append(row1, row2, row3);
+  // Lyrics are typed in a field that moves along the notes.
+  const lyricBar = document.createElement("div");
+  lyricBar.className = "sv-lyric-bar";
+  lyricBar.hidden = true;
+  const lyricInput = document.createElement("input");
+  lyricInput.type = "text";
+  lyricInput.className = "sv-lyric";
+  lyricInput.placeholder = t("lyricsHint");
+  lyricInput.setAttribute("aria-label", t("lyrics"));
+  lyricInput.autocomplete = "off";
+  lyricInput.setAttribute("autocapitalize", "off");
+  lyricBar.append(lyricInput);
+  el.append(strip, lyricBar, rows);
 
   const inputBtn = button(ICONS.input, t("noteInput"), () => setInput(!input));
   const durBtns = DURATIONS.map(([q, icon, label]) => button(icon, t(label), () => setDuration(q)));
@@ -223,7 +251,25 @@ export function createEditing(host: EditingHost): Editing {
     sync();
   });
   const doneBtn = button(ICONS.done, t("done"), () => host.done(), "sv-pal-done");
-  row2.append(...accBtns, voiceBtn, insertBtn, delBtn, undoBtn, redoBtn, keysBtn, doneBtn);
+  const marksBtn = button(ICONS.marks, t("marks"), () => {
+    row3.hidden = !row3.hidden;
+    sync();
+  });
+  row2.append(...accBtns, voiceBtn, insertBtn, delBtn, undoBtn, redoBtn, keysBtn, marksBtn, doneBtn);
+  const MARKS: [mark: string, icon: string, label: string][] = [
+    ["accent", ICONS.accent, "accent"],
+    ["staccato", ICONS.staccato, "staccato"],
+    ["tenuto", ICONS.tenuto, "tenuto"],
+    ["strong-accent", ICONS.marcato, "marcato"],
+    ["fermata", ICONS.fermata, "fermata"],
+    ["trill-mark", ICONS.trill, "trill"],
+    ["mordent", ICONS.mordent, "mordent"],
+  ];
+  const markBtns = MARKS.map(([m, icon, label]) => button(icon, t(label), () => mark(m)));
+  const slurBtn = button(ICONS.slur, t("slur"), () => slur());
+  const graceBtn = button(ICONS.grace, t("graceNote"), () => grace(true));
+  const lyricsBtn = button(ICONS.lyrics, t("lyrics"), () => openLyrics(lyricBar.hidden !== false));
+  row3.append(...markBtns, slurBtn, graceBtn, lyricsBtn);
 
   const toShown = (p: number) => host.shown()?.indexOf(p) ?? p;
   const toFull = (rp: number) => host.shown()?.[rp] ?? rp;
@@ -242,6 +288,11 @@ export function createEditing(host: EditingHost): Editing {
     pressed(inputBtn, input);
     pressed(insertBtn, insert);
     pressed(keysBtn, !strip.hidden);
+    pressed(marksBtn, !row3.hidden);
+    pressed(slurBtn, !!slurFrom);
+    pressed(lyricsBtn, !lyricBar.hidden);
+    const selMarks = selectedEvents().flatMap(({ ev }) => ev.notes.flatMap(marksOf));
+    MARKS.forEach(([m], i) => pressed(markBtns[i], selMarks.includes(m)));
     pressed(dotBtn, dots > 0);
     DURATIONS.forEach(([q], i) => pressed(durBtns[i], q === quarters));
     view?.root.classList.toggle("sv-inputting", active && input);
@@ -306,6 +357,8 @@ export function createEditing(host: EditingHost): Editing {
 
   function selectedNotes(): Element[] {
     if (!sel) return [];
+    // A grace note on its own.
+    if (sel.note && kid(sel.note, "grace") && sel.note.parentElement) return [sel.note];
     const ev = editor.eventAt(sel.at);
     if (!ev || ev.rest) return [];
     return sel.note && ev.notes.includes(sel.note) ? [sel.note] : ev.notes;
@@ -395,8 +448,109 @@ export function createEditing(host: EditingHost): Editing {
     sync();
   }
 
+  /** The selected events: the range, or the one selected (the last entered in note input). */
+  function selectedEvents(): { at: Caret; ev: Event }[] {
+    if (!sel) return [];
+    if (sel.end) return editor.eventsBetween(sel.at, sel.end);
+    const ev = editor.eventAt(sel.at);
+    return ev ? [{ at: sel.at, ev }] : [];
+  }
+
+  /** Puts a mark on the selected notes, or takes it off when they all have it. */
+  function mark(m: string): void {
+    const items = selectedEvents().filter(({ ev }) => !ev.rest || m === "fermata");
+    if (!items.length) return;
+    const on = !items.every(({ ev }) => ev.notes.some((n) => marksOf(n).includes(m)));
+    const change = editor.group(() => {
+      for (const { at } of items) editor.mark(at, m, on);
+      return { from: items[0].at.measure, to: items[items.length - 1].at.measure + 1, appended: 0 };
+    });
+    landed(change);
+  }
+
+  /**
+   * A slur: over the selected range; from the selected note to the next; or, in note input,
+   * from the note where S was pressed to the note where it is pressed again.
+   */
+  function slur(): void {
+    if (!sel) return;
+    if (sel.end) return landed(editor.slur(sel.at, sel.end));
+    if (input) {
+      if (!slurFrom) {
+        slurFrom = { ...sel.at };
+        return sync();
+      }
+      const from = slurFrom;
+      slurFrom = null;
+      return landed(editor.slur(from, sel.at, { add: true }));
+    }
+    landed(editor.slur(sel.at, null));
+  }
+
+  /** A grace note before the selected note, at its pitch; it is selected so arrows move it. */
+  function grace(slash: boolean): void {
+    if (!sel) return;
+    const r = editor.addGrace(sel.at, undefined, slash);
+    if (!r.grace) return;
+    sel = { at: sel.at, note: r.grace };
+    const p = readPitch(r.grace);
+    if (p) lastPitch = p;
+    landed(r.change);
+  }
+
+  // ---- Lyrics: the field takes the selected note's syllable; space or "-" moves to the next
+  // note (a hyphen joins the syllables of a word), Enter too, Escape closes.
+  let hyphenBefore = false;
+  function openLyrics(open: boolean): void {
+    if (!open) {
+      lyricBar.hidden = true;
+      sync();
+      el.closest<HTMLElement>(".sv-shell")?.focus({ preventScroll: true });
+      return;
+    }
+    if (!sel) return;
+    if (input) setInput(false);
+    lyricBar.hidden = false;
+    hyphenBefore = false;
+    showLyric();
+    lyricInput.focus();
+    sync();
+  }
+  function showLyric(): void {
+    const ev = sel ? editor.eventAt(sel.at) : null;
+    lyricInput.value = ev && !ev.rest ? (lyricsOf(ev.notes[0])[0]?.text ?? "") : "";
+  }
+  function commitLyric(hyphen: boolean): void {
+    if (!sel) return;
+    const words = lyricInput.value.trim();
+    if (words) {
+      const syllabic = hyphenBefore ? (hyphen ? "middle" : "end") : hyphen ? "begin" : "single";
+      landed(editor.lyric(sel.at, words, syllabic));
+    }
+    hyphenBefore = hyphen && !!words;
+    const next = editor.nextEvent(sel.at);
+    if (next) sel = { at: next, note: null };
+    showLyric();
+    sync();
+  }
+  lyricInput.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === " " || e.key === "Enter" || e.key === "-") {
+      e.preventDefault();
+      commitLyric(e.key === "-");
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      openLyrics(false);
+    }
+  });
+
   function remove(): void {
     if (!sel) return;
+    if (sel.note && kid(sel.note, "grace")) {
+      landed(editor.removeGrace(sel.note));
+      sel = { at: sel.at, note: null };
+      return sync();
+    }
     if (sel.end) {
       const items = editor.eventsBetween(sel.at, sel.end);
       const change = editor.group(() => {
@@ -655,9 +809,17 @@ export function createEditing(host: EditingHost): Editing {
   }
 
   function key(e: KeyboardEvent): boolean {
-    if (!active) return false;
+    if (!active || e.target instanceof HTMLInputElement) return false;
     const k = e.key;
     const mod = e.ctrlKey || e.metaKey;
+    // MuseScore's keys for marks, slurs, grace notes and lyrics.
+    if (!mod && !e.altKey && e.shiftKey) {
+      const m = { S: "staccato", V: "accent", N: "tenuto", O: "strong-accent" }[k.toUpperCase()];
+      if (m) return mark(m), true;
+    }
+    if (!mod && !e.altKey && !e.shiftKey && (k === "s" || k === "S")) return slur(), true;
+    if (!mod && e.code === "Slash") return grace(!e.altKey), true;
+    if (mod && !e.altKey && (k === "l" || k === "L")) return openLyrics(true), true;
     if (mod && !e.altKey && (k === "z" || k === "Z")) {
       if (e.shiftKey) redo();
       else undo();
@@ -674,7 +836,7 @@ export function createEditing(host: EditingHost): Editing {
       sync();
       return true;
     }
-    if (k === "n" || k === "N") {
+    if ((k === "n" || k === "N") && !e.shiftKey) {
       if (mod) return false;
       setInput(!input);
       return true;
@@ -723,6 +885,8 @@ export function createEditing(host: EditingHost): Editing {
       active = false;
       el.hidden = true;
       input = false;
+      slurFrom = null;
+      lyricBar.hidden = true;
       view?.root.classList.remove("sv-inputting");
       bubble.remove();
       view?.showCaret(null);

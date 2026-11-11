@@ -5,7 +5,7 @@ import { kids, text } from "../model/xml";
 import { buildTimeline } from "../play/timeline";
 import { ScoreEditor, type Caret } from "./editor";
 import { readMeasure, voiceKey } from "./measure";
-import type { Pitch } from "./notes";
+import { lyricsOf, marksOf, readPitch, slursOf, type Pitch } from "./notes";
 
 const note = (step: string, dur: number, type: string, extra = "") => `<note><pitch><step>${step}</step><octave>4</octave></pitch><duration>${dur}</duration><voice>1</voice><type>${type}</type>${extra}</note>`;
 const rest = `<note><rest measure="yes"/><duration>4</duration><voice>1</voice></note>`;
@@ -178,5 +178,43 @@ describe("Entering notes", () => {
     const tabNotes = Array.from(g.measures[0][0].getElementsByTagName("note")).filter((n) => text(n, "staff") === "2" && n.getElementsByTagName("pitch").length);
     expect(tabNotes.map((n) => [text(n, "voice"), n.getElementsByTagName("string")[0]?.textContent, n.getElementsByTagName("fret")[0]?.textContent])).toEqual([["5", "3", "2"]]);
     expect(buildTimeline(g).events).toHaveLength(1);
+  });
+
+  it("adds and removes marks, slurs, grace notes and lyrics, all undoable", () => {
+    const s = score(note("C", 1, "quarter") + note("D", 1, "quarter") + note("E", 1, "quarter") + note("F", 1, "quarter"));
+    const ed = new ScoreEditor(s);
+    const notes = () => Array.from(s.measures[0][0].getElementsByTagName("note")).filter((n) => !n.getElementsByTagName("grace").length);
+    ed.mark(at(0, 0), "staccato");
+    ed.mark(at(0, 1), "accent");
+    ed.mark(at(0, 3), "fermata");
+    ed.mark(at(0, 2), "trill-mark");
+    expect(notes().map((n) => marksOf(n).join(","))).toEqual(["staccato", "accent", "trill-mark", "fermata"]);
+    ed.mark(at(0, 0), "staccato");
+    expect(marksOf(notes()[0])).toEqual([]);
+    ed.slur(at(0, 0), at(0, 2));
+    expect(notes().map((n) => slursOf(n).map((x) => x.type).join())).toEqual(["start", "", "stop", ""]);
+    ed.slur(at(0, 0), at(0, 2));
+    expect(notes().map((n) => slursOf(n).length)).toEqual([0, 0, 0, 0]);
+    const { grace } = ed.addGrace(at(0, 1), P("E"));
+    expect(grace && readPitch(grace)).toMatchObject({ step: "E" });
+    expect(readMeasure(s.measures[0][0]).voices.get(voiceKey(1, "1"))![1].graces).toHaveLength(1);
+    ed.lyric(at(0, 0), "Hel", "begin");
+    ed.lyric(at(0, 1), "lo", "end");
+    expect(notes().slice(0, 2).map((n) => lyricsOf(n)[0]?.text)).toEqual(["Hel", "lo"]);
+    // Playback still sounds the four notes and the grace note.
+    expect(buildTimeline(s).events.map((e) => e.midi)).toContain(64);
+    for (let i = 0; i < 10; i++) ed.undo();
+    expect(notes().map((n) => marksOf(n).length + slursOf(n).length + lyricsOf(n).length)).toEqual([0, 0, 0, 0]);
+  });
+
+  it("keeps a split note's marks on its first piece only", () => {
+    const s = score(rest, rest);
+    const ed = new ScoreEditor(s);
+    ed.enter(at(0, 3), { pitches: [P("C")], quarters: 1 });
+    ed.mark(at(0, 3), "accent");
+    ed.lyric(at(0, 3), "la");
+    ed.setLength(at(0, 3), 2);
+    const pieces = Array.from(s.root.getElementsByTagName("note")).filter((n) => n.getElementsByTagName("pitch").length);
+    expect(pieces.map((n) => [marksOf(n).join(), lyricsOf(n).length])).toEqual([["accent", 1], ["", 0]]);
   });
 });

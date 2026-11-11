@@ -39,6 +39,9 @@ const CSS = `
 .sv-loupe{position:fixed;z-index:20;transform:translate(-50%,calc(-100% - 36px));padding:6px 12px;border-radius:10px;background:var(--sv-chrome,#2b2f36);color:#fff;font:600 22px system-ui,sans-serif;box-shadow:0 4px 14px rgba(0,0,0,.35);pointer-events:none}
 .sv-loupe[hidden]{display:none}
 .sv-shell:focus{outline:none}
+.sv-lyric-bar{display:flex}.sv-lyric-bar[hidden]{display:none}
+.sv-lyric{flex:1 1 auto;min-width:0;font:16px system-ui,sans-serif;padding:8px 10px;border-radius:6px;border:1px solid var(--sv-btn-border,#4a4f57);background:var(--sv-btn,#3a3f47);color:inherit}
+.sv-pal-marks[hidden]{display:none}
 .sv-root.sv-inputting{touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
 .sv-caret{position:absolute;left:0;width:2px;margin-left:-1px;background:var(--sv-caret,#e8710a);border-radius:1px;pointer-events:none;z-index:2;animation:sv-blink 1s steps(2,start) infinite}
 @keyframes sv-blink{to{opacity:.25}}

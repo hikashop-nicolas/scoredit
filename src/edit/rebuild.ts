@@ -2,7 +2,7 @@ import { ScoreDoc } from "../model/score";
 import { kid, kids, text } from "../model/xml";
 import { ScoreEditor, type Caret } from "./editor";
 import { readMeasure, writeMeasure, type Event } from "./measure";
-import { midiOf, readPitch, type Pitch } from "./notes";
+import { lyricsOf, marksOf, midiOf, readPitch, slursOf, type Lyric, type Pitch, type SlurEnd } from "./notes";
 
 // Rebuilding a score through the editor, as a test of it: an empty copy of the score (bars,
 // signatures, clefs, repeats and text kept, every note a rest) gets each note entered again,
@@ -17,18 +17,24 @@ export interface Entry {
   ties: number[];
   /** The first note of a tuplet: lay out its slots first. */
   tuplet?: { quarters: number; actual: number; normal: number };
+  /** A rest to write as it is (it opens a tuplet or carries a fermata). */
+  rest?: boolean;
+  /** Articulations, ornaments, fermata. */
+  marks: string[];
+  graces: { pitch: Pitch; slash: boolean; chord: boolean; slurs: SlurEnd[] }[];
+  lyrics: Lyric[];
+  slurs: SlurEnd[];
 }
 
 /** What a rebuild could not enter (the editor does not do these yet), by kind. */
 export type Skipped = Record<string, number>;
 
 const NOT_ENTERED: [what: string, test: (n: Element) => boolean][] = [
-  ["grace notes", (n) => !!kid(n, "grace")],
-  ["slurs", (n) => n.getElementsByTagName("slur").length > 0],
-  ["articulations (accents, staccato...)", (n) => n.getElementsByTagName("articulations").length > 0],
-  ["ornaments (trills, mordents...)", (n) => n.getElementsByTagName("ornaments").length > 0],
-  ["fermatas", (n) => n.getElementsByTagName("fermata").length > 0],
-  ["lyrics", (n) => n.getElementsByTagName("lyric").length > 0],
+  ["tremolos", (n) => n.getElementsByTagName("tremolo").length > 0],
+  ["arpeggios", (n) => n.getElementsByTagName("arpeggiate").length > 0],
+  ["glissandos", (n) => n.getElementsByTagName("glissando").length + n.getElementsByTagName("slide").length > 0],
+  ["trill lines", (n) => n.getElementsByTagName("wavy-line").length > 0],
+  ["fingerings and bowings", (n) => Array.from(n.getElementsByTagName("technical")).some((t) => kids(t).some((c) => c.tagName !== "string" && c.tagName !== "fret"))],
 ];
 
 const TYPE_Q: Record<string, number> = { breve: 8, whole: 4, half: 2, quarter: 1, eighth: 0.5, "16th": 0.25, "32nd": 0.125, "64th": 0.0625, "128th": 0.03125 };
@@ -78,12 +84,26 @@ export function plan(score: ScoreDoc): { entries: Entry[]; skipped: Skipped } {
           const start = starts.get(i) ?? null;
           const at0: Caret = { part, measure: m, staff, voice, pos: ev.pos / per };
           // A tuplet that starts with a rest is laid out all the same.
-          if (ev.rest && start) entries.push({ at: at0, pitches: [], quarters: ev.dur / per, ties: [], tuplet: start });
+          const marks = [...new Set(ev.notes.flatMap(marksOf))];
+          const none = { graces: [], lyrics: [], slurs: [] };
+          // A rest opening a tuplet, or carrying a fermata, is written as it is.
+          if (ev.rest && (start || marks.length)) entries.push({ at: at0, pitches: [], quarters: ev.dur / per, ties: [], tuplet: start ?? undefined, rest: true, marks, ...none });
           if (ev.rest) return;
           const pitches = ev.notes.map(readPitch).filter((p): p is Pitch => !!p);
           if (!pitches.length) return;
           const at: Caret = { part, measure: m, staff, voice, pos: ev.pos / per };
-          const entry: Entry = { at, pitches, quarters: ev.dur / per, ties: ev.notes.filter((n) => kids(n, "tie").some((t) => t.getAttribute("type") === "start")).map((n) => midiOf(readPitch(n)!)).filter((x) => Number.isFinite(x)) };
+          const entry: Entry = {
+            at,
+            pitches,
+            quarters: ev.dur / per,
+            marks,
+            graces: ev.graces.flatMap((g) => {
+              const p = readPitch(g);
+              return p ? [{ pitch: p, slash: kid(g, "grace")?.getAttribute("slash") === "yes", chord: !!kid(g, "chord"), slurs: slursOf(g) }] : [];
+            }),
+            lyrics: ev.notes.flatMap(lyricsOf),
+            slurs: ev.notes.flatMap(slursOf),
+            ties: ev.notes.filter((n) => kids(n, "tie").some((t) => t.getAttribute("type") === "start")).map((n) => midiOf(readPitch(n)!)).filter((x) => Number.isFinite(x)) };
           if (start) entry.tuplet = start;
           entries.push(entry);
         });
@@ -135,8 +155,44 @@ export function rebuild(score: ScoreDoc): { doc: ScoreDoc; skipped: Skipped; ent
   for (const e of entries) {
     if (e.tuplet) ed.tuplet(e.at, e.tuplet.quarters, e.tuplet.actual, e.tuplet.normal);
     if (e.pitches.length) ed.enter(e.at, { pitches: e.pitches, quarters: e.quarters });
+    else if (e.rest) {
+      ed.enter(e.at, { pitches: null, quarters: e.quarters });
+      // Marked at once, so the rest is not merged with its neighbours.
+      for (const m of e.marks) ed.mark(e.at, m, true);
+    }
   }
   for (const e of entries) if (e.ties.length) ed.tieTo(e.at, e.ties);
+  // Then what goes on the notes: grace notes, marks, lyrics, and slurs end to end.
+  // Slurs pair by number in time order across a part (one may start in one voice or staff
+  // and end in another).
+  const ordered = [...entries].sort((a, b) => a.at.part - b.at.part || a.at.measure - b.at.measure || a.at.pos - b.at.pos || a.at.staff - b.at.staff || Number(a.at.voice) - Number(b.at.voice));
+  const graceEls = new Map<Entry, Element[]>();
+  for (const e of ordered) {
+    graceEls.set(e, e.graces.map((g) => ed.addGrace(e.at, g.pitch, g.slash, g.chord).grace).filter((g): g is Element => !!g));
+    for (const m of e.marks) ed.mark(e.at, m, true);
+    for (const l of e.lyrics) ed.lyric(e.at, l.text, l.syllabic, l.number);
+  }
+  // Slurs: the original's ends paired as the comparison pairs them, then drawn end to end.
+  type End = { at: Caret; grace?: Element };
+  const ends: SlurItem<End>[] = [];
+  for (const e of ordered) {
+    const t = e.at.measure * 1e6 + e.at.pos;
+    e.graces.forEach((g, gi) => {
+      const el = graceEls.get(e)?.[gi];
+      if (el) for (const end of g.slurs) ends.push({ t, order: gi, staff: String(e.at.staff), voice: e.at.voice, end, ref: { at: e.at, grace: el } });
+    });
+    for (const end of e.slurs) ends.push({ t, order: 100, staff: String(e.at.staff), voice: e.at.voice, end, ref: { at: e.at } });
+  }
+  const parts = new Map<number, SlurItem<End>[]>();
+  for (const x of ends) parts.set(x.ref.at.part, [...(parts.get(x.ref.at.part) ?? []), x]);
+  for (const [a, b] of [...parts.values()].flatMap((list) => pairEnds(list))) {
+    if (!a.grace && !b.grace) ed.slur(a.at, b.at, { add: true });
+    else {
+      const first = a.grace ?? ed.eventAt(a.at)?.notes[0];
+      const last = b.grace ?? ed.eventAt(b.at)?.notes[0];
+      if (first && last) ed.slurNotes(first, last);
+    }
+  }
   doc.refresh();
   return { doc, skipped, entered: entries.length };
 }
@@ -159,9 +215,25 @@ export function noteList(score: ScoreDoc): string[] {
         voices.set(key, list);
       }
     });
+    const paired = pairedSlurs(voices);
+    // A tab staff drawn from a notation staff shows its marks; only the notes count there.
+    const link = ed.fretted(p);
+    const derived = (key: string) => !!link && link.notation !== null && key.startsWith(`${link.tab}|`);
+    const count = (el: Element, type: "start" | "stop") => paired.get(el)?.[type] ?? 0;
     for (const [key, list] of voices)
       list.forEach(({ m, per, ev }, i) => {
+        const at = `${p}|${m}|${key.replace("|", ":")}|${Math.round((ev.pos / per) * 10080) / 10080}`;
+        const marks = derived(key) ? [] : [...new Set(ev.notes.flatMap(marksOf))].sort();
+        if (marks.length) out.push(`${at}|marks ${marks.join(" ")}${ev.rest ? " (on a rest)" : ""}`);
         if (ev.rest) return;
+        for (const g of derived(key) ? [] : ev.graces) {
+          const gp = readPitch(g);
+          if (gp) out.push(`${at}|grace ${midiOf(gp)}${kid(g, "grace")?.getAttribute("slash") === "yes" ? " slashed" : ""}${kid(g, "chord") ? " chord" : ""}${count(g, "start") + count(g, "stop") ? ` slur${" start".repeat(count(g, "start"))}${" stop".repeat(count(g, "stop"))}` : ""}`);
+        }
+        for (const l of derived(key) ? [] : ev.notes.flatMap(lyricsOf)) out.push(`${at}|lyric ${l.number} ${l.syllabic} ${l.text}`);
+        const starts = ev.notes.reduce((n, x) => n + count(x, "start"), 0);
+        const stops = ev.notes.reduce((n, x) => n + count(x, "stop"), 0);
+        if ((starts || stops) && !derived(key)) out.push(`${at}|slurs ${starts} start ${stops} end`);
         const next = list[i + 1]?.ev;
         for (const n of ev.notes) {
           const pitch = readPitch(n);
@@ -195,8 +267,83 @@ const NAMES = ["C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A�
 /** A note key from noteList in words: "part 1, bar 37, staff 2, beat 2: E3 for ½ beat (tied on)". */
 export function describeNote(key: string, score: ScoreDoc): string {
   const [p, m, staffVoice, beat, pitch, rest] = key.split("|");
+  const where = `${score.parts[Number(p)]?.name || `part ${Number(p) + 1}`}, bar ${Number(m) + 1}, staff ${staffVoice.split(":")[0]}, beat ${+(Number(beat) + 1).toFixed(3)}`;
+  const kind = pitch.split(" ")[0];
+  if (kind === "marks") return `${where}: ${pitch.slice(6).replace(/-/g, " ")}`;
+  if (kind === "grace") return `${where}: grace note ${NAMES[Number(pitch.split(" ")[1]) % 12] + (Math.floor(Number(pitch.split(" ")[1]) / 12) - 1)}${pitch.includes("slashed") ? " (slashed)" : ""}`;
+  if (kind === "lyric") {
+    const [, verse, syl, ...words] = pitch.split(" ");
+    return `${where}: lyric "${words.join(" ")}" (verse ${verse}, ${syl})`;
+  }
+  if (kind === "slurs") return `${where}: ${pitch.slice(6)} of slurs`;
   const [len, tied] = rest.split(" ");
   const name = pitch.startsWith("drum") ? pitch : NAMES[Number(pitch) % 12] + (Math.floor(Number(pitch) / 12) - 1);
   const part = score.parts[Number(p)]?.name || `part ${Number(p) + 1}`;
   return `${part}, bar ${Number(m) + 1}, staff ${staffVoice.split(":")[0]}, beat ${+(Number(beat) + 1).toFixed(3)}: ${name} for ${+Number(len).toFixed(3)} beat${tied ? ", tied on" : ""}`;
+}
+
+/**
+ * Slur ends that pair up (a start with a later stop of its number: same voice, else staff,
+ * else part), counted per note. A slur that never ends, or ends without a start, is left out.
+ */
+function pairedSlurs(voices: Map<string, { m: number; per: number; ev: Event }[]>): Map<Element, { start: number; stop: number }> {
+  const ends: SlurItem<Element>[] = [];
+  for (const [key, list] of voices) {
+    const [staff, voice] = key.split("|");
+    for (const { m, per, ev } of list) {
+      // A slur ending on a rest is not one edit mode makes; it drops like an unfinished one.
+      if (ev.rest) continue;
+      const t = m * 1e6 + ev.pos / per;
+      ev.graces.forEach((g, gi) => slursOf(g).forEach((end) => ends.push({ t, order: gi, staff, voice, end, ref: g })));
+      for (const n of ev.notes) for (const end of slursOf(n)) ends.push({ t, order: 100, staff, voice, end, ref: n });
+    }
+  }
+  const out = new Map<Element, { start: number; stop: number }>();
+  const bump = (el: Element, type: "start" | "stop") => {
+    const c = out.get(el) ?? { start: 0, stop: 0 };
+    c[type]++;
+    out.set(el, c);
+  };
+  for (const [a, b] of pairEnds(ends)) {
+    bump(a, "start");
+    bump(b, "stop");
+  }
+  return out;
+}
+
+/** A slur end in a part: when, where, and what it belongs to. */
+interface SlurItem<T> {
+  t: number;
+  /** Grace notes (their index) before the event's own notes (100). */
+  order: number;
+  staff: string;
+  voice: string;
+  end: SlurEnd;
+  ref: T;
+}
+
+/**
+ * Pairs slur ends in time order: a stop closes the latest open start of its number in the
+ * same voice, else staff, else part. Starts that never end, and stops without a start, drop.
+ */
+function pairEnds<T>(items: SlurItem<T>[]): [T, T][] {
+  const sorted = [...items].sort((a, b) => a.t - b.t || a.order - b.order || (a.end.type === "stop" ? -1 : 1) - (b.end.type === "stop" ? -1 : 1));
+  const open: SlurItem<T>[] = [];
+  const pairs: [T, T][] = [];
+  for (const e of sorted) {
+    if (e.end.type === "start") {
+      open.push(e);
+      continue;
+    }
+    let i = -1;
+    for (let level = 0; level < 3 && i < 0; level++)
+      for (let k = open.length - 1; k >= 0 && i < 0; k--) {
+        const o = open[k];
+        if (o.end.number === e.end.number && (level > 1 || o.staff === e.staff) && (level > 0 || o.voice === e.voice)) i = k;
+      }
+    if (i < 0) continue;
+    pairs.push([open[i].ref, e.ref]);
+    open.splice(i, 1);
+  }
+  return pairs;
 }

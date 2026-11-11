@@ -1,7 +1,7 @@
 import type { ScoreDoc } from "../model/score";
 import { kid, kids, text } from "../model/xml";
 import { readMeasure, voiceKey, writeMeasure, type Event, type ReadMeasure } from "./measure";
-import { TYPES, defaultPosition, isTied, placeInNote, setPosition, writtenFor, keyAlter, makeNote, midiOf, pieceOf, readPitch, setPitch, setTie, spellMidi, splitLength, type Pitch, type Written } from "./notes";
+import { TYPES, addSlur, defaultPosition, isTied, keepMarksFor, makeGrace, marksOf, placeInNote, removeSlur, setLyric, setMark, setPosition, slursOf, writtenFor, keyAlter, makeNote, midiOf, pieceOf, readPitch, setPitch, setTie, spellMidi, splitLength, type Pitch, type Written } from "./notes";
 
 /** Where the next note goes: a beat in one voice of one staff of a part. */
 export interface Caret {
@@ -20,6 +20,8 @@ export interface NoteInput {
   pitches: Pitch[] | null;
   /** Written length in quarter notes (dots included). */
   quarters: number;
+  /** Notes to copy instead of new ones (keeping their marks and lyrics). */
+  templates?: Element[];
 }
 
 /** Copied music: each event's pitches (null for a rest), length and tie on. */
@@ -47,6 +49,8 @@ interface Seg {
   intact: Element[] | null;
   /** A tuplet member: its ratio, written value and bracket marks, kept when the slot is filled. */
   tuplet?: Tuplet;
+  /** Entered as it is: not merged with the rests next to it in the write that enters it. */
+  keep?: boolean;
 }
 
 interface Tuplet {
@@ -142,8 +146,8 @@ export class ScoreEditor {
       let len = Math.round(input.quarters * perQuarter);
       const staves = this.staves(caret.part);
       const doc = this.score.doc;
-      const tmpl = input.pitches?.map((p) => makeNote(doc, { pitch: p, divs: 0, written: null, voice: caret.voice, staff: staves > 1 ? caret.staff : undefined })) ?? null;
-      let incoming: Seg[] = [{ len, notes: tmpl, graces: [], tieIn: false, tieOut: false, intact: null }];
+      const tmpl = input.templates ?? input.pitches?.map((p) => makeNote(doc, { pitch: p, divs: 0, written: null, voice: caret.voice, staff: staves > 1 ? caret.staff : undefined })) ?? null;
+      let incoming: Seg[] = [{ len, notes: tmpl, graces: [], tieIn: false, tieOut: false, intact: null, keep: !tmpl }];
       let m = caret.measure;
       let pos = Math.round(caret.pos * perQuarter);
       const start = pos;
@@ -292,7 +296,8 @@ export class ScoreEditor {
     const ev = this.eventAt(caret);
     if (!ev) return { caret, change: { from: caret.measure, to: caret.measure, appended: 0 } };
     const pitches = ev.rest ? null : ev.notes.map(readPitch).filter((p): p is Pitch => !!p);
-    return this.enter({ ...caret, pos: ev.pos / this.info(caret.part, caret.measure).perQuarter }, { pitches, quarters });
+    const templates = ev.rest ? undefined : ev.notes.map((n) => n.cloneNode(true) as Element);
+    return this.enter({ ...caret, pos: ev.pos / this.info(caret.part, caret.measure).perQuarter }, { pitches, quarters, templates });
   }
 
   /** Adds a pitch to the chord at the caret. */
@@ -439,6 +444,135 @@ export class ScoreEditor {
     if (!id) return "";
     for (const si of Array.from(this.score.root.getElementsByTagName("score-instrument"))) if (si.getAttribute("id") === id) return text(si, "instrument-name");
     return "";
+  }
+
+  /** The next event (notes only, unless rests too) after the one at the caret, in its voice. */
+  nextEvent(caret: Caret, rests = false): Caret | null {
+    const ev = this.eventAt(caret);
+    if (!ev) return null;
+    let at = this.advance(caret.part, caret.measure, ev.pos, ev.dur, caret);
+    for (let guard = 0; guard < 10000 && at.measure < this.score.measureCount; guard++) {
+      const next = this.eventAt(at);
+      if (!next) return null;
+      if (rests || !next.rest) return at;
+      at = this.advance(at.part, at.measure, next.pos, next.dur, at);
+    }
+    return null;
+  }
+
+  /** Puts a mark (accent, staccato, trill-mark, fermata...) on the event at the caret, or takes it off (on omitted: toggles). */
+  mark(caret: Caret, mark: string, on?: boolean): Change {
+    const ev = this.eventAt(caret);
+    // A rest takes a fermata only.
+    if (!ev || (ev.rest && mark !== "fermata")) return { from: caret.measure, to: caret.measure, appended: 0 };
+    return this.transact(() => {
+      this.touch(caret.part, caret.measure);
+      const want = on ?? !ev.notes.some((n) => marksOf(n).includes(mark));
+      // On the chord's first note, as MuseScore writes it; off every note.
+      ev.notes.forEach((n, i) => setMark(n, mark, want && i === 0));
+      return { from: caret.measure, to: caret.measure + 1, appended: 0 };
+    });
+  }
+
+  /**
+   * A slur from the event at a to the one at b (the next note when b is null). By default one
+   * already there is taken off instead; add: true always adds (two slurs can share ends).
+   */
+  slur(a: Caret, b: Caret | null, opts: { add?: boolean } = {}): Change {
+    const from = this.eventAt(a);
+    const end = b ?? this.nextEvent(a);
+    const to = end ? this.eventAt(end) : null;
+    if (!from || from.rest || !end || !to || to.rest || to === from) return { from: a.measure, to: a.measure, appended: 0 };
+    return this.transact(() => {
+      this.touch(a.part, a.measure);
+      this.touch(end.part, end.measure);
+      const first = from.notes[0];
+      const last = to.notes[0];
+      const existing = opts.add ? undefined : slursOf(first).find((sl) => sl.type === "start" && slursOf(last).some((x) => x.type === "stop" && x.number === sl.number));
+      if (existing) {
+        removeSlur(first, existing);
+        removeSlur(last, { type: "stop", number: existing.number });
+      } else {
+        // A number no slur uses in between.
+        const used = new Set([...this.eventsBetween(a, end).flatMap(({ ev }) => ev.notes.flatMap((n) => slursOf(n).map((x) => x.number))), ...slursOf(first).map((x) => x.number), ...slursOf(last).map((x) => x.number)]);
+        let number = 1;
+        while (used.has(number) && number < 16) number++;
+        addSlur(first, { type: "start", number });
+        addSlur(last, { type: "stop", number });
+      }
+      return { from: Math.min(a.measure, end.measure), to: Math.max(a.measure, end.measure) + 1, appended: 0 };
+    });
+  }
+
+  /** A slur from one note element to another (grace notes included). */
+  slurNotes(first: Element, last: Element): Change {
+    const a = this.locate(first);
+    const b = this.locate(last);
+    if (!a || !b) return { from: 0, to: 0, appended: 0 };
+    return this.transact(() => {
+      this.touch(a.part, a.measure);
+      this.touch(b.part, b.measure);
+      const used = new Set([...slursOf(first), ...slursOf(last)].map((x) => x.number));
+      let number = 1;
+      while (used.has(number) && number < 16) number++;
+      addSlur(first, { type: "start", number });
+      addSlur(last, { type: "stop", number });
+      return { from: Math.min(a.measure, b.measure), to: Math.max(a.measure, b.measure) + 1, appended: 0 };
+    });
+  }
+
+  /** A slur from a grace note to the event at the caret (its main note, usually). */
+  slurFromGrace(grace: Element, end: Caret): Change {
+    const at = this.locate(grace);
+    const to = this.eventAt(end);
+    if (!at || !to || to.rest) return { from: end.measure, to: end.measure, appended: 0 };
+    return this.transact(() => {
+      this.touch(at.part, at.measure);
+      this.touch(end.part, end.measure);
+      const used = new Set([...slursOf(grace), ...slursOf(to.notes[0])].map((x) => x.number));
+      let number = 1;
+      while (used.has(number) && number < 16) number++;
+      addSlur(grace, { type: "start", number });
+      addSlur(to.notes[0], { type: "stop", number });
+      return { from: at.measure, to: end.measure + 1, appended: 0 };
+    });
+  }
+
+  /** A grace note before the event at the caret (its first note's pitch unless given); returns it. */
+  /** chord: sounds with the grace note before it (a grace chord). */
+  addGrace(caret: Caret, pitch?: Pitch, slash = true, chord = false): { grace: Element | null; change: Change } {
+    const ev = this.eventAt(caret);
+    const p = pitch ?? (ev && !ev.rest ? readPitch(ev.notes[0]) : null);
+    if (!ev || ev.rest || !p) return { grace: null, change: { from: caret.measure, to: caret.measure, appended: 0 } };
+    return this.transact(() => {
+      this.touch(caret.part, caret.measure);
+      const staves = this.staves(caret.part);
+      const g = makeGrace(this.score.doc, { ...p, position: undefined }, caret.voice, staves > 1 ? caret.staff : undefined, slash, chord && ev.graces.length > 0);
+      ev.notes[0].parentElement!.insertBefore(g, ev.notes[0]);
+      return { grace: g, change: { from: caret.measure, to: caret.measure + 1, appended: 0 } };
+    });
+  }
+
+  /** Takes a grace note out. */
+  removeGrace(grace: Element): Change {
+    const at = this.locate(grace);
+    if (!at || !kid(grace, "grace")) return { from: 0, to: 0, appended: 0 };
+    return this.transact(() => {
+      this.touch(at.part, at.measure);
+      grace.remove();
+      return { from: at.measure, to: at.measure + 1, appended: 0 };
+    });
+  }
+
+  /** Sets the lyric of one verse on the event at the caret (no text removes it). */
+  lyric(caret: Caret, words: string | null, syllabic = "single", verse = "1"): Change {
+    const ev = this.eventAt(caret);
+    if (!ev || ev.rest) return { from: caret.measure, to: caret.measure, appended: 0 };
+    return this.transact(() => {
+      this.touch(caret.part, caret.measure);
+      setLyric(ev.notes[0], verse, words, syllabic);
+      return { from: caret.measure, to: caret.measure + 1, appended: 0 };
+    });
   }
 
   /** Moves a note up or down, with the notes tied to it. */
@@ -715,7 +849,8 @@ export class ScoreEditor {
     const merged: Seg[] = [];
     for (const seg of segs) {
       const prev = merged[merged.length - 1];
-      if (prev && !prev.notes && !seg.notes && !prev.tuplet && !seg.tuplet) merged[merged.length - 1] = { ...prev, len: prev.len + seg.len, intact: null };
+      const marked = (x: Seg) => !!x.intact?.some((n) => kid(n, "notations"));
+      if (prev && !prev.notes && !seg.notes && !prev.tuplet && !seg.tuplet && !marked(prev) && !marked(seg) && !prev.keep && !seg.keep) merged[merged.length - 1] = { ...prev, len: prev.len + seg.len, intact: null };
       else merged.push(seg);
     }
     for (const seg of merged) {
@@ -747,6 +882,8 @@ export class ScoreEditor {
           const notes = seg.notes
             ? seg.notes.map((t) => {
                 const c = pieceOf(t, w.divs, w);
+                // A piece carried on from a note cut earlier is never its first.
+                keepMarksFor(c, i === 0 && !seg.tieIn, i === pieces.length - 1 && !seg.tieOut);
                 for (const v of kids(c, "voice")) v.textContent = voice;
                 if (i > 0 || seg.tieIn) setTie(c, "stop", true);
                 if (i < pieces.length - 1 || seg.tieOut) setTie(c, "start", true);

@@ -55,10 +55,21 @@ export const HELPERS = `(() => {
             continue;
           }
           const tie = kidsOf(n, "tie").some((t) => t.getAttribute("type") === "start") ? " (tied to the next)" : "";
+          const extras = [];
+          for (const nots of kidsOf(n, "notations")) {
+            for (const g of [...kidsOf(nots, "articulations"), ...kidsOf(nots, "ornaments")]) for (const a of g.children) extras.push(a.tagName.replace("strong-accent", "marcato").replace("trill-mark", "trill"));
+            if (kidsOf(nots, "fermata").length) extras.push("fermata");
+            for (const sl of kidsOf(nots, "slur")) extras.push(sl.getAttribute("type") === "stop" ? "slur ends" : "slur starts");
+          }
+          for (const l of kidsOf(n, "lyric")) { const sy = txt(l, "syllabic"); extras.push('lyric "' + txt(l, "text") + (sy === "begin" || sy === "middle" ? "-" : "") + '"'); }
+          let g = n.previousElementSibling;
+          const graces = [];
+          while (g && g.tagName === "note" && kidsOf(g, "grace").length) { graces.unshift(noteName(score, g)); g = g.previousElementSibling; }
+          if (graces.length) extras.unshift("grace note " + graces.join(" "));
           const tech = n.getElementsByTagName("fret")[0] ? " (string " + deep(n, "string") + ", fret " + deep(n, "fret") + ")" : "";
-          out.push({ names: [name], v: value(n), tie, tech });
+          out.push({ names: [name], v: value(n), tie, tech, extras });
         }
-        return out.map((e) => (e.names[0] === "rest" ? (e.v === "whole bar" ? "whole-bar rest" : e.v + " rest") : e.names.join("+") + " " + e.v + e.tie + e.tech)).join(", ");
+        return out.map((e) => (e.names[0] === "rest" ? (e.v === "whole bar" ? "whole-bar rest" : e.v + " rest") : e.names.join("+") + " " + e.v + e.tie + e.tech + (e.extras.length ? " [" + e.extras.join("; ") + "]" : ""))).join(", ");
       });
     },
     sounds() {
@@ -69,6 +80,7 @@ export const HELPERS = `(() => {
         .map((e) => {
           const name = e.program === 128 ? DRUMS[e.midi] ?? "drum " + e.midi : midiName(e.midi);
           const beats = e.dur / perBeat;
+          if (e.grace) return name + " at bar " + (e.measure + 1) + " beat " + frac(e.onset + 1) + ", quick (grace note)";
           return name + " at bar " + (e.measure + 1) + " beat " + frac(e.onset + 1) + (e.program === 128 ? "" : " for " + frac(beats) + (Math.abs(beats - 1) < 1e-3 || beats < 1 ? " beat" : " beats"));
         });
     },
@@ -119,6 +131,11 @@ export const HELPERS = `(() => {
         part: e.at.part, measure: e.at.measure, staff: e.at.staff, voice: e.at.voice, pos: e.at.pos,
         abs: starts[e.at.part][e.at.measure] + e.at.pos, quarters: e.quarters, tuplet: e.tuplet ?? null, ties: e.ties,
         notes: e.pitches.map((p) => ({ step: p.step, midi: midi(p), drum: !!p.unpitched })),
+        graces: e.graces.map((g) => ({ step: g.pitch.step, midi: midi(g.pitch), slash: g.slash, chord: g.chord, slurs: g.slurs.length })),
+        slurStarts: e.slurs.filter((x) => x.type === "start").length,
+        slurStops: e.slurs.filter((x) => x.type === "stop").length,
+        marks: e.marks,
+        lyrics: e.lyrics,
       }));
       window.__orig = orig;
       viewer.setScore(scoreditRebuild.emptyCopy(orig));
@@ -130,6 +147,12 @@ export const HELPERS = `(() => {
       if (!ev || ev.rest) return [];
       const STEPS7 = [0, 2, 4, 5, 7, 9, 11];
       return ev.notes.map((n) => { const p = n.getElementsByTagName("pitch")[0]; if (!p) return null; return (Number(txt(p, "octave")) + 1) * 12 + STEPS7["CDEFGAB".indexOf(txt(p, "step"))] + (Number(txt(p, "alter")) || 0); }).filter((x) => x !== null);
+    },
+    graceMidisAt(part, measure, staff, voice, pos) {
+      const ed = new scoreditLib.ScoreEditor(viewer.score, { history: false });
+      const ev = ed.eventAt({ part, measure, staff, voice, pos });
+      const STEPS7 = [0, 2, 4, 5, 7, 9, 11];
+      return (ev?.graces ?? []).map((n) => { const p = n.getElementsByTagName("pitch")[0]; return (Number(txt(p, "octave")) + 1) * 12 + STEPS7["CDEFGAB".indexOf(txt(p, "step"))] + (Number(txt(p, "alter")) || 0); });
     },
     finishRebuild() {
       const r = scoreditRebuild.compareNotes(window.__orig, viewer.score);
@@ -488,6 +511,80 @@ export const scenarios = [
     },
   },
   {
+    id: "marks-keys",
+    title: "Accent, staccato, tenuto and marcato from the keyboard",
+    device: "desktop",
+    fixture: "piano.musicxml",
+    why: "Marks tell how a note is played: an accent (>) louder, staccato (a dot) short, tenuto (a line) held, marcato (^) strongly marked. MuseScore's keys put them on the note just entered: Shift+V, Shift+S, Shift+N, Shift+O.",
+    look: "Four notes in bar 1, each with a different small sign above or below it.",
+    async run(d) {
+      await d.key("n");
+      await d.key("5");
+      for (const [note, k] of [["c", "v"], ["d", "s"], ["e", "n"], ["f", "o"]]) {
+        await d.key(note);
+        await d.key(k, { shift: true });
+      }
+      await d.bars({ 1: "C5 quarter [accent], D5 quarter [staccato], E5 quarter [tenuto], F5 quarter [marcato]" });
+    },
+  },
+  {
+    id: "slur-and-grace",
+    title: "A slur from the keyboard, and a grace note before a note",
+    device: "desktop",
+    fixture: "piano.musicxml",
+    why: "A slur (a curve over several notes) means play them smoothly: in note input, S on the first note and S again on the last one draw it. A grace note is a tiny quick note before a main note: / adds one at the main note's pitch, and the arrow keys move it.",
+    look: "A curve over the first three notes of bar 1, and a small slashed note before the fourth.",
+    async run(d) {
+      await d.key("n");
+      await d.key("5");
+      await d.key("c");
+      await d.key("s");
+      await d.keys("de");
+      await d.key("s");
+      await d.key("f");
+      await d.key("/");
+      await d.key("ArrowUp");
+      await d.key("ArrowUp");
+      await d.bars({ 1: "C5 quarter [slur starts], D5 quarter, E5 quarter [slur ends], F5 quarter [grace note G5]" });
+      await d.sounds(["C5 at bar 1 beat 1 for 1 beat", "D5 at bar 1 beat 2 for 1 beat", "E5 at bar 1 beat 3 for 1 beat", "G5 at bar 1 beat 4, quick (grace note)", "F5 at bar 1 beat 4 for 1 beat"], "Playback (a quick grace note, then the main note)");
+    },
+  },
+  {
+    id: "marks-palette",
+    title: "On a phone, marks come from the Marks buttons",
+    device: "phone",
+    fixture: "piano.musicxml",
+    why: "The Marks button shows a row of signs to put on the selected note: here a trill (tr, a fast wavering) and a fermata (an arc with a dot: hold the note longer).",
+    look: "One note in bar 1 with tr and an arc with a dot above it.",
+    async run(d) {
+      await d.button("Note input");
+      await d.tapStaff(1, 1, 1, "E5");
+      await d.button("Marks");
+      await d.button("Trill");
+      await d.button("Fermata");
+      await d.bars({ 1: "E5 quarter [trill; fermata], quarter rest, half rest" });
+    },
+  },
+  {
+    id: "lyrics",
+    title: "Typing lyrics under the notes",
+    device: "desktop",
+    fixture: "melody.musicxml",
+    why: "Ctrl+L opens a field for the words sung on the selected note. Space moves to the next note; a hyphen also moves on and joins the two syllables of a word (Hel-lo).",
+    look: "The words Hel-lo world under the first three notes.",
+    async run(d) {
+      await d.tapStaff(1, 1, 1, "C4");
+      await d.key("l", { ctrl: true });
+      for (const c of "Hel") await d.key(c);
+      await d.key("-");
+      for (const c of "lo") await d.key(c);
+      await d.key(" ");
+      for (const c of "world") await d.key(c);
+      await d.key(" ");
+      await d.bars({ 1: 'C4 quarter [lyric "Hel-"], D4 quarter [lyric "lo"], E4 quarter [lyric "world"], F4 quarter' });
+    },
+  },
+  {
     id: "save-and-reopen",
     title: "What you entered is saved and comes back when the file is opened again",
     device: "desktop",
@@ -536,8 +633,8 @@ export const scenarios = [
     device: "desktop",
     corpus: "musescore-com/fur-elise-ms4.musicxml",
     edit: false,
-    why: "Every note of Für Elise is removed, then the whole piece is typed back in with the keyboard as a person would in note input: a number key for each note's length, a letter for its name, arrow keys to correct the octave or add a sharp, Shift+letter for chords, Ctrl+3 for triplets, rests where a hand is silent, and ArrowLeft then + to tie notes. At the end every note must be the same as in the original. Grace notes and slurs are left out (edit mode does not enter them yet).",
-    look: "The beginning of Für Elise, typed back in (slurs and the few grace notes missing).",
+    why: "Every note of Für Elise is removed, then the whole piece is typed back in with the keyboard as a person would in note input: a number key for each note's length, a letter for its name, arrow keys to correct the octave or add a sharp, Shift+letter for chords, Ctrl+3 for triplets, rests where a hand is silent, and ArrowLeft then + to tie notes. At the end every note must be the same as in the original. Grace notes are added with / and the arrows, and slurs with S on their first and last notes.",
+    look: "The beginning of Für Elise, typed back in with its slurs.",
     async run(d) {
       const prep = await d.eval("e2e.prepareRebuild()");
       d.note(`Empty the score (${prep.measures} bars) and press Edit`);
@@ -576,6 +673,8 @@ export const scenarios = [
         return true;
       };
       let notes = 0;
+      let graces = 0;
+      let slurs = 0;
       let fixes = 0;
       let ties = 0;
       const problems = [];
@@ -636,6 +735,29 @@ export const scenarios = [
             while (diff < 0) (await key("ArrowDown"), diff++, fixes++);
             placed.push(n.midi);
           }
+          // Grace notes: "/" adds one at the note's pitch (Alt+/ unslashed), arrows move it.
+          for (const g of e.graces) {
+            if (g.chord) problems.push(`bar ${e.measure + 1}: a grace chord cannot be typed`);
+            await key("/", g.slash ? undefined : { alt: true });
+            const gs = await d.eval(`e2e.graceMidisAt(${where})`);
+            let gd = g.midi - (gs[gs.length - 1] ?? g.midi);
+            while (gd >= 12) (await key("ArrowUp", { ctrl: true }), (gd -= 12), fixes++);
+            while (gd <= -12) (await key("ArrowDown", { ctrl: true }), (gd += 12), fixes++);
+            while (gd > 0) (await key("ArrowUp"), gd--, fixes++);
+            while (gd < 0) (await key("ArrowDown"), gd++, fixes++);
+            graces++;
+            if (g.slurs) problems.push(`bar ${e.measure + 1}: a slur from a grace note cannot be typed`);
+          }
+          // Marks by their MuseScore keys.
+          const MARK_KEYS = { staccato: "S", accent: "V", tenuto: "N", "strong-accent": "O" };
+          for (const m of e.marks) {
+            if (MARK_KEYS[m]) await key(MARK_KEYS[m].toLowerCase(), { shift: true });
+            else problems.push(`bar ${e.measure + 1}: the ${m} mark has no key`);
+          }
+          // Slurs: S closes the open one here, S opens one here.
+          if (e.slurStops > 1 || e.slurStarts > 1) problems.push(`bar ${e.measure + 1}: overlapping slurs cannot be typed with S`);
+          for (let s = 0; s < Math.min(1, e.slurStops); s++) (await key("s"), slurs++);
+          for (let s = 0; s < Math.min(1, e.slurStarts); s++) await key("s");
           notes++;
           if (prev?.ties.length) {
             const same = prev.notes.map((n) => n.midi).sort().join() === e.notes.map((n) => n.midi).sort().join();
@@ -649,7 +771,7 @@ export const scenarios = [
           prev = e;
         }
       }
-      d.note(`In all: ${notes} notes and chords, ${keys} key presses (${fixes} arrow corrections, ${ties} ties)`);
+      d.note(`In all: ${notes} notes and chords, ${graces} grace notes, ${slurs} slurs, ${keys} key presses (${fixes} arrow corrections, ${ties} ties)`);
       const during = d.takeErrors();
       await d.run("Scroll through the whole piece", "(async () => { const r = document.querySelector('.sv-root'); r.scrollTop = 0; for (let i = 0; i < 40; i++) { r.scrollTop += r.clientHeight; await new Promise((x) => setTimeout(x, 250)); } })()");
       const after = d.takeErrors();
