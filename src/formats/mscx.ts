@@ -393,6 +393,9 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
   const ms2Lines = new Map<string, string>();
 
   // MuseScore 2 tie ids, to tell a tie's end from another spanner's.
+  // MuseScore 2 slurs: only those that end somewhere are drawn; overlapping ones get their own number.
+  const slurStops = new Set(Array.from(score.getElementsByTagName("Slur")).flatMap((e) => (e.getAttribute("type") === "stop" ? [e.getAttribute("id") ?? ""] : [])));
+  const slurNumbers = new Map<string, number>();
   const tieIds = new Set(Array.from(score.getElementsByTagName("Tie")).map((t) => t.getAttribute("id") ?? "").filter(Boolean));
 
   // Jumps name their markers: play until one, then continue at another.
@@ -754,10 +757,20 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
                     for (const s of gall(cg, "Spanner").filter((x) => x.getAttribute("type") === "Slur")) {
                       el(notations(), "slur", null, { type: kid(s, "next") ? "start" : "stop", number: 1 });
                     }
-                    // MuseScore 2 marks a slur's ends on the chords themselves (not yet seen in a real file).
+                    // MuseScore 2 marks a slur's ends on the chords themselves.
                     for (const s of gall(cg, "Slur")) {
                       const type = s.getAttribute("type");
-                      if (type === "start" || type === "stop") el(notations(), "slur", null, { type, number: 1 });
+                      const id = s.getAttribute("id") ?? "";
+                      if (type === "start" && slurStops.has(id)) {
+                        const used = new Set(slurNumbers.values());
+                        let number = 1;
+                        while (used.has(number) && number < 16) number++;
+                        slurNumbers.set(id, number);
+                        el(notations(), "slur", null, { type, number });
+                      } else if (type === "stop" && slurNumbers.has(id)) {
+                        el(notations(), "slur", null, { type, number: slurNumbers.get(id)! });
+                        slurNumbers.delete(id);
+                      }
                     }
                     const bows = gall(cg, "Articulation").map((a) => TECHNICAL[text(a, "subtype")]).filter(Boolean);
                     if (bows.length) {
