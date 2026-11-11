@@ -15,7 +15,7 @@ function open(bytes: Uint8Array, name: string): void {
   renderMs = 0;
   const t0 = performance.now();
   try {
-    const { score, format } = loadScore(bytes);
+    const { score, format } = loadScore(bytes, { tab: new URLSearchParams(location.search).get("tab") === "1" ? "always" : "auto" });
     const parsed = performance.now() - t0;
     (window as unknown as { viewer?: unknown }).viewer = null;
     viewer = createScoreViewer(host, score, {

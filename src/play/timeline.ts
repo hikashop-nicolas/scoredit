@@ -17,6 +17,17 @@ export interface NoteEvent {
   el: Element;
   /** A grace note (sounds just before its beat). */
   grace?: boolean;
+  /** Ornaments that change how the note sounds, expanded once the timeline is built. */
+  trillUpper?: number;
+  tremolo?: { type: string; strokes: number; quarters: number };
+}
+
+/** A MIDI controller change (the sustain pedal). */
+export interface ControlEvent {
+  time: number;
+  channel: number;
+  cc: number;
+  value: number;
 }
 
 /** One measure as played: where it starts and ends in time. */
@@ -32,6 +43,7 @@ export interface MeasureSpan {
 
 export interface Timeline {
   events: NoteEvent[];
+  controls: ControlEvent[];
   spans: MeasureSpan[];
   duration: number;
   /** General MIDI program (0-127) per channel in use. */
@@ -249,6 +261,7 @@ export function buildTimeline(score: ScoreDoc): Timeline {
   // Notes, per pass through each measure.
   const events: NoteEvent[] = [];
   const velocity = parts.map(() => 80);
+  const controls: ControlEvent[] = [];
   // Ties left open at the end of a measure, picked up by the next one played.
   const carry = new Map<string, NoteEvent>();
   for (const span of spans) {
@@ -260,6 +273,7 @@ export function buildTimeline(score: ScoreDoc): Timeline {
       let div = Number(text(at.find((e) => e.tagName === "divisions"))) || 1;
       const tr = at.find((e) => e.tagName === "transpose");
       let shift = tr ? (Number(text(tr, "chromatic")) || 0) + 12 * (Number(text(tr, "octave-change")) || 0) : 0;
+      let fifths = Number(text(at.find((e) => e.tagName === "key"), "fifths")) || 0;
       let pos = 0;
       let lastOnset = 0;
       const tied = new Map<string, NoteEvent>();
@@ -268,6 +282,8 @@ export function buildTimeline(score: ScoreDoc): Timeline {
         switch (c.tagName) {
           case "attributes": {
             div = Number(text(c, "divisions")) || div;
+            const kk = kid(c, "key");
+            if (kk) fifths = Number(text(kk, "fifths")) || 0;
             const tt = kid(c, "transpose");
             if (tt) shift = (Number(text(tt, "chromatic")) || 0) + 12 * (Number(text(tt, "octave-change")) || 0);
             break;
@@ -279,6 +295,14 @@ export function buildTimeline(score: ScoreDoc): Timeline {
             pos += dur;
             break;
           case "direction": {
+            const pd = c.getElementsByTagName("pedal")[0];
+            if (pd) {
+              const at = span.start + quarterToSec(span, pos / div);
+              const type = pd.getAttribute("type");
+              const ch = parts[p].channel;
+              if (type === "stop" || type === "change") controls.push({ time: at, channel: ch, cc: 64, value: 0 });
+              if (type === "start" || type === "change" || type === "resume") controls.push({ time: at + (type === "change" ? 0.02 : 0), channel: ch, cc: 64, value: 127 });
+            }
             const d = c.getElementsByTagName("dynamics")[0];
             const mark = d?.firstElementChild?.tagName;
             const snd = Number(kid(c, "sound")?.getAttribute("dynamics"));
@@ -321,6 +345,9 @@ export function buildTimeline(score: ScoreDoc): Timeline {
               break;
             }
             const ev: NoteEvent = { time: start, dur: length, midi, velocity: velocity[p], channel: parts[p].channel, part: p, staff, measure: m, onset, el: c };
+            if (c.getElementsByTagName("trill-mark").length) ev.trillUpper = upperNeighbour(text(pitch, "step"), Number(text(pitch, "octave")), fifths) + shift;
+            const trem = c.getElementsByTagName("tremolo")[0];
+            if (trem) ev.tremolo = { type: trem.getAttribute("type") ?? "single", strokes: Number(trem.textContent) || 2, quarters: q };
             events.push(ev);
             if (ties.includes("start")) tied.set(key, ev);
             break;
@@ -332,7 +359,8 @@ export function buildTimeline(score: ScoreDoc): Timeline {
     });
   }
   events.sort((a, b) => a.time - b.time);
-  return { events, spans, duration: t, programs };
+  controls.sort((a, b) => a.time - b.time);
+  return { events: expand(dedupe(events)), controls, spans, duration: t, programs };
 }
 
 /** Seconds from the start of a measure to quarter offset q in it. */
@@ -358,4 +386,73 @@ export function secToQuarter(span: MeasureSpan, sec: number): number {
     s += segment;
   }
   return span.quarters;
+}
+
+const LETTERS = "CDEFGAB";
+const SHARPS = "FCGDAEB";
+const FLATS = "BEADGCF";
+
+/** MIDI pitch of the scale step above (step, octave) in a key of `fifths`. */
+export function upperNeighbour(step: string, octave: number, fifths: number): number {
+  const i = LETTERS.indexOf(step);
+  const up = LETTERS[(i + 1) % 7];
+  const oct = octave + (i === 6 ? 1 : 0);
+  const alter = fifths > 0 && SHARPS.indexOf(up) < fifths ? 1 : fifths < 0 && FLATS.indexOf(up) < -fifths ? -1 : 0;
+  return (oct + 1) * 12 + STEP[up] + alter;
+}
+
+// The same note twice at once in one part (a tab staff linked to the standard staff) sounds once.
+function dedupe(events: NoteEvent[]): NoteEvent[] {
+  const seen = new Set<string>();
+  return events.filter((e) => {
+    const k = `${e.part}|${Math.round(e.time * 1000)}|${e.midi}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
+
+// Trills alternate with the upper note; tremolos repeat a note, or alternate two chords.
+function expand(events: NoteEvent[]): NoteEvent[] {
+  if (!events.some((e) => e.trillUpper !== undefined || e.tremolo)) return events;
+  const out: NoteEvent[] = [];
+  const split = (e: NoteEvent, step: number, pick: (k: number) => number) => {
+    const n = Math.max(1, Math.round(e.dur / step));
+    const d = e.dur / n;
+    for (let k = 0; k < n; k++) out.push({ ...e, time: e.time + k * d, dur: d, midi: pick(k), trillUpper: undefined, tremolo: undefined });
+  };
+  const stops = new Map<string, NoteEvent[]>();
+  for (const e of events) {
+    if (e.tremolo?.type === "stop") {
+      const k = `${e.part}|${e.staff}|${Math.round(e.time * 1000)}`;
+      (stops.get(k) ?? stops.set(k, []).get(k)!).push(e);
+    }
+  }
+  const used = new Set<NoteEvent>();
+  for (const e of events) {
+    if (used.has(e)) continue;
+    if (e.trillUpper !== undefined) {
+      const step = Math.min(0.12, Math.max(0.06, e.dur / Math.max(1, Math.round(e.dur / 0.09))));
+      split(e, step, (k) => (k % 2 ? e.trillUpper! : e.midi));
+    } else if (e.tremolo?.type === "single") {
+      const per = (e.tremolo.quarters > 0 ? e.dur / e.tremolo.quarters : e.dur) / 2 ** e.tremolo.strokes;
+      split(e, Math.max(0.04, per), () => e.midi);
+    } else if (e.tremolo?.type === "start") {
+      // The chord paired with this one starts where it ends; both share the whole length.
+      const partner = (stops.get(`${e.part}|${e.staff}|${Math.round((e.time + e.dur) * 1000)}`) ?? []).filter((b) => !used.has(b));
+      const pairedDur = partner[0]?.dur ?? (stops.get(`${e.part}|${e.staff}|${Math.round((e.time + e.dur) * 1000)}`)?.[0]?.dur ?? 0);
+      const total = e.dur + pairedDur;
+      const per = Math.max(0.04, (e.tremolo.quarters > 0 ? e.dur / e.tremolo.quarters : e.dur) / 2 ** e.tremolo.strokes);
+      const n = Math.max(2, Math.round(total / per));
+      const d = total / n;
+      for (let k = 0; k < n; k++) {
+        if (k % 2 === 0) out.push({ ...e, time: e.time + k * d, dur: d, tremolo: undefined });
+        else for (const b of partner) out.push({ ...b, time: e.time + k * d, dur: d, tremolo: undefined });
+      }
+      for (const b of partner) used.add(b);
+    } else if (e.tremolo?.type === "stop") {
+      out.push({ ...e, tremolo: undefined }); // no partner found: plays as written
+    } else out.push(e);
+  }
+  return out.sort((a, b) => a.time - b.time);
 }

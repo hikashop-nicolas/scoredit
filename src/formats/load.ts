@@ -1,6 +1,6 @@
 import { ScoreDoc } from "../model/score";
 import { detectFormat, type ScoreFormat } from "./detect";
-import { readMscx, readMscz } from "./mscx";
+import { readMscx, readMscz, readMsczExcerpts, type MscxOptions } from "./mscx";
 import { readMxl } from "./mxl";
 
 export interface LoadedScore {
@@ -8,7 +8,12 @@ export interface LoadedScore {
   score: ScoreDoc;
 }
 
-export function loadScore(bytes: Uint8Array): LoadedScore {
+export interface LoadOptions {
+  /** Tab staff for fretted MuseScore parts: "auto" where MuseScore had one (default), "always", "never". */
+  tab?: MscxOptions["tab"];
+}
+
+export function loadScore(bytes: Uint8Array, opts: LoadOptions = {}): LoadedScore {
   const format = detectFormat(bytes);
   switch (format) {
     case "musicxml":
@@ -17,7 +22,8 @@ export function loadScore(bytes: Uint8Array): LoadedScore {
       return { format, score: new ScoreDoc(readMxl(bytes)) };
     case "mscz":
     case "mscx": {
-      const { doc, sections } = readMscx(format === "mscz" ? readMscz(bytes) : new TextDecoder().decode(bytes));
+      const zip = format === "mscz";
+      const { doc, sections } = readMscx(zip ? readMscz(bytes) : new TextDecoder().decode(bytes), { tab: opts.tab, excerpts: zip ? readMsczExcerpts(bytes) : [] });
       const score = new ScoreDoc(doc);
       score.sections = sections;
       return { format, score };

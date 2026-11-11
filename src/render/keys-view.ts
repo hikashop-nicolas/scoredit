@@ -1,6 +1,6 @@
 import type { ScoreDoc } from "../model/score";
 import type { NoteEvent, Timeline } from "../play/timeline";
-import { HAND_COLORS, Keyboard } from "../ui/keyboard";
+import { HAND_COLORS, Keyboard, noteLane } from "../ui/keyboard";
 import type { View, ViewOptions } from "./view";
 
 /** Seconds of music above the keyboard at zoom 1. */
@@ -77,23 +77,38 @@ export function createKeysView(score: ScoreDoc, timeline: () => Timeline, opts: 
     for (const [m, k] of keys) if (m % 12 === 0) g.fillRect(k.x, 0, 1, h);
     const pps = (h / SECONDS) * shown;
     const until = time + h / pps;
+    // A gap at the end of each note, so two strokes of one key read as two.
+    const gap = Math.max(3, 0.05 * pps);
     for (let i = firstAt(time - maxDur); i < tl.events.length; i++) {
       const e = tl.events[i];
       if (e.time > until) break;
       if (e.time + e.dur < time) continue;
-      const k = keys.get(e.midi);
-      if (!k) continue;
+      const lane = noteLane(keys, e.midi);
+      if (!lane) continue;
+      const black = keys.get(e.midi)!.black;
       const bottom = h - (e.time - time) * pps;
-      const top = bottom - e.dur * pps;
+      const top = bottom - Math.max(gap + 2, e.dur * pps) + gap;
       const on = e.time <= time && e.time + e.dur > time;
       const c = color(e);
-      if (on) kb.setLit(e.midi, c);
-      const x = k.x + (k.black ? 0 : 1);
-      const bw = Math.max(2, k.w - (k.black ? 0 : 2));
-      g.globalAlpha = on ? 1 : 0.85;
-      g.fillStyle = c;
-      roundRect(g, x, Math.max(-4, top), bw, Math.min(h + 4, bottom) - Math.max(-4, top), Math.min(4, bw / 3));
+      // A key struck again flashes lighter for a moment.
+      if (on) kb.setLit(e.midi, time - e.time < 0.09 ? lighten(c, 0.45) : c);
+      const x = lane.x + 1;
+      const bw = Math.max(2, lane.w - 2);
+      const y0 = Math.max(-4, top);
+      const y1 = Math.min(h + 4, bottom);
+      g.globalAlpha = on ? 1 : 0.88;
+      g.fillStyle = black ? darken(c, 0.3) : c;
+      roundRect(g, x, y0, bw, y1 - y0, Math.min(4, bw / 3));
       g.fill();
+      // The strike edge: a light band where the note starts.
+      g.fillStyle = lighten(c, 0.55);
+      g.fillRect(x, Math.max(y0, y1 - 3), bw, Math.min(3, y1 - y0));
+      if (black) {
+        g.strokeStyle = "rgba(0,0,0,.55)";
+        g.lineWidth = 1;
+        roundRect(g, x + 0.5, y0 + 0.5, bw - 1, y1 - y0 - 1, Math.min(4, bw / 3));
+        g.stroke();
+      }
     }
     g.globalAlpha = 1;
     kb.draw();
@@ -141,3 +156,11 @@ function roundRect(g: CanvasRenderingContext2D, x: number, y: number, w: number,
   g.arcTo(x, y, x + w, y, r);
   g.closePath();
 }
+
+function mix(hex: string, to: number, t: number): string {
+  const n = parseInt(hex.slice(1), 16);
+  const ch = (v: number) => Math.round(v + (to - v) * t);
+  return `rgb(${ch((n >> 16) & 255)},${ch((n >> 8) & 255)},${ch(n & 255)})`;
+}
+const lighten = (hex: string, t: number) => mix(hex, 255, t);
+const darken = (hex: string, t: number) => mix(hex, 0, t);

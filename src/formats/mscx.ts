@@ -63,9 +63,40 @@ export function readMscz(bytes: Uint8Array): string {
     const m = /<rootfile[^>]*full-path="([^"]+\.mscx)"/.exec(strFromU8(container));
     if (m && files[m[1]]) return strFromU8(files[m[1]]);
   }
-  const name = Object.keys(files).find((n) => n.endsWith(".mscx"));
+  const names = Object.keys(files).filter((n) => n.endsWith(".mscx"));
+  const name = names.find((n) => !n.startsWith("Excerpts/")) ?? names[0];
   if (!name) throw new Error("No MuseScore score inside the file");
   return strFromU8(files[name]);
+}
+
+/** The other scores in an .mscz: MuseScore's instrument parts (Excerpts/...). */
+export function readMsczExcerpts(bytes: Uint8Array): string[] {
+  const files = unzipSync(bytes, { filter: (f) => f.name.startsWith("Excerpts/") && f.name.endsWith(".mscx") });
+  return Object.values(files).map((f) => strFromU8(f));
+}
+
+export interface MscxOptions {
+  /** MuseScore's instrument parts, where a tab staff may live that the score does not show. */
+  excerpts?: string[];
+  /** Tab staff for fretted parts: "auto" where MuseScore had one, "always", or "never". */
+  tab?: "auto" | "always" | "never";
+}
+
+const SHARP_NAMES: [string, number][] = [["C", 0], ["C", 1], ["D", 0], ["D", 1], ["E", 0], ["F", 0], ["F", 1], ["G", 0], ["G", 1], ["A", 0], ["A", 1], ["B", 0]];
+
+/** Instruments (id or name) that have a tab staff in one of MuseScore's instrument parts. */
+function tabInstruments(excerpts: string[]): Set<string> {
+  const out = new Set<string>();
+  for (const x of excerpts) {
+    for (const block of x.match(/<Part[\s>][\s\S]*?<\/Part>/g) ?? []) {
+      if (!/group="tablature"/.test(block)) continue;
+      const id = /<instrumentId>([^<]*)<\/instrumentId>/.exec(block)?.[1];
+      const name = /<trackName>([^<]*)<\/trackName>/.exec(block)?.[1];
+      if (id) out.add(id);
+      if (name) out.add(name);
+    }
+  }
+  return out;
 }
 
 const frac = (s: string | null | undefined): number => {
@@ -92,7 +123,13 @@ function firstClef(measure: Element | undefined): boolean {
   return false;
 }
 
-const plain = (el: Element | null): string => (el?.textContent ?? "").replace(/\s+/g, " ").trim();
+// Text content with MuseScore's line breaks (<br/>) as spaces.
+const plain = (el: Element | null): string => {
+  if (!el) return "";
+  const copy = el.cloneNode(true) as Element;
+  for (const br of Array.from(copy.getElementsByTagName("br"))) br.replaceWith(" ");
+  return (copy.textContent ?? "").replace(/\s+/g, " ").trim();
+};
 
 interface PartDef {
   id: string;
@@ -106,6 +143,9 @@ interface PartDef {
   diatonic: number;
   tab: boolean[];
   strings: number[];
+  /** Index of a tab staff scoredit adds (drawn from the notes' fret and string), or -1. */
+  virtual: number;
+  instrumentId: string;
 }
 
 /** MuseScore .mscx text to a MusicXML partwise document, plus where its sections start. */
@@ -113,7 +153,7 @@ export function mscxToMusicXml(source: string): Document {
   return readMscx(source).doc;
 }
 
-export function readMscx(source: string): { doc: Document; sections: number[] } {
+export function readMscx(source: string, opts: MscxOptions = {}): { doc: Document; sections: number[] } {
   const src = parseXml(source);
   const ms = src.documentElement;
   if (ms.tagName !== "museScore") throw new Error("Not a MuseScore file");
@@ -174,6 +214,8 @@ export function readMscx(source: string): { doc: Document; sections: number[] } 
       diatonic: Number(text(inst, "transposeDiatonic")) || 0,
       tab: types.map((t) => t === "tablature"),
       strings,
+      virtual: -1,
+      instrumentId: text(inst, "instrumentId"),
     };
   });
   const list = el(root, "part-list");
@@ -194,6 +236,18 @@ export function readMscx(source: string): { doc: Document; sections: number[] } 
     const ids = p.staves.map((_, k) => staffCursor + k);
     staffCursor += p.staves.length;
     return ids;
+  });
+  // A fretted part without a tab staff gets one when MuseScore had it in an instrument part
+  // (or always, if asked): the same measures again, drawn as tab.
+  const tabbed = tabInstruments(opts.excerpts ?? []);
+  parts.forEach((p, pi) => {
+    if (!p.strings.length || p.tab.includes(true) || p.drums) return;
+    const want = opts.tab === "always" || (opts.tab !== "never" && (tabbed.has(p.instrumentId) || tabbed.has(p.name)));
+    if (!want) return;
+    p.staves = [...p.staves, p.staves[0]];
+    p.tab = [...p.tab, true];
+    p.virtual = p.staves.length - 1;
+    partStaves[pi].push(partStaves[pi][0]);
   });
   const nMeasures = Math.max(0, ...measuresOf.map((m) => m.length));
 
@@ -253,8 +307,16 @@ export function readMscx(source: string): { doc: Document; sections: number[] } 
         p.staves.forEach((s, k) => {
           const def = text(s, "defaultClef");
           if (p.tab[k]) {
+            if (k === p.virtual || !firstClef(measuresOf[partStaves[pi][k]]?.[0])) addClef(attrs, "TAB", k + 1, p.staves.length > 1);
             const sd = el(attrs, "staff-details", null, p.staves.length > 1 ? { number: k + 1 } : undefined);
             el(sd, "staff-lines", p.strings.length || 6);
+            p.strings.forEach((midi, line) => {
+              const [step, alter] = SHARP_NAMES[midi % 12];
+              const tu = el(sd, "staff-tuning", null, { line: line + 1 });
+              el(tu, "tuning-step", step);
+              if (alter) el(tu, "tuning-alter", alter);
+              el(tu, "tuning-octave", Math.floor(midi / 12) - 1);
+            });
           } else if (!firstClef(measuresOf[partStaves[pi][k]]?.[0])) {
             // Every staff gets its clef: a lone numbered clef is taken for the first staff otherwise.
             addClef(attrs, def || (kid(s, "StaffType")?.getAttribute("group") === "percussion" ? "PERC" : "G"), k + 1, p.staves.length > 1);
@@ -273,11 +335,19 @@ export function readMscx(source: string): { doc: Document; sections: number[] } 
       partStaves[pi].forEach((staffIdx, k) => {
         const smeas = measuresOf[staffIdx]?.[m];
         if (!smeas) return;
+        const virtual = k === p.virtual;
+        // The added tab staff repeats the notes only: no texts, marks or clefs of its own.
+        const SKIP = new Set(["Clef", "Dynamic", "Tempo", "StaffText", "SystemText", "Expression", "RehearsalMark", "Spanner", "Fermata"]);
         kids(smeas, "voice").forEach((voice, v) => {
           let pos = 0;
+          // A trill line or two-chord tremolo starts on the next chord; a trill line ends on the last one.
+          let trillNext = false;
+          let tremoloStop = 0;
+          let lastFirst: Element | null = null;
           const tuplets: number[] = [];
           const tupletInfo: { actual: number; normal: number; base: string }[] = [];
           for (const c of kids(voice)) {
+            if (virtual && SKIP.has(c.tagName)) continue;
             switch (c.tagName) {
               case "location": {
                 pos += frac(text(c, "fractions"));
@@ -395,6 +465,21 @@ export function readMscx(source: string): { doc: Document; sections: number[] } 
                     el(dt, "octave-shift", null, { type: "stop", size: open ? (Math.abs(open[4]) / 12) * 7 + 1 : 8 });
                   }
                   if (p.staves.length > 1) el(dir, "staff", k + 1);
+                } else if (type === "Pedal") {
+                  goTo(pos);
+                  const pd = kid(c, "Pedal");
+                  const hidden = text(pd, "visible") === "0";
+                  const line = text(pd, "lineVisible") !== "0";
+                  const dir = el(meas, "direction", null, { placement: "below" });
+                  el(el(dir, "direction-type"), "pedal", null, { type: starts ? "start" : "stop", line: line ? "yes" : "no", ...(hidden ? { "print-object": "no" } : {}) });
+                  if (p.staves.length > 1) el(dir, "staff", k + 1);
+                } else if (type === "Trill") {
+                  if (starts) trillNext = true;
+                  else if (lastFirst) {
+                    const nt = kid(lastFirst, "notations") ?? el(lastFirst, "notations");
+                    const orn = kid(nt, "ornaments") ?? el(nt, "ornaments");
+                    el(orn, "wavy-line", null, { type: "stop" });
+                  }
                 } else if (type === "Volta" && pi === 0 && k === 0) {
                   const vt = kid(c, "Volta");
                   if (starts) voltaStart.set(m, text(vt, "endings") || "1");
@@ -420,8 +505,13 @@ export function readMscx(source: string): { doc: Document; sections: number[] } 
                 if (graceTag) whole = 0;
                 goTo(pos);
                 const notes = c.tagName === "Chord" ? kids(c, "Note") : [null];
+                const tremEl = kid(c, "TremoloSingleChord") ?? kid(c, "TremoloTwoChord") ?? kid(c, "Tremolo");
+                const tremSub = text(tremEl, "subtype");
+                const tremolo = tremEl ? { strokes: ({ 8: 1, 16: 2, 32: 3, 64: 4 } as Record<number, number>)[Number(tremSub.replace(/\D/g, ""))] ?? 2, two: tremSub.startsWith("c") } : null;
+                let firstNote: Element | null = null;
                 notes.forEach((n, ni) => {
                   const note = el(meas, "note");
+                  firstNote ??= note;
                   if (graceTag) el(note, "grace", null, graceTag === "acciaccatura" ? { slash: "yes" } : undefined);
                   if (ni > 0) el(note, "chord");
                   if (!n) {
@@ -460,9 +550,14 @@ export function readMscx(source: string): { doc: Document; sections: number[] } 
                   // Notations: ties, slurs, articulations, ornaments, fermata, tab string/fret.
                   const nots: Element[] = [];
                   const notations = () => (nots[0] ??= el(note, "notations"));
+                  const ornEls: Element[] = [];
+                  const ornaments = () => (ornEls[0] ??= el(notations(), "ornaments"));
+                  // Tremolos: repeated notes (r8, r16...) or two chords in alternation (c16, c32...).
+                  if (tremolo) el(ornaments(), "tremolo", tremolo.strokes, { type: tremolo.two ? "start" : "single" });
+                  else if (tremoloStop) el(ornaments(), "tremolo", tremoloStop, { type: "stop" });
                   if (tieStop) el(notations(), "tied", null, { type: "stop" });
                   if (tieStart) el(notations(), "tied", null, { type: "start" });
-                  if (ni === 0) {
+                  if (ni === 0 && !virtual) {
                     for (const s of kids(c, "Spanner").filter((x) => x.getAttribute("type") === "Slur")) {
                       el(notations(), "slur", null, { type: kid(s, "next") ? "start" : "stop", number: 1 });
                     }
@@ -472,9 +567,10 @@ export function readMscx(source: string): { doc: Document; sections: number[] } 
                       for (const x of arts) el(a, x);
                     }
                     const orns = [...kids(c, "Ornament"), ...kids(c, "Articulation")].map((a) => ORNAMENT[text(a, "subtype")]).filter(Boolean);
-                    if (orns.length) {
-                      const o = el(notations(), "ornaments");
-                      for (const x of orns) el(o, x);
+                    for (const x of orns) el(ornaments(), x);
+                    if (trillNext) {
+                      if (!orns.includes("trill-mark")) el(ornaments(), "trill-mark");
+                      el(ornaments(), "wavy-line", null, { type: "start" });
                     }
                     if (pendingFermata) {
                       el(notations(), "fermata", null, { type: "upright" });
@@ -483,15 +579,28 @@ export function readMscx(source: string): { doc: Document; sections: number[] } 
                     if (kid(c, "Arpeggio")) el(notations(), "arpeggiate");
                   }
                   if (n && p.tab[k]) {
-                    const fret = text(n, "fret");
-                    const str = text(n, "string");
+                    let fret = text(n, "fret");
+                    let str = text(n, "string");
+                    if ((fret === "" || str === "") && p.strings.length) {
+                      // No position stored: the lowest fret that reaches the note.
+                      const sounding = Number(text(n, "pitch"));
+                      let best = -1;
+                      p.strings.forEach((open, i) => {
+                        const f = sounding - open;
+                        if (f >= 0 && f <= 24 && (best < 0 || f < sounding - p.strings[best])) best = i;
+                      });
+                      if (best >= 0) {
+                        fret = String(sounding - p.strings[best]);
+                        str = String(p.strings.length - 1 - best);
+                      }
+                    }
                     if (fret !== "" && str !== "") {
                       const tech = el(notations(), "technical");
                       el(tech, "string", Number(str) + 1);
                       el(tech, "fret", fret);
                     }
                   }
-                  if (ni === 0) {
+                  if (ni === 0 && !virtual) {
                     for (const ly of kids(c, "Lyrics")) {
                       const lyric = el(note, "lyric", null, { number: (Number(text(ly, "no")) || 0) + 1 });
                       el(lyric, "syllabic", text(ly, "syllabic") || "single");
@@ -499,6 +608,11 @@ export function readMscx(source: string): { doc: Document; sections: number[] } 
                     }
                   }
                 });
+                if (c.tagName === "Chord") {
+                  if (trillNext) trillNext = false;
+                  tremoloStop = tremolo?.two ? tremolo.strokes : 0;
+                  if (!graceTag) lastFirst = firstNote;
+                }
                 emitted = pos + whole;
                 pos += whole;
                 break;
@@ -549,7 +663,8 @@ export function readMscx(source: string): { doc: Document; sections: number[] } 
 
   // MusicXML wants the children of <attributes> in schema order.
   for (const at of Array.from(root.getElementsByTagName("attributes"))) {
-    const sorted = kids(at).sort((a, b) => ATTR_ORDER.indexOf(a.tagName) - ATTR_ORDER.indexOf(b.tagName));
+    // Also by staff number: OSMD takes clefs in order, whatever their number says.
+    const sorted = kids(at).sort((a, b) => ATTR_ORDER.indexOf(a.tagName) - ATTR_ORDER.indexOf(b.tagName) || Number(a.getAttribute("number") ?? 0) - Number(b.getAttribute("number") ?? 0));
     for (const c of sorted) at.appendChild(c);
   }
 

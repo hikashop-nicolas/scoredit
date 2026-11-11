@@ -3,7 +3,7 @@ import type { ScoreDoc } from "../model/score";
 import { clampZoom, createBar, type LayoutMode } from "../ui/bar";
 import { Player } from "../play/player";
 import { buildTimeline, type Timeline } from "../play/timeline";
-import { Keyboard } from "../ui/keyboard";
+import { Keyboard, flash } from "../ui/keyboard";
 import { createKeysView, noteColors } from "./keys-view";
 import { createLineView, type LineView } from "./line-view";
 import { noteKey } from "./positions";
@@ -126,8 +126,15 @@ export function createScoreViewer(container: HTMLElement, score: ScoreDoc, opts:
       onNotes: (evs, on) => {
         view.highlight(evs.map((e) => noteKey(e.measure, e.onset)), on);
         if (kbd) {
-          for (const e of evs) kbd.setLit(e.midi, on ? color(e) : null);
-          kbd.draw();
+          const k = kbd;
+          // A key struck again flashes lighter for a moment, then takes its colour.
+          for (const e of evs) k.setLit(e.midi, on ? flash(color(e)) : null);
+          k.draw();
+          if (on)
+            setTimeout(() => {
+              for (const e of evs) if (k.isLit(e.midi)) k.setLit(e.midi, color(e));
+              k.draw();
+            }, 90);
         }
       },
       onStateChange: (on) => bar.setPlaying(on),

@@ -162,8 +162,10 @@ function carryAttributes(doc: Document, measure: Element, inForce: Element[]): v
     const copy = doc.importNode(e, true) as Element;
     // A new system repeats clef and key, not the time signature.
     if (copy.tagName === "time") copy.setAttribute("print-object", "no");
+    // In schema order, and by staff number within one kind: OSMD takes clefs in order.
     const rank = ATTR_ORDER.indexOf(copy.tagName);
-    const before = kids(at).find((c) => ATTR_ORDER.indexOf(c.tagName) > rank) ?? null;
+    const num = Number(copy.getAttribute("number") ?? 0);
+    const before = kids(at).find((c) => ATTR_ORDER.indexOf(c.tagName) > rank || (c.tagName === copy.tagName && Number(c.getAttribute("number") ?? 0) > num)) ?? null;
     at.insertBefore(copy, before);
   }
 }

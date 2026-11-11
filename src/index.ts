@@ -5,7 +5,7 @@
 // - layout/   system (line) breaking
 // - render/   the viewer: one OSMD render per system, rendered as it scrolls into view
 export { detectFormat, type ScoreFormat } from "./formats/detect";
-export { loadScore, type LoadedScore } from "./formats/load";
+export { loadScore, type LoadedScore, type LoadOptions } from "./formats/load";
 export { readMxl } from "./formats/mxl";
 export { ScoreDoc, type PartInfo } from "./model/score";
 export { breakSystems, systemOf, type SystemRange, type BreakOptions } from "./layout/systems";

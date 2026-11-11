@@ -34,6 +34,7 @@ export class Player {
   private startAt = 0; // audio time of piece time 0, at the current speed
   private offset = 0; // piece time where playback (re)started
   private next = 0; // index of the next event to schedule
+  private nextCtl = 0; // index of the next controller change
   private timer = 0;
   private raf = 0;
   private speed = 1;
@@ -89,6 +90,13 @@ export class Player {
     if (ctx.state === "suspended") void ctx.resume();
     for (const [ch, prog] of this.timeline.programs) s.send([0xc0 | ch, prog]);
     this.startAt = ctx.currentTime + 0.05 - this.offset / this.speed;
+    // Controllers in force where playback starts (a pedal held down), then the rest in time.
+    const ctl = this.timeline.controls;
+    this.nextCtl = ctl.findIndex((c) => c.time >= this.offset - 1e-6);
+    if (this.nextCtl < 0) this.nextCtl = ctl.length;
+    const state = new Map<string, [number, number, number]>();
+    for (let i = 0; i < this.nextCtl; i++) state.set(`${ctl[i].channel}:${ctl[i].cc}`, [ctl[i].channel, ctl[i].cc, ctl[i].value]);
+    for (const [ch, cc, v] of state.values()) s.send([0xb0 | ch, cc, v]);
     this.next = this.timeline.events.findIndex((e) => e.time >= this.offset - 1e-6);
     if (this.next < 0) this.next = this.timeline.events.length;
     this.playing = true;
@@ -105,7 +113,10 @@ export class Player {
     clearInterval(this.timer);
     cancelAnimationFrame(this.raf);
     const s = synth();
-    for (let ch = 0; ch < 16; ch++) s.send([0xb0 | ch, 120, 0]);
+    for (let ch = 0; ch < 16; ch++) {
+      s.send([0xb0 | ch, 64, 0]);
+      s.send([0xb0 | ch, 120, 0]);
+    }
     if (this.sounding.length) this.opts.onNotes?.(this.sounding, false);
     this.sounding = [];
     this.opts.onStateChange?.(false);
@@ -154,6 +165,11 @@ export class Player {
       const off = on + Math.max(0.05, e.dur / this.speed - 0.01);
       s.send([0x90 | e.channel, e.midi, e.velocity], on);
       s.send([0x80 | e.channel, e.midi, 0], off);
+    }
+    const ctl = this.timeline.controls;
+    while (this.nextCtl < ctl.length && ctl[this.nextCtl].time <= horizon) {
+      const c = ctl[this.nextCtl++];
+      s.send([0xb0 | c.channel, c.cc, c.value], this.startAt + c.time / this.speed);
     }
     if (this.next >= evs.length && now - this.startAt >= this.timeline.duration / this.speed + 0.3) {
       this.pause();

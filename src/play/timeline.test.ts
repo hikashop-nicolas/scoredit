@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { ScoreDoc } from "../model/score";
 import { positionAt } from "./player";
-import { buildTimeline, playOrder } from "./timeline";
+import { buildTimeline, playOrder, upperNeighbour } from "./timeline";
 
 const n = (step: string, dur: number, extra = "", octave = 4) => `<note><pitch><step>${step}</step><octave>${octave}</octave></pitch><duration>${dur}</duration>${extra}</note>`;
 const score = (measures: string[], partList = `<score-part id="P1"><part-name>P</part-name></score-part>`) =>
@@ -87,5 +87,51 @@ describe("buildTimeline", () => {
     const p = positionAt(tl.spans, 1.5);
     expect(p.span).toBe(1);
     expect(p.quarter).toBeCloseTo(0.5, 5);
+  });
+});
+
+describe("ornaments and pedal", () => {
+  const Q = `<attributes><divisions>4</divisions><key><fifths>1</fifths></key><time><beats>4</beats><beat-type>4</beat-type></time></attributes>`;
+  const orn = (x: string) => `<notations><ornaments>${x}</ornaments></notations>`;
+
+  it("finds the upper neighbour in the key", () => {
+    expect(upperNeighbour("E", 4, 1)).toBe(66); // F# in G major
+    expect(upperNeighbour("A", 4, -1)).toBe(70); // Bb in F major
+    expect(upperNeighbour("B", 4, 0)).toBe(72); // C5
+  });
+
+  it("plays a trill as an alternation with the upper note", () => {
+    const tl = buildTimeline(new ScoreDoc(score([Q + n("E", 16, orn("<trill-mark/>"))])));
+    const pitches = tl.events.map((e) => e.midi);
+    expect(pitches.length).toBeGreaterThan(8);
+    expect(new Set(pitches)).toEqual(new Set([64, 66]));
+    expect(pitches[0]).toBe(64);
+    expect(tl.events.at(-1)!.time + tl.events.at(-1)!.dur).toBeCloseTo(4 * 0.6, 5);
+  });
+
+  it("repeats a single-note tremolo at its stroke value", () => {
+    const tl = buildTimeline(new ScoreDoc(score([Q + n("C", 8, orn(`<tremolo type="single">2</tremolo>`))])));
+    expect(tl.events).toHaveLength(8); // a half note in 16ths
+    expect(new Set(tl.events.map((e) => e.midi))).toEqual(new Set([60]));
+  });
+
+  it("alternates the two chords of a two-chord tremolo over both lengths", () => {
+    const tl = buildTimeline(new ScoreDoc(score([Q + n("C", 8, orn(`<tremolo type="start">2</tremolo>`)) + n("G", 8, orn(`<tremolo type="stop">2</tremolo>`))])));
+    expect(tl.events.map((e) => e.midi)).toEqual([60, 67, 60, 67, 60, 67, 60, 67, 60, 67, 60, 67, 60, 67, 60, 67]);
+  });
+
+  it("turns pedal marks into sustain changes", () => {
+    const ped = (t: string) => `<direction><direction-type><pedal type="${t}"/></direction-type></direction>`;
+    const tl = buildTimeline(new ScoreDoc(score([Q + ped("start") + n("C", 8) + ped("stop") + n("D", 8)])));
+    expect(tl.controls.map((c) => [c.cc, c.value, c.time])).toEqual([
+      [64, 127, 0],
+      [64, 0, 1.2],
+    ]);
+  });
+
+  it("sounds once a note doubled on a linked staff", () => {
+    const two = `<attributes><divisions>1</divisions><staves>2</staves></attributes>`;
+    const tl = buildTimeline(new ScoreDoc(score([two + n("C", 4, "<staff>1</staff>") + `<backup><duration>4</duration></backup>` + n("C", 4, "<staff>2</staff>")])));
+    expect(tl.events).toHaveLength(1);
   });
 });

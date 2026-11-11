@@ -42,6 +42,28 @@ export function layoutKeys(lo: number, hi: number, width: number): Map<number, K
   return out;
 }
 
+/**
+ * The span of a key as seen from above, where it meets the falling notes: for a white key,
+ * the part between its black neighbours, so it never reads as the black key beside it.
+ */
+export function noteLane(keys: Map<number, KeyGeom>, midi: number): { x: number; w: number } | null {
+  const k = keys.get(midi);
+  if (!k) return null;
+  if (k.black) return { x: k.x, w: k.w };
+  const left = keys.get(midi - 1);
+  const right = keys.get(midi + 1);
+  const x0 = left?.black ? left.x + left.w : k.x;
+  const x1 = right?.black ? right.x : k.x + k.w;
+  return { x: x0, w: Math.max(2, x1 - x0) };
+}
+
+/** A lighter tint of a #rrggbb colour, for the moment a key is struck. */
+export function flash(hex: string, t = 0.45): string {
+  const n = parseInt(hex.slice(1), 16);
+  const ch = (v: number) => Math.round(v + (255 - v) * t);
+  return `rgb(${ch((n >> 16) & 255)},${ch((n >> 8) & 255)},${ch(n & 255)})`;
+}
+
 export class Keyboard {
   readonly canvas: HTMLCanvasElement;
   private lo = 48;
@@ -71,6 +93,10 @@ export class Keyboard {
   setLit(midi: number, color: string | null): void {
     if (color) this.lit.set(midi, color);
     else this.lit.delete(midi);
+  }
+
+  isLit(midi: number): boolean {
+    return this.lit.has(midi);
   }
 
   clearLit(): void {
