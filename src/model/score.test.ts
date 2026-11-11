@@ -157,4 +157,14 @@ describe("Showing some parts", () => {
   it("makes up short part names", () => {
     expect(["Piano", "Clarinetto in B♭ II", "Tamburo Militare", "Violin 2"].map(abbreviate)).toEqual(["Piano", "Clar. II", "Tamb.", "Violin 2"]);
   });
+
+  it("saves as compressed MusicXML and reads it back", async () => {
+    const { readMxl, writeMxl } = await import("../formats/mxl");
+    const s = new ScoreDoc(XML);
+    const back = new ScoreDoc(readMxl(writeMxl(s.serialize())));
+    expect(back.title).toBe("Little tune");
+    expect(back.measureCount).toBe(4);
+    const again = new ScoreDoc(readMxl(writeMxl(back.serialize(), writeMxl(s.serialize()))));
+    expect(again.measureCount).toBe(4);
+  });
 });

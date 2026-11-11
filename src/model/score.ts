@@ -189,8 +189,10 @@ export class ScoreDoc {
     return doc;
   }
 
+  /** The score as a MusicXML file. */
   serialize(): string {
-    return new XMLSerializer().serializeToString(this.doc);
+    const xml = new XMLSerializer().serializeToString(this.doc);
+    return xml.startsWith("<?xml") ? xml : `<?xml version="1.0" encoding="UTF-8"?>\n${xml}`;
   }
 }
 
