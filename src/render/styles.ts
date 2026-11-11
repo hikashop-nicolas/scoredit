@@ -20,7 +20,7 @@ const CSS = `
 .sv-chunk-host{will-change:transform}
 .sv-chunk svg{display:block}
 .sv-edit{flex:0 0 auto;display:flex;flex-direction:column;gap:4px;padding:5px 8px;background:var(--sv-chrome,#2b2f36);color:var(--sv-bar-fg,#e6e6e6);border-top:1px solid var(--sv-border,#1c1f24);font:13px system-ui,sans-serif}
-.sv-edit[hidden],.sv-strip[hidden]{display:none}
+.sv-edit[hidden],.sv-pitch-strip[hidden]{display:none}
 .sv-pal-row{display:flex;flex-wrap:wrap;gap:4px;justify-content:center}
 .sv-pal-row .sv-bb-btn{min-width:38px;min-height:38px;justify-content:center}
 .sv-pal-row .sv-bb-btn:disabled{opacity:.35}
@@ -28,8 +28,8 @@ const CSS = `
 .sv-glyph{font-size:20px;line-height:1;font-family:"Noto Music","Segoe UI Symbol",system-ui,sans-serif}
 .sv-voice{display:inline-grid;place-items:center;width:20px;height:20px;border-radius:50%;color:#fff;font-weight:600;font-size:12px}
 .sv-voice-1{background:#1a73e8}.sv-voice-2{background:#188038}.sv-voice-3{background:#e8710a}.sv-voice-4{background:#a142f4}
-.sv-strip{display:flex;align-items:stretch;gap:4px;height:64px}
-.sv-strip-keys{flex:1 1 auto;width:100%;height:100%;touch-action:none;cursor:pointer}
+.sv-pitch-strip{display:flex;align-items:stretch;gap:4px;height:72px;flex:0 0 auto}
+.sv-strip-keys{display:block;flex:1 1 auto;min-width:0;height:100%;touch-action:none;cursor:pointer}
 .sv-strip-nav{min-width:30px}
 .sv-loupe{position:fixed;z-index:20;transform:translate(-50%,calc(-100% - 36px));padding:6px 12px;border-radius:10px;background:var(--sv-chrome,#2b2f36);color:#fff;font:600 22px system-ui,sans-serif;box-shadow:0 4px 14px rgba(0,0,0,.35);pointer-events:none}
 .sv-loupe[hidden]{display:none}

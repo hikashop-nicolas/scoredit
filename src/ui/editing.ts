@@ -123,9 +123,9 @@ export function createEditing(host: EditingHost): Editing {
   el.className = "sv-edit";
   el.hidden = true;
   const strip = document.createElement("div");
-  strip.className = "sv-strip";
+  strip.className = "sv-pitch-strip";
   strip.hidden = true;
-  const kb = new Keyboard("sv-keys sv-strip-keys");
+  const kb = new Keyboard("sv-strip-keys");
   let stripLo = 55;
   const shift = (by: number) => {
     stripLo = Math.min(96, Math.max(21, stripLo + by));
