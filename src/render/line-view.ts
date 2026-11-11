@@ -1,6 +1,7 @@
 import { OpenSheetMusicDisplay } from "opensheetmusicdisplay";
 import { breakSystems, systemOf, type SystemRange } from "../layout/systems";
 import type { ScoreDoc } from "../model/score";
+import { collectPositions, xAt, type Positions } from "./positions";
 import type { View, ViewOptions } from "./view";
 
 export interface LineView extends View {
@@ -33,8 +34,7 @@ interface Chunk {
   /** y of the first staff line in this chunk's own render, in units. */
   y0: number;
   crop: number;
-  /** Measure starts relative to the chunk's left edge, px. */
-  xs: number[];
+  pos: Positions | null;
 }
 
 // The line layout: the whole score on one staff system running sideways, for playing
@@ -50,6 +50,9 @@ export function createLineView(score: ScoreDoc, opts: ViewOptions & { fit?: bool
   const strip = document.createElement("div");
   strip.className = "sv-strip";
   root.append(strip);
+  const cursor = document.createElement("div");
+  cursor.className = "sv-cursor";
+  cursor.hidden = true;
 
   const staves = score.measures.length;
   const weights = Array.from({ length: score.measureCount }, (_, m) => score.measureWeight(m));
@@ -94,6 +97,7 @@ export function createLineView(score: ScoreDoc, opts: ViewOptions & { fit?: bool
   function layout(): void {
     generation++;
     strip.textContent = "";
+    strip.append(cursor);
     strip.style.height = `${stripHeight()}px`;
     slots = chunks.map((r, i) => {
       const el = document.createElement("div");
@@ -101,7 +105,7 @@ export function createLineView(score: ScoreDoc, opts: ViewOptions & { fit?: bool
       el.dataset.chunk = String(i);
       el.style.width = `${estWidth(r)}px`;
       strip.append(el);
-      return { el, host: null, osmd: null, rendering: false, y0: 0, crop: 0, xs: [] };
+      return { el, host: null, osmd: null, rendering: false, y0: 0, crop: 0, pos: null };
     });
     schedule();
   }
@@ -135,6 +139,7 @@ export function createLineView(score: ScoreDoc, opts: ViewOptions & { fit?: bool
         s.el.textContent = "";
         s.osmd = null;
         s.host = null;
+        s.pos = null;
       }
       if (!s.osmd && !s.rendering && dist <= AHEAD * view && dist < best) {
         best = dist;
@@ -223,10 +228,7 @@ export function createLineView(score: ScoreDoc, opts: ViewOptions & { fit?: bool
       host.style.marginLeft = `${-crop}px`;
       slot.crop = crop;
       slot.y0 = y0;
-      slot.xs = ms.map((staves) => {
-        const g = staves.find((x) => x);
-        return g ? g.PositionAndShape.AbsolutePosition.x * u - crop : 0;
-      });
+      slot.pos = collectPositions(osmd, range.start, zoom, crop);
       slot.host = host;
       slot.osmd = osmd;
       if (grew) align();
@@ -247,8 +249,8 @@ export function createLineView(score: ScoreDoc, opts: ViewOptions & { fit?: bool
     const i = systemOf(chunks, m);
     const s = slots[i];
     if (!s) return 0;
-    const k = m - chunks[i].start;
-    if (s.osmd && s.xs[k] !== undefined) return s.el.offsetLeft + Math.max(0, s.xs[k]);
+    const b = s.pos?.beats.get(m);
+    if (b) return s.el.offsetLeft + Math.max(0, b.left);
     const r = chunks[i];
     return s.el.offsetLeft + (s.el.offsetWidth * (m - r.start)) / Math.max(1, r.end - r.start);
   }
@@ -272,6 +274,29 @@ export function createLineView(score: ScoreDoc, opts: ViewOptions & { fit?: bool
     const x = measureX(m) - root.clientWidth * at;
     root.scrollTo({ left: Math.max(0, x), behavior: smooth ? "smooth" : "auto" });
     schedule();
+  }
+
+  // Playback: the cursor sits at the playing beat and the line slides so it stays at a
+  // third of the view from the left.
+  function showPosition(m: number, q: number, quarters: number, follow: boolean): void {
+    const i = systemOf(chunks, m);
+    const s = slots[i];
+    if (!s) return;
+    const local = s.pos ? xAt(s.pos, m, q, quarters) : null;
+    const x = local !== null ? s.el.offsetLeft + local : measureX(m) + ((measureX(m + 1 < score.measureCount ? m + 1 : m) - measureX(m)) * q) / Math.max(quarters, 1e-6);
+    cursor.hidden = false;
+    cursor.style.transform = `translateX(${x}px)`;
+    if (follow) {
+      root.scrollLeft = Math.max(0, x - root.clientWidth * 0.3);
+      schedule();
+    }
+  }
+  function highlight(keys: string[], on: boolean): void {
+    for (const k of keys) {
+      const m = Number(k.split("|")[0]);
+      const s = slots[systemOf(chunks, m)];
+      for (const g of s?.pos?.notes.get(k) ?? []) g.classList.toggle("sv-on", on);
+    }
   }
 
   const onScroll = () => schedule();
@@ -313,6 +338,9 @@ export function createLineView(score: ScoreDoc, opts: ViewOptions & { fit?: bool
     },
     measureX,
     scrollToMeasure,
+    showPosition,
+    hidePosition: () => (cursor.hidden = true),
+    highlight,
     preview: previewZoom,
     commit(z: number) {
       shown = z;

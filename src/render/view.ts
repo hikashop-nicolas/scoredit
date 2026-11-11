@@ -9,6 +9,11 @@ export interface View {
   commit(z: number): void;
   relayout(): void;
   destroy(): void;
+  /** Puts the playback cursor at quarter `q` of measure `m` (`quarters` long); `follow` scrolls to it. */
+  showPosition(m: number, q: number, quarters: number, follow: boolean): void;
+  hidePosition(): void;
+  /** Lights or unlights the notes starting at these `noteKey`s. */
+  highlight(keys: string[], on: boolean): void;
 }
 
 export interface ViewOptions {

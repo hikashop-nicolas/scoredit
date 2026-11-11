@@ -19,6 +19,9 @@ const CSS = `
 .sv-chunk{flex:0 0 auto;position:relative;overflow:hidden;height:100%}
 .sv-chunk-host{will-change:transform}
 .sv-chunk svg{display:block}
+.sv-cursor{position:absolute;top:0;bottom:0;left:0;width:3px;margin-left:-1px;background:var(--sv-play,#1a73e8);opacity:.55;border-radius:2px;pointer-events:none;z-index:1}
+.sv-on path,.sv-on rect{fill:var(--sv-play,#1a73e8);stroke:var(--sv-play,#1a73e8)}
+.sv-bb-play{min-width:40px}
 .sv-bar-end{display:contents}
 .sv-reading .sv-bar-end{display:none}
 `;

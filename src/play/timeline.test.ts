@@ -1,0 +1,78 @@
+// @vitest-environment happy-dom
+import { describe, expect, it } from "vitest";
+import { ScoreDoc } from "../model/score";
+import { positionAt } from "./player";
+import { buildTimeline, playOrder } from "./timeline";
+
+const n = (step: string, dur: number, extra = "", octave = 4) => `<note><pitch><step>${step}</step><octave>${octave}</octave></pitch><duration>${dur}</duration>${extra}</note>`;
+const score = (measures: string[], partList = `<score-part id="P1"><part-name>P</part-name></score-part>`) =>
+  `<score-partwise><part-list>${partList}</part-list><part id="P1">${measures.map((m, i) => `<measure number="${i + 1}">${m}</measure>`).join("")}</part></score-partwise>`;
+const ATTR = `<attributes><divisions>1</divisions><time><beats>2</beats><beat-type>4</beat-type></time></attributes>`;
+const fwd = `<barline location="left"><repeat direction="forward"/></barline>`;
+const back = `<barline location="right"><repeat direction="backward"/></barline>`;
+
+describe("playOrder", () => {
+  it("plays a repeated section twice", () => {
+    const s = new ScoreDoc(score([ATTR + n("C", 2), fwd + n("D", 2), n("E", 2) + back, n("F", 2)]));
+    expect(playOrder(s)).toEqual([0, 1, 2, 1, 2, 3]);
+  });
+
+  it("repeats from the start without a forward sign, and honours times", () => {
+    const s = new ScoreDoc(score([ATTR + n("C", 2), n("D", 2) + `<barline location="right"><repeat direction="backward" times="3"/></barline>`]));
+    expect(playOrder(s)).toEqual([0, 1, 0, 1, 0, 1]);
+  });
+
+  it("takes the first ending, then the second", () => {
+    const e1 = `<barline location="left"><ending number="1" type="start"/></barline>`;
+    const e1end = `<barline location="right"><ending number="1" type="stop"/><repeat direction="backward"/></barline>`;
+    const e2 = `<barline location="left"><ending number="2" type="start"/></barline>`;
+    const e2end = `<barline location="right"><ending number="2" type="discontinue"/></barline>`;
+    const s = new ScoreDoc(score([ATTR + n("C", 2), e1 + n("D", 2) + e1end, e2 + n("E", 2) + e2end, n("F", 2)]));
+    expect(playOrder(s)).toEqual([0, 1, 0, 2, 3]);
+  });
+});
+
+describe("buildTimeline", () => {
+  it("times notes from tempo and divisions", () => {
+    const tempo = `<direction><direction-type><words>Allegro</words></direction-type><sound tempo="120"/></direction>`;
+    const tl = buildTimeline(new ScoreDoc(score([ATTR + tempo + n("C", 1) + n("D", 1), n("E", 2)])));
+    expect(tl.events.map((e) => [e.midi, e.time, e.dur])).toEqual([
+      [60, 0, 0.5],
+      [62, 0.5, 0.5],
+      [64, 1, 1],
+    ]);
+    expect(tl.duration).toBe(2);
+    expect(tl.spans.map((s) => [s.measure, s.start, s.end])).toEqual([
+      [0, 0, 1],
+      [1, 1, 2],
+    ]);
+  });
+
+  it("joins tied notes, also across a barline, and keeps chords together", () => {
+    const tl = buildTimeline(new ScoreDoc(score([ATTR + n("C", 2, `<tie type="start"/>`) + n("E", 2, "<chord/>"), n("C", 2, `<tie type="stop"/>`)])));
+    const c = tl.events.filter((e) => e.midi === 60);
+    expect(c).toHaveLength(1);
+    expect(c[0].dur).toBeCloseTo(2 * 2 * 0.6, 5); // two half bars at 100 bpm
+    expect(tl.events.find((e) => e.midi === 64)!.time).toBe(0);
+  });
+
+  it("applies accidentals, transposition and the instrument's program", () => {
+    const part = `<score-part id="P1"><part-name>Clarinet</part-name><midi-instrument id="I"><midi-channel>1</midi-channel><midi-program>72</midi-program></midi-instrument></score-part>`;
+    const at = `<attributes><divisions>1</divisions><transpose><diatonic>-1</diatonic><chromatic>-2</chromatic></transpose></attributes>`;
+    const tl = buildTimeline(new ScoreDoc(score([at + `<note><pitch><step>F</step><alter>1</alter><octave>4</octave></pitch><duration>1</duration></note>`], part)));
+    expect(tl.events[0].midi).toBe(64); // written F#4 sounds E4
+    expect([...tl.programs.values()]).toEqual([71]);
+  });
+
+  it("skips rests but lets them take time", () => {
+    const tl = buildTimeline(new ScoreDoc(score([ATTR + `<note><rest/><duration>1</duration></note>` + n("G", 1)])));
+    expect(tl.events.map((e) => e.onset)).toEqual([1]);
+  });
+
+  it("finds the measure and beat at a time", () => {
+    const tl = buildTimeline(new ScoreDoc(score([ATTR + n("C", 2), n("D", 2)])));
+    const p = positionAt(tl.spans, 1.5);
+    expect(p.span).toBe(1);
+    expect(p.quarter).toBeCloseTo(0.5, 5);
+  });
+});

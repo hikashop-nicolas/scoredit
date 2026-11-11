@@ -2,6 +2,7 @@ import { OpenSheetMusicDisplay } from "opensheetmusicdisplay";
 import { breakSystems, systemOf, type SystemRange } from "../layout/systems";
 import type { ScoreDoc } from "../model/score";
 import { kid, kids, text } from "../model/xml";
+import { collectPositions, xAt, type Positions } from "./positions";
 import type { View, ViewOptions } from "./view";
 
 export interface PageView extends View {
@@ -25,6 +26,7 @@ interface Slot {
   osmd: OpenSheetMusicDisplay | null;
   height: number;
   rendering: boolean;
+  pos: Positions | null;
 }
 
 // The page layout: each system (line) is its own OSMD render of a MusicXML slice, so a
@@ -127,7 +129,7 @@ export function createPageView(score: ScoreDoc, opts: ViewOptions): PageView {
         el.dataset.system = String(keep + k);
         el.style.minHeight = `${h}px`;
         page.append(el);
-        return { el, osmd: null, height: h, rendering: false };
+        return { el, osmd: null, height: h, rendering: false, pos: null };
       }),
     ];
     schedule();
@@ -160,6 +162,7 @@ export function createPageView(score: ScoreDoc, opts: ViewOptions): PageView {
         s.el.style.minHeight = `${s.height}px`;
         s.el.textContent = "";
         s.osmd = null;
+        s.pos = null;
       }
       if (!s.osmd && !s.rendering && dist <= AHEAD * view && dist < best) {
         best = dist;
@@ -224,6 +227,7 @@ export function createPageView(score: ScoreDoc, opts: ViewOptions): PageView {
         return;
       }
       slot.osmd = osmd;
+      slot.pos = collectPositions(osmd, range.start, zoom);
       slot.height = slot.el.offsetHeight;
       slot.el.style.minHeight = "";
       opts.onSystemRendered?.(i, performance.now() - t0);
@@ -268,6 +272,37 @@ export function createPageView(score: ScoreDoc, opts: ViewOptions): PageView {
     schedule();
   }
 
+  // Playback: a cursor in the playing system; the page scrolls when it leaves the view.
+  const cursor = document.createElement("div");
+  cursor.className = "sv-cursor";
+  function showPosition(m: number, q: number, quarters: number, follow: boolean): void {
+    const i = systemOf(systems, m);
+    const s = slots[i];
+    if (!s) return;
+    const x = s.pos ? xAt(s.pos, m, q, quarters) : null;
+    if (x === null) return;
+    if (cursor.parentElement !== s.el) s.el.append(cursor);
+    cursor.hidden = false;
+    cursor.style.transform = `translateX(${x}px)`;
+    if (s.pos && s.pos.bottom > s.pos.top) {
+      const pad = 10 * zoom;
+      cursor.style.top = `${s.pos.top - pad}px`;
+      cursor.style.bottom = "auto";
+      cursor.style.height = `${s.pos.bottom - s.pos.top + 2 * pad}px`;
+    }
+    if (follow) {
+      const top = s.el.offsetTop - page.offsetTop;
+      const bottom = top + s.el.offsetHeight;
+      if (top < root.scrollTop || bottom > root.scrollTop + root.clientHeight) root.scrollTo({ top: Math.max(0, top - 12), behavior: "smooth" });
+    }
+  }
+  function highlight(keys: string[], on: boolean): void {
+    for (const k of keys) {
+      const s = slots[systemOf(systems, Number(k.split("|")[0]))];
+      for (const g of s?.pos?.notes.get(k) ?? []) g.classList.toggle("sv-on", on);
+    }
+  }
+
   const onScroll = () => schedule();
   root.addEventListener("scroll", onScroll, { passive: true });
   let resizeTimer = 0;
@@ -292,6 +327,9 @@ export function createPageView(score: ScoreDoc, opts: ViewOptions): PageView {
       return { ...params, width: units };
     },
     preview: previewZoom,
+    showPosition,
+    hidePosition: () => (cursor.hidden = true),
+    highlight,
     commit(z: number) {
       shown = z;
       commitZoom();

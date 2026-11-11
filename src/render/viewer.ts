@@ -1,7 +1,10 @@
 import type { SystemRange } from "../layout/systems";
 import type { ScoreDoc } from "../model/score";
 import { clampZoom, createBar, type LayoutMode } from "../ui/bar";
+import { Player } from "../play/player";
+import { buildTimeline } from "../play/timeline";
 import { createLineView, type LineView } from "./line-view";
+import { noteKey } from "./positions";
 import { createPageView, type PageView } from "./page-view";
 import { injectStyles } from "./styles";
 import type { View } from "./view";
@@ -32,6 +35,10 @@ export interface ScoreViewerHandle {
   /** The line view while in line layout, for playback to drive. */
   readonly line: LineView | null;
   setLayout(layout: LayoutMode): void;
+  /** Starts or pauses playback (the bar's play button). */
+  togglePlay(): void;
+  /** The player, once playback was used. */
+  readonly player: Player | null;
   getZoom(): number;
   setZoom(zoom: number): void;
   /** The end of the bottom bar, where a host can put its own buttons. */
@@ -66,8 +73,26 @@ export function createScoreViewer(container: HTMLElement, score: ScoreDoc, opts:
       setLayout(m);
       opts.onLayoutChange?.(m);
     },
+    onPlay: () => togglePlay(),
     onFullscreen: opts.onFullscreen,
   });
+
+  // Playback: the timeline is built on the first play; the view shows where it is.
+  let player: Player | null = null;
+  function togglePlay(): void {
+    if (!player) {
+      const tl = buildTimeline(score);
+      player = new Player(tl, {
+        onPosition: (p) => {
+          const span = tl.spans[p.span];
+          if (span) view.showPosition(span.measure, p.quarter, span.quarters, true);
+        },
+        onNotes: (evs, on) => view.highlight(evs.map((e) => noteKey(e.measure, e.onset)), on),
+        onStateChange: (on) => bar.setPlaying(on),
+      });
+    }
+    player.toggle();
+  }
 
   function mount(): void {
     const common = { onError: opts.onError, onZoom: (z: number) => ((shown = z), bar.sync(z)) };
@@ -149,6 +174,10 @@ export function createScoreViewer(container: HTMLElement, score: ScoreDoc, opts:
       return mode === "line" ? (view as LineView) : null;
     },
     setLayout,
+    togglePlay,
+    get player() {
+      return player;
+    },
     getZoom: () => view.zoom,
     setZoom(z: number) {
       previewZoom(z);
@@ -161,6 +190,7 @@ export function createScoreViewer(container: HTMLElement, score: ScoreDoc, opts:
     },
     relayout: () => view.relayout(),
     destroy() {
+      player?.dispose();
       clearTimeout(zoomTimer);
       view.destroy();
       shell.remove();

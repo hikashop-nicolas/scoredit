@@ -15,6 +15,8 @@ const ICON_FS = svgIcon('<polyline points="15 3 21 3 21 9"/><polyline points="9 
 const ICON_FS_EXIT = svgIcon('<polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" x2="21" y1="10" y2="3"/><line x1="3" x2="10" y1="21" y2="14"/>');
 // Page: stacked lines. Line: one long staff running sideways.
 const ICON_PAGE = svgIcon('<rect x="5" y="3" width="14" height="18" rx="1"/><line x1="8" x2="16" y1="8" y2="8"/><line x1="8" x2="16" y1="12" y2="12"/><line x1="8" x2="16" y1="16" y2="16"/>');
+const ICON_PLAY = svgIcon('<polygon points="7 4 20 12 7 20 7 4" fill="currentColor"/>');
+const ICON_PAUSE = svgIcon('<rect x="6" y="4" width="4" height="16" fill="currentColor"/><rect x="14" y="4" width="4" height="16" fill="currentColor"/>');
 const ICON_LINE = svgIcon('<line x1="2" x2="22" y1="9" y2="9"/><line x1="2" x2="22" y1="15" y2="15"/><polyline points="17 5 21 12 17 19"/>');
 
 export interface BarOptions {
@@ -25,6 +27,7 @@ export interface BarOptions {
   /** The slider was released. */
   onZoomCommit(): void;
   onLayout(mode: LayoutMode): void;
+  onPlay(): void;
   onFullscreen?(): void;
 }
 
@@ -33,6 +36,7 @@ export interface Bar {
   end: HTMLElement;
   sync(zoom: number): void;
   setLayout(mode: LayoutMode): void;
+  setPlaying(on: boolean): void;
   reading(on: boolean): void;
 }
 
@@ -51,6 +55,8 @@ export function createBar(o: BarOptions): Bar {
   const el = document.createElement("div");
   el.className = "sv-bar";
   let mode = o.layout;
+  const playBtn = button(ICON_PLAY, t("play"), () => o.onPlay());
+  playBtn.classList.add("sv-bb-play");
   const layoutBtn = button(ICON_LINE, "", () => o.onLayout(mode === "page" ? "line" : "page"));
   const grow = document.createElement("span");
   grow.className = "sv-bb-grow";
@@ -66,7 +72,7 @@ export function createBar(o: BarOptions): Bar {
   slider.addEventListener("change", () => o.onZoomCommit());
   const label = document.createElement("span");
   label.className = "sv-zoom-label";
-  el.append(layoutBtn, grow, slider, label);
+  el.append(playBtn, layoutBtn, grow, slider, label);
   let fs: HTMLButtonElement | null = null;
   if (o.onFullscreen) {
     fs = button(ICON_FS, t("fullscreen"), () => o.onFullscreen?.());
@@ -95,6 +101,12 @@ export function createBar(o: BarOptions): Bar {
     end,
     sync,
     setLayout,
+    setPlaying(on: boolean) {
+      const lbl = t(on ? "pause" : "play");
+      playBtn.innerHTML = on ? ICON_PAUSE : ICON_PLAY;
+      playBtn.title = lbl;
+      playBtn.setAttribute("aria-label", lbl);
+    },
     reading(on: boolean) {
       if (!fs) return;
       const lbl = t(on ? "exitFullscreen" : "fullscreen");
