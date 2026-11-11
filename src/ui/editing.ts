@@ -5,6 +5,8 @@ import type { ScoreDoc } from "../model/score";
 import { kids, text } from "../model/xml";
 import type { PageView, Pick } from "../render/page-view";
 import { t } from "./i18n";
+import { partFamily } from "../model/score";
+import { BASS, Fretboard, GUITAR } from "./fretboard";
 import { Keyboard } from "./keyboard";
 
 export interface EditingHost {
@@ -138,7 +140,50 @@ export function createEditing(host: EditingHost): Editing {
     stripLo = Math.min(96, Math.max(21, stripLo + by));
     kb.setRange(stripLo, stripLo + 19);
   };
-  strip.append(button(ICONS.left, t("lower"), () => shift(-12), "sv-strip-nav"), kb.canvas, button(ICONS.right, t("higher"), () => shift(12), "sv-strip-nav"));
+  const navL = button(ICONS.left, t("lower"), () => shift(-12), "sv-strip-nav");
+  const navR = button(ICONS.right, t("higher"), () => shift(12), "sv-strip-nav");
+  strip.append(navL, kb.canvas, navR);
+  // For a fretted part the strip is its fretboard instead.
+  let frets: Fretboard | null = null;
+  let fretPart = -1;
+  function stripFor(part: number | null): void {
+    // Without a tuning in the file, a guitar or bass part gets the standard one.
+    const fam = part === null ? null : partFamily(editor.score.parts[part]);
+    const f = part === null ? null : (editor.fretted(part) ?? (fam === "guitar" ? { tuning: GUITAR } : fam === "bass" ? { tuning: BASS } : null));
+    if (!f) {
+      if (frets) {
+        frets.canvas.remove();
+        frets = null;
+        fretPart = -1;
+        kb.canvas.hidden = navL.hidden = navR.hidden = false;
+      }
+      return;
+    }
+    if (frets && fretPart === part) return;
+    frets?.canvas.remove();
+    frets = new Fretboard(f.tuning);
+    frets.canvas.classList.add("sv-strip-keys");
+    frets.canvas.classList.remove("sv-keys");
+    fretPart = part!;
+    kb.canvas.hidden = navL.hidden = navR.hidden = true;
+    strip.append(frets.canvas);
+    const fb = frets;
+    fb.canvas.addEventListener("pointerdown", (e) => {
+      const r = fb.canvas.getBoundingClientRect();
+      const at = fb.at(e.clientX - r.left, e.clientY - r.top);
+      if (!at) return;
+      const midi = f.tuning[f.tuning.length - at.string] + at.fret;
+      const where = caret ?? sel?.at;
+      const pitch = { ...spellMidi(midi, where ? fifthsAt(where) : 0), position: at };
+      fb.set("tap", { ...at, color: "#e8710a" });
+      fb.draw();
+      setTimeout(() => (fb.set("tap", null), fb.draw()), 250);
+      if (input && caret) enter([pitch], { chord: e.shiftKey });
+      else if (selectedNotes().length === 1) each((n) => editor.setNotePitch(n, pitch));
+      lastPitch = pitch;
+    });
+    requestAnimationFrame(() => fb.draw());
+  }
   const row1 = document.createElement("div");
   row1.className = "sv-pal-row";
   const row2 = document.createElement("div");
@@ -196,6 +241,7 @@ export function createEditing(host: EditingHost): Editing {
     pressed(dotBtn, dots > 0);
     DURATIONS.forEach(([q], i) => pressed(durBtns[i], q === quarters));
     view?.root.classList.toggle("sv-inputting", active && input);
+    if (!strip.hidden) stripFor((caret ?? sel?.at)?.part ?? null);
     voiceBtn.innerHTML = `<span class="sv-voice sv-voice-${voiceN}">${voiceN}</span>`;
     undoBtn.disabled = !editor.canUndo;
     redoBtn.disabled = !editor.canRedo;
@@ -421,7 +467,10 @@ export function createEditing(host: EditingHost): Editing {
   function pitchFor(p: Pick): { caret: Caret; pitch: Pitch | null } {
     const part = toFull(p.part);
     const voice = editor.voiceId(part, p.staff, voiceN);
-    const at: Caret = { part, measure: p.measure, staff: p.staff, voice, pos: p.quarter };
+    // A tab staff drawn from a notation staff is written through that staff.
+    const link = editor.fretted(part);
+    const staff = link?.tab === p.staff && link.notation !== null ? link.notation : p.staff;
+    const at: Caret = { part, measure: p.measure, staff, voice: staff === p.staff ? voice : editor.voiceId(part, staff, voiceN), pos: p.quarter };
     const clef = clefAt(editor.score, part, p.measure, p.staff);
     const pitch = pitchOnStaff(clef, p.lines, p.step, editor.info(part, p.measure).fifths);
     // A drum staff: the drum the part already draws on that line.

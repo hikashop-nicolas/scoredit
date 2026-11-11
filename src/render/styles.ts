@@ -31,6 +31,9 @@ const CSS = `
 .sv-pitch-strip{display:flex;align-items:stretch;gap:4px;height:72px;flex:0 0 auto}
 .sv-strip-keys{display:block;flex:1 1 auto;min-width:0;height:100%;touch-action:none;cursor:pointer}
 .sv-strip-nav{min-width:30px}
+.sv-pitch-strip [hidden]{display:none}
+.sv-pitch-strip .sv-strip-keys{height:100%}
+.sv-pitch-strip:has(.sv-frets){height:108px}
 .sv-loupe{position:fixed;z-index:20;transform:translate(-50%,calc(-100% - 36px));padding:6px 12px;border-radius:10px;background:var(--sv-chrome,#2b2f36);color:#fff;font:600 22px system-ui,sans-serif;box-shadow:0 4px 14px rgba(0,0,0,.35);pointer-events:none}
 .sv-loupe[hidden]{display:none}
 .sv-shell:focus{outline:none}

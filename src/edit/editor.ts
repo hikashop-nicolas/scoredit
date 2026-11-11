@@ -1,7 +1,7 @@
 import type { ScoreDoc } from "../model/score";
 import { kid, kids, text } from "../model/xml";
 import { readMeasure, voiceKey, writeMeasure, type Event, type ReadMeasure } from "./measure";
-import { TYPES, isTied, placeInNote, writtenFor, keyAlter, makeNote, midiOf, pieceOf, readPitch, setPitch, setTie, spellMidi, splitLength, type Pitch, type Written } from "./notes";
+import { TYPES, defaultPosition, isTied, placeInNote, setPosition, writtenFor, keyAlter, makeNote, midiOf, pieceOf, readPitch, setPitch, setTie, spellMidi, splitLength, type Pitch, type Written } from "./notes";
 
 /** Where the next note goes: a beat in one voice of one staff of a part. */
 export interface Caret {
@@ -347,6 +347,31 @@ export class ScoreEditor {
     return best;
   }
 
+  /**
+   * A fretted part's tuning (open strings, lowest first) and its staves: the notation staff
+   * and the tab staff drawn from it, when it has both.
+   */
+  fretted(part: number): { tuning: number[]; notation: number | null; tab: number | null } | null {
+    const meas = this.score.measures[part]?.[0];
+    if (!meas) return null;
+    const attrs = [...this.score.attributesAt(part, 0), ...kids(meas, "attributes").flatMap((a) => kids(a))];
+    let tuning: number[] = [];
+    let tab: number | null = null;
+    const staves = new Set<number>([1]);
+    for (const a of attrs) {
+      const n = Number(a.getAttribute("number") ?? 1);
+      staves.add(n);
+      if (a.tagName === "clef" && text(a, "sign") === "TAB") tab = n;
+      if (a.tagName === "staff-details" && kids(a, "staff-tuning").length)
+        tuning = kids(a, "staff-tuning")
+          .sort((x, y) => Number(x.getAttribute("line")) - Number(y.getAttribute("line")))
+          .map((t) => midiOf({ step: text(t, "tuning-step"), alter: Number(text(t, "tuning-alter")) || 0, octave: Number(text(t, "tuning-octave")) }));
+    }
+    if (!tuning.length) return null;
+    const notation = [...staves].find((n) => n !== tab) ?? null;
+    return { tuning, notation: tab !== null ? notation : null, tab };
+  }
+
   /** Whether a part's notes are drums. */
   isDrums(part: number): boolean {
     for (const m of this.score.measures[part] ?? []) if (m.getElementsByTagName("unpitched").length) return true;
@@ -442,6 +467,7 @@ export class ScoreEditor {
     this.entry = { before: new Map(), after: new Map(), appended: 0, appendedEls: [] };
     try {
       const out = fn();
+      this.mirrorTabs();
       if (this.entry.before.size || this.entry.appended) {
         this.done.push(this.entry);
         this.undone = [];
@@ -450,6 +476,40 @@ export class ScoreEditor {
       return out;
     } finally {
       this.entry = null;
+    }
+  }
+
+  /** A part's tab staff is drawn from its notation staff again in the measures an edit touched. */
+  private mirrorTabs(): void {
+    const e = this.entry;
+    if (!e) return;
+    const touched = new Set(e.before.keys());
+    const count = this.score.measureCount;
+    for (let m = count - e.appended; m < count; m++) for (let p = 0; p < this.score.measures.length; p++) touched.add(`${p}:${m}`);
+    const links = new Map<number, ReturnType<ScoreEditor["fretted"]>>();
+    for (const key of touched) {
+      const [p, m] = key.split(":").map(Number);
+      if (!links.has(p)) links.set(p, this.fretted(p));
+      const link = links.get(p);
+      if (!link || link.notation === null || link.tab === null || !this.score.measures[p][m]) continue;
+      const meas = this.score.measures[p][m];
+      const r = readMeasure(meas);
+      for (const k of [...r.voices.keys()]) if (k.startsWith(`${link.tab}|`)) r.voices.delete(k);
+      for (const [k, evs] of [...r.voices]) {
+        const [st, v] = k.split("|");
+        if (Number(st) !== link.notation) continue;
+        const voice = String(Number(v) + 4 * (link.tab - link.notation));
+        const copy = (n: Element) => {
+          const c = n.cloneNode(true) as Element;
+          for (const s of kids(c, "staff")) s.textContent = String(link.tab);
+          for (const s of kids(c, "voice")) s.textContent = voice;
+          const pitch = readPitch(c);
+          if (pitch && !pitch.position) setPosition(c, defaultPosition(midiOf(pitch), link.tuning));
+          return c;
+        };
+        r.voices.set(voiceKey(link.tab, voice), evs.map((ev) => ({ ...ev, notes: ev.notes.map(copy), graces: ev.graces.map(copy) })));
+      }
+      writeMeasure(meas, r);
     }
   }
 

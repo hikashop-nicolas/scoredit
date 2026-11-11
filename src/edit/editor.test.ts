@@ -167,4 +167,15 @@ describe("Entering notes", () => {
     ed.enter(at(0, 0), { pitches: [snare], quarters: 1 });
     expect(buildTimeline(kit).events.map((e) => [e.midi, e.onset, e.program])).toEqual([[38, 0, 128]]);
   });
+
+  it("writes a guitar's tab staff from its notation staff, with string and fret", () => {
+    const tuning = [["E", 2], ["A", 2], ["D", 3], ["G", 3], ["B", 3], ["E", 4]].map(([st, o], i) => `<staff-tuning line="${i + 1}"><tuning-step>${st}</tuning-step><tuning-octave>${o}</tuning-octave></staff-tuning>`).join("");
+    const g = new ScoreDoc(`<?xml version="1.0"?><score-partwise version="4.0"><part-list><score-part id="P1"><part-name>Guitar</part-name></score-part></part-list><part id="P1"><measure number="1"><attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type></time><staves>2</staves><clef number="1"><sign>G</sign><line>2</line><clef-octave-change>-1</clef-octave-change></clef><clef number="2"><sign>TAB</sign><line>5</line></clef><staff-details number="2"><staff-lines>6</staff-lines>${tuning}</staff-details></attributes><note><rest measure="yes"/><duration>4</duration><voice>1</voice><staff>1</staff></note><backup><duration>4</duration></backup><note><rest measure="yes"/><duration>4</duration><voice>5</voice><staff>2</staff></note></measure></part></score-partwise>`);
+    const ed = new ScoreEditor(g);
+    expect(ed.fretted(0)).toMatchObject({ notation: 1, tab: 2, tuning: [40, 45, 50, 55, 59, 64] });
+    ed.enter({ part: 0, measure: 0, staff: 1, voice: "1", pos: 0 }, { pitches: [P("A", 3)], quarters: 1 });
+    const tabNotes = Array.from(g.measures[0][0].getElementsByTagName("note")).filter((n) => text(n, "staff") === "2" && n.getElementsByTagName("pitch").length);
+    expect(tabNotes.map((n) => [text(n, "voice"), n.getElementsByTagName("string")[0]?.textContent, n.getElementsByTagName("fret")[0]?.textContent])).toEqual([["5", "3", "2"]]);
+    expect(buildTimeline(g).events).toHaveLength(1);
+  });
 });

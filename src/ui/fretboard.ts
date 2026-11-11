@@ -4,7 +4,7 @@ import type { NoteEvent } from "../play/timeline";
 
 const STEP: Record<string, number> = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
 export const GUITAR = [40, 45, 50, 55, 59, 64];
-const BASS = [28, 33, 38, 43];
+export const BASS = [28, 33, 38, 43];
 
 /**
  * Open-string pitches, lowest first, of the score's fretted part: from its tab staff tuning,
@@ -63,6 +63,20 @@ export class Fretboard {
   set(key: string, dot: Dot | null): void {
     if (dot) this.dots.set(key, dot);
     else this.dots.delete(key);
+  }
+
+  /** The string (1 = highest) and fret under a point of the canvas, in CSS px. */
+  at(px: number, py: number): { string: number; fret: number } | null {
+    const w = this.canvas.clientWidth;
+    const h = this.canvas.clientHeight;
+    const strings = this.tuning.length;
+    const open = Math.max(22, w * 0.05);
+    const top = 8;
+    const neck = h - top - 14;
+    const string = Math.min(strings, Math.max(1, Math.floor((py - top) / (neck / strings)) + 1));
+    if (px < open) return { string, fret: 0 };
+    const fret = Math.min(this.frets, Math.max(1, Math.ceil(((px - open) * this.frets) / (w - open - 4))));
+    return { string, fret };
   }
 
   draw(): void {

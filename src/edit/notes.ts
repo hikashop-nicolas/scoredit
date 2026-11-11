@@ -72,6 +72,8 @@ export interface Pitch {
   unpitched?: boolean;
   instrument?: string;
   notehead?: string;
+  /** Where a fretted part plays it: string 1 is the highest. */
+  position?: { string: number; fret: number };
 }
 
 const STEP_SEMIS: Record<string, number> = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
@@ -108,7 +110,10 @@ export function readPitch(note: Element): Pitch | null {
   }
   const p = kid(note, "pitch");
   if (!p) return null;
-  return { step: text(p, "step"), alter: Number(text(p, "alter")) || 0, octave: Number(text(p, "octave")) };
+  const out: Pitch = { step: text(p, "step"), alter: Number(text(p, "alter")) || 0, octave: Number(text(p, "octave")) };
+  const tech = kid(note, "notations") ? kid(kid(note, "notations")!, "technical") : null;
+  if (tech && kid(tech, "string") && kid(tech, "fret")) out.position = { string: Number(text(tech, "string")), fret: Number(text(tech, "fret")) };
+  return out;
 }
 
 export function setPitch(note: Element, p: Pitch): void {
@@ -129,6 +134,7 @@ export function setPitch(note: Element, p: Pitch): void {
     if (p.notehead) add(note, "notehead", p.notehead);
     return;
   }
+  setPosition(note, p.position ?? null);
   const pitch = add(note, "pitch");
   const put = (tag: string, v: string | number) => {
     const e = doc.createElementNS(null, tag);
@@ -138,6 +144,34 @@ export function setPitch(note: Element, p: Pitch): void {
   put("step", p.step);
   if (p.alter) put("alter", p.alter);
   put("octave", p.octave);
+}
+
+/** Writes (or clears) a note's string and fret. */
+export function setPosition(note: Element, pos: { string: number; fret: number } | null): void {
+  const nots = kid(note, "notations");
+  const tech = nots ? kid(nots, "technical") : null;
+  for (const tag of ["string", "fret"]) for (const e of tech ? kids(tech, tag) : []) e.remove();
+  if (tech && !tech.firstElementChild) tech.remove();
+  if (nots && !nots.firstElementChild) nots.remove();
+  if (!pos) return;
+  const n = kid(note, "notations") ?? add(note, "notations");
+  const t = kid(n, "technical") ?? n.appendChild(note.ownerDocument.createElementNS(null, "technical"));
+  for (const [tag, v] of [["string", pos.string], ["fret", pos.fret]] as const) {
+    const e = note.ownerDocument.createElementNS(null, tag);
+    e.textContent = String(v);
+    t.appendChild(e);
+  }
+}
+
+/** The easiest place to play a pitch: the lowest fret, on the higher string when equal. */
+export function defaultPosition(midi: number, tuning: number[]): { string: number; fret: number } | null {
+  let best: { string: number; fret: number } | null = null;
+  tuning.forEach((open, i) => {
+    const fret = midi - open;
+    if (fret < 0 || fret > 24) return;
+    if (!best || fret <= best.fret) best = { string: tuning.length - i, fret };
+  });
+  return best;
 }
 
 /** Sets a note's length: duration, type and dots (a tuplet's ratio is dropped). */
