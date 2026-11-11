@@ -23,6 +23,7 @@
     "dev": "vite",
     "preview": "vite preview",
     "test": "vitest run --passWithNoTests",
+    "test:corpus": "SCOREDIT_CORPUS=1 NODE_OPTIONS=--max-old-space-size=12288 vitest run src/formats/corpus.test.ts",
     "corpus": "node scripts/fetch-corpus.mjs",
     "prepare": "tsc -p tsconfig.json"
   },

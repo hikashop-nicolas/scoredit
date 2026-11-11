@@ -1,7 +1,8 @@
 // @vitest-environment happy-dom
 // Reads every MuseScore file of the local corpus (npm run corpus) with scoredit's reader, and
 // MuseScore's own MusicXML export of the same score with the MusicXML path, and checks both
-// play the same notes. Skipped when the corpus is not there.
+// play the same notes. Runs with `npm run test:corpus` (it needs a large heap), when the
+// corpus is there.
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -9,7 +10,7 @@ import { buildTimeline, type NoteEvent } from "../play/timeline";
 import { loadScore } from "./load";
 
 const root = join(__dirname, "../../corpus");
-const have = existsSync(join(root, "musicxml"));
+const have = process.env.SCOREDIT_CORPUS === "1" && existsSync(join(root, "musicxml"));
 const big = process.env.SCOREDIT_BIG === "1";
 
 // Measure, beat and pitch. Lengths in seconds are left out: MuseScore's export drops the

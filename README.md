@@ -31,6 +31,7 @@ npm install
 npm run corpus   # fetch the test corpus (OpenScore, CC0) into corpus/; converts with MuseScore 4 if installed
 npm run dev      # demo at http://127.0.0.1:5173, with the local corpus in its picker
 npm test
+npm run test:corpus   # the corpus checks against MuseScore's own export (needs the corpus)
 ```
 
 The corpus folder is gitignored and only the dev server serves it: scores downloaded
