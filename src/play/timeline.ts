@@ -22,6 +22,8 @@ export interface NoteEvent {
   /** Trill starting on the upper note; a mordent (main, lower, main) or inverted one (main, upper, main). */
   trillFromUpper?: boolean;
   mordent?: number;
+  /** A turn: the quick notes it plays before settling on the main note. */
+  turn?: number[];
   tremolo?: { type: string; strokes: number; quarters: number };
 }
 
@@ -214,8 +216,9 @@ function programsOf(score: ScoreDoc): { channel: number; program: number; drums:
 }
 
 /** Turns the score into timed notes, in played order. */
-export function buildTimeline(score: ScoreDoc): Timeline {
-  const order = playOrder(score);
+export function buildTimeline(score: ScoreDoc, opts: { straight?: boolean } = {}): Timeline {
+  // Straight: every measure once, in score order, without repeats or jumps.
+  const order = opts.straight ? Array.from({ length: score.measureCount }, (_, m) => m) : playOrder(score);
   const parts = programsOf(score);
   const programs = new Map<number, number>();
   for (const p of parts) if (!p.drums) programs.set(p.channel, p.program);
@@ -355,6 +358,10 @@ export function buildTimeline(score: ScoreDoc): Timeline {
             if (tm) {
               ev.trillUpper = upperNeighbour(text(pitch, "step"), Number(text(pitch, "octave")), fifths, override) + shift;
               ev.trillFromUpper = tm.getAttribute("start-note") === "upper";
+            } else if (c.getElementsByTagName("turn").length || c.getElementsByTagName("inverted-turn").length) {
+              const up = upperNeighbour(text(pitch, "step"), Number(text(pitch, "octave")), fifths) + shift;
+              const down = lowerNeighbour(text(pitch, "step"), Number(text(pitch, "octave")), fifths) + shift;
+              ev.turn = c.getElementsByTagName("turn").length ? [up, midi, down] : [down, midi, up];
             } else if (c.getElementsByTagName("inverted-mordent").length) {
               ev.mordent = upperNeighbour(text(pitch, "step"), Number(text(pitch, "octave")), fifths, override) + shift;
             } else if (c.getElementsByTagName("mordent").length) {
@@ -437,7 +444,7 @@ function dedupe(events: NoteEvent[]): NoteEvent[] {
 
 // Trills alternate with the upper note; tremolos repeat a note, or alternate two chords.
 function expand(events: NoteEvent[]): NoteEvent[] {
-  if (!events.some((e) => e.trillUpper !== undefined || e.tremolo || e.mordent !== undefined)) return events;
+  if (!events.some((e) => e.trillUpper !== undefined || e.tremolo || e.mordent !== undefined || e.turn)) return events;
   const out: NoteEvent[] = [];
   const split = (e: NoteEvent, step: number, pick: (k: number) => number) => {
     const n = Math.max(1, Math.round(e.dur / step));
@@ -458,6 +465,12 @@ function expand(events: NoteEvent[]): NoteEvent[] {
       const step = Math.min(0.12, Math.max(0.06, e.dur / Math.max(1, Math.round(e.dur / 0.09))));
       const first = e.trillFromUpper ? 0 : 1;
       split(e, step, (k) => (k % 2 === first ? e.trillUpper! : e.midi));
+    } else if (e.turn) {
+      // Upper, main, lower (or the reverse), then the main note for the rest of its length.
+      const quick = Math.min(0.08, e.dur / 6);
+      const base = { ...e, turn: undefined };
+      e.turn.forEach((m, k) => out.push({ ...base, time: e.time + k * quick, dur: quick, midi: m }));
+      out.push({ ...base, time: e.time + 3 * quick, dur: e.dur - 3 * quick });
     } else if (e.mordent !== undefined) {
       // Two quick notes, then the main note for the rest of its length.
       const quick = Math.min(0.07, e.dur / 4);

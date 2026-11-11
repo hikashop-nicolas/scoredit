@@ -120,6 +120,11 @@ describe("ornaments and pedal", () => {
     expect(tl.events.map((e) => e.midi)).toEqual([62, 64, 62, 62, 60, 62]);
   });
 
+  it("plays a turn as upper, main, lower, main", () => {
+    const tl = buildTimeline(new ScoreDoc(score([Q + n("D", 4, orn("<turn/>"))])));
+    expect(tl.events.map((e) => e.midi)).toEqual([64, 62, 60, 62]);
+  });
+
   it("repeats a single-note tremolo at its stroke value", () => {
     const tl = buildTimeline(new ScoreDoc(score([Q + n("C", 8, orn(`<tremolo type="single">2</tremolo>`))])));
     expect(tl.events).toHaveLength(8); // a half note in 16ths

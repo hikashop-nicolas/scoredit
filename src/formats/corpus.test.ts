@@ -17,7 +17,9 @@ const big = process.env.SCOREDIT_BIG === "1";
 // invisible tempo marks scores use for a written-out ritardando, which the reader keeps.
 const sig = (e: NoteEvent) => `${e.measure}|${Math.round(e.onset * 48)}|${e.midi}`;
 const notes = (bytes: Uint8Array) => {
-  const tl = buildTimeline(loadScore(bytes).score);
+  // Each measure once: the notes as written. The order they play in is checked against
+  // MuseScore's own playback (its MIDI), which its MusicXML export does not always follow.
+  const tl = buildTimeline(loadScore(bytes).score, { straight: true });
   // Distinct notes: MuseScore's MusicXML export unrolls D.C. across movements differently
   // from MuseScore's own playback, which the reader follows (checked against its MIDI).
   return { set: [...new Set(tl.events.filter((e) => !e.grace).map(sig))].sort(), measures: new Set(tl.spans.map((s) => s.measure)).size, spans: tl.spans.length };
@@ -44,6 +46,42 @@ describe.skipIf(!have)("MuseScore corpus", () => {
       console.log(JSON.stringify(r4), JSON.stringify(r3));
       expect(r4.missing + r4.extra).toBeLessThanOrEqual(Math.ceil(r4.notes * 0.005));
       expect(r3.missing + r3.extra).toBeLessThanOrEqual(Math.ceil(r3.notes * 0.005));
+    }, 120_000);
+  }
+});
+
+// Guitar scores with tab (MuseScore 2, 4 and converted OSMD tests): same notes, and the same
+// string and fret per measure, as MuseScore's own MusicXML export.
+describe.skipIf(!have || !existsSync(join(root, "guitar")))("MuseScore guitar corpus", () => {
+  const frets = (bytes: Uint8Array) => {
+    const s = loadScore(bytes).score;
+    const out: string[] = [];
+    s.measures.forEach((ms) =>
+      ms.forEach((meas, m) => {
+        for (const t of Array.from(meas.getElementsByTagName("technical"))) {
+          const str = t.getElementsByTagName("string")[0]?.textContent;
+          const fret = t.getElementsByTagName("fret")[0]?.textContent;
+          if (str && fret) out.push(`${m}|${str}|${fret}`);
+        }
+      }),
+    );
+    return out.sort();
+  };
+  const names = have && existsSync(join(root, "guitar")) ? readdirSync(join(root, "guitar")).filter((f) => f.endsWith(".mscz")).map((f) => f.replace(/\.mscz$/, "")) : [];
+  for (const name of names) {
+    it(`reads ${name} like MuseScore`, () => {
+      const mscz = join(root, "guitar", `${name}.mscz`);
+      const xml = join(root, "guitar", `${name}.musicxml`);
+      const r = compare(name, mscz, xml);
+      const a = frets(new Uint8Array(readFileSync(mscz)));
+      const b = frets(new Uint8Array(readFileSync(xml)));
+      const bs = new Set(b);
+      const as = new Set(a);
+      const fretDiff = [...a.filter((x) => !bs.has(x)), ...b.filter((x) => !as.has(x))];
+      console.log(JSON.stringify({ ...r, frets: [a.length, b.length], fretDiff: fretDiff.length, fretSample: fretDiff.slice(0, 4) }));
+      expect(r.missing + r.extra).toBe(0);
+      // A little room: MuseScore 4 re-fingers a few notes when it loads a MuseScore 2 file.
+      if (b.length) expect(fretDiff.length).toBeLessThanOrEqual(Math.ceil(b.length * 0.005));
     }, 120_000);
   }
 });

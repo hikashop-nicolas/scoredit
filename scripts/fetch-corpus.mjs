@@ -56,4 +56,25 @@ for (const [repo, path] of FILES) {
   }
   console.log(name);
 }
+// Guitar tablature: OSMD's own test scores (BSD-3), turned into MuseScore files with tab
+// staves by MuseScore itself, and exported back to MusicXML as the reference.
+const OSMD = "53043fdfe8e624f28cd6c2fac506a73bb2ee4a05";
+const TAB = ["OSMD_Function_Test_Tabulature_hayden_study_1.mxl", "test_slurs_standard_and_tab_staff.musicxml", "test_tab_plus_treble_staff_correctNotePositions_pr1703.musicxml"];
+for (const d of ["osmd", "guitar"]) mkdirSync(join(root, d), { recursive: true });
+for (const f of TAB) {
+  const src = join(root, "osmd", f);
+  if (!existsSync(src)) {
+    const res = await fetch(`https://raw.githubusercontent.com/opensheetmusicdisplay/opensheetmusicdisplay/${OSMD}/test/data/${f}`);
+    if (!res.ok) throw new Error(`${res.status} ${f}`);
+    writeFileSync(src, Buffer.from(await res.arrayBuffer()));
+  }
+  if (mscore) {
+    const b = f.replace(/\.[^.]+$/, "");
+    const mscz = join(root, "guitar", `${b}.mscz`);
+    if (!existsSync(mscz)) execFileSync("mscore", ["-o", mscz, src], { stdio: "ignore" });
+    const xml = join(root, "guitar", `${b}.musicxml`);
+    if (!existsSync(xml)) execFileSync("mscore", ["-o", xml, mscz], { stdio: "ignore" });
+  }
+  console.log(f);
+}
 if (!mscore) console.log("mscore not found: only the MuseScore 3 originals were fetched");

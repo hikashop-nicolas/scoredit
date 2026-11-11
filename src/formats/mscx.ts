@@ -31,7 +31,16 @@ const ARTIC: Record<string, string> = {
   articMarcatoAbove: "strong-accent",
   articMarcatoBelow: "strong-accent",
 };
-const ORNAMENT: Record<string, string> = { ornamentTrill: "trill-mark", ornamentTurn: "turn", ornamentTurnInverted: "inverted-turn", ornamentMordent: "mordent", ornamentShortTrill: "inverted-mordent" };
+const ORNAMENT: Record<string, string> = {
+  ornamentTrill: "trill-mark",
+  ornamentTurn: "turn",
+  ornamentTurnInverted: "inverted-turn",
+  ornamentMordent: "mordent",
+  ornamentShortTrill: "inverted-mordent",
+  ornamentTremblement: "inverted-mordent",
+};
+// Bowing marks go under <technical>.
+const TECHNICAL: Record<string, string> = { stringsUpBow: "up-bow", stringsDownBow: "down-bow" };
 // MuseScore clef names: [sign, line, octave change].
 const CLEF: Record<string, [string, number, number]> = {
   G: ["G", 2, 0],
@@ -115,7 +124,7 @@ function spell(tpc: number, midi: number): { step: string; alter: number; octave
 
 /** A clef at the very start of a staff's first measure (before any note), if there is one. */
 function firstClef(measure: Element | undefined): boolean {
-  const voice = measure ? kid(measure, "voice") : null;
+  const voice = measure ? (kid(measure, "voice") ?? measure) : null;
   for (const c of voice ? kids(voice) : []) {
     if (c.tagName === "Clef") return true;
     if (c.tagName === "Chord" || c.tagName === "Rest") return false;
@@ -123,11 +132,37 @@ function firstClef(measure: Element | undefined): boolean {
   return false;
 }
 
-// Text content with MuseScore's line breaks (<br/>) as spaces.
+// MuseScore's music symbols in text (tempo marks), as characters.
+const SYM: Record<string, string> = {
+  metNoteWhole: "𝅝",
+  metNoteHalfUp: "𝅗𝅥",
+  metNoteQuarterUp: "♩",
+  metNote8thUp: "♪",
+  metNote16thUp: "𝅘𝅥𝅯",
+  metAugmentationDot: ".",
+  noteQuarterUp: "♩",
+  // MuseScore 2 names
+  unicodeNoteWhole: "𝅝",
+  unicodeNoteHalfUp: "𝅗𝅥",
+  unicodeNoteQuarterUp: "♩",
+  unicodeNote8thUp: "♪",
+  unicodeNote16thUp: "𝅘𝅥𝅯",
+  unicodeAugmentationDot: ".",
+  noteHalfUp: "𝅗𝅥",
+  note8thUp: "♪",
+  accidentalSharp: "♯",
+  accidentalFlat: "♭",
+  accidentalNatural: "♮",
+  segno: "𝄋",
+  coda: "𝄌",
+};
+
+// Text content with MuseScore's line breaks (<br/>) as spaces and its symbols as characters.
 const plain = (el: Element | null): string => {
   if (!el) return "";
   const copy = el.cloneNode(true) as Element;
   for (const br of Array.from(copy.getElementsByTagName("br"))) br.replaceWith(" ");
+  for (const sym of Array.from(copy.getElementsByTagName("sym"))) sym.replaceWith(SYM[sym.textContent?.trim() ?? ""] ?? "");
   return (copy.textContent ?? "").replace(/\s+/g, " ").trim();
 };
 
@@ -263,6 +298,11 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
     }
   }
 
+  // Where each measure starts, in whole notes (MuseScore 2 positions are absolute ticks).
+  const division = Number(text(score, "Division")) || 480;
+  const measureStart: number[] = [];
+  lengths.reduce((at, l, i) => ((measureStart[i] = at), at + l), 0);
+
   // Octave lines: MuseScore keeps the pitch as drawn and shifts it when playing; MusicXML
   // (as MuseScore exports it) holds the sounding pitch under an <octave-shift>. Ranges per
   // staff: [start measure, pos, end measure, pos, semitones].
@@ -276,6 +316,21 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
     }
     return 0;
   };
+
+  // MuseScore 2 tie ids, to tell a tie's end from another spanner's.
+  const tieIds = new Set(Array.from(score.getElementsByTagName("Tie")).map((t) => t.getAttribute("id") ?? "").filter(Boolean));
+
+  // Jumps name their markers: play until one, then continue at another.
+  const jumpUntil = new Map<string, string>();
+  const jumpContinue = new Set<string>();
+  for (const st of staffEls) {
+    for (const j of Array.from(st.getElementsByTagName("Jump"))) {
+      const until = text(j, "playUntil");
+      const cont = text(j, "continueAt");
+      if (until && until !== "end") jumpUntil.set(until, cont);
+      if (cont) jumpContinue.add(cont);
+    }
+  }
 
   // Volta ends found while reading, keyed by measure index: ending numbers and whether it closes.
   const voltaStart = new Map<number, string>();
@@ -338,7 +393,19 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
         const virtual = k === p.virtual;
         // The added tab staff repeats the notes only: no texts, marks or clefs of its own.
         const SKIP = new Set(["Clef", "Dynamic", "Tempo", "StaffText", "SystemText", "Expression", "RehearsalMark", "Spanner", "Fermata"]);
-        kids(smeas, "voice").forEach((voice, v) => {
+        // MuseScore 3 and 4 group a measure's content in <voice>s; MuseScore 2 lists it flat,
+        // each chord naming its track (staff * 4 + voice).
+        const voiceEls = kids(smeas, "voice");
+        const voiceLists: Element[][] = voiceEls.length
+          ? voiceEls.map((x) => kids(x))
+          : [0, 1, 2, 3].map((vi) => kids(smeas).filter((c) => (Number(text(c, "track")) || 0) % 4 === vi || (vi === 0 && !kid(c, "track") && c.tagName !== "Chord" && c.tagName !== "Rest"))).filter((l, vi) => vi === 0 || l.length);
+        // MuseScore 2 tuplets are declared with an id that the chords in them name.
+        const tupletDefs = new Map<string, { actual: number; normal: number }>();
+        for (const t of kids(smeas, "Tuplet")) {
+          const id = t.getAttribute("id");
+          if (id) tupletDefs.set(id, { actual: Number(text(t, "actualNotes")) || 3, normal: Number(text(t, "normalNotes")) || 2 });
+        }
+        voiceLists.forEach((voiceKids, v) => {
           let pos = 0;
           // A trill line or two-chord tremolo starts on the next chord; a trill line ends on the last one.
           let trillNext = false;
@@ -346,7 +413,7 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
           let lastFirst: Element | null = null;
           const tuplets: number[] = [];
           const tupletInfo: { actual: number; normal: number; base: string }[] = [];
-          for (const c of kids(voice)) {
+          for (const c of voiceKids) {
             if (virtual && SKIP.has(c.tagName)) continue;
             switch (c.tagName) {
               case "location": {
@@ -381,7 +448,13 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
                 addClef(at, text(c, "concertClefType") || text(c, "transposingClefType") || "G", k + 1, p.staves.length > 1);
                 break;
               }
+              case "tick": {
+                // MuseScore 2: an absolute position, in ticks from the start of the score.
+                pos = Number(c.textContent) / (division * 4) - measureStart[m];
+                break;
+              }
               case "Tuplet": {
+                if (c.getAttribute("id")) break; // a MuseScore 2 declaration, applied by reference
                 const actual = Number(text(c, "actualNotes")) || 3;
                 const normal = Number(text(c, "normalNotes")) || 2;
                 tuplets.push(normal / actual);
@@ -495,7 +568,8 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
               case "Chord": {
                 const dt = text(c, "durationType");
                 const graceTag = ["acciaccatura", "appoggiatura", "grace4", "grace8after", "grace16", "grace16after", "grace32", "grace32after"].find((g) => kid(c, g));
-                const ratio = tuplets.reduce((a, b) => a * b, 1);
+                const ref = tupletDefs.get(text(c, "Tuplet"));
+                const ratio = tuplets.reduce((a, b) => a * b, 1) * (ref ? ref.normal / ref.actual : 1);
                 const dots = Number(text(c, "dots")) || 0;
                 let whole: number;
                 const override = text(c, "duration");
@@ -529,8 +603,9 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
                   }
                   if (!graceTag) el(note, "duration", Math.max(1, Math.round(whole * 4 * DIV)));
                   const ties = n ? kids(n, "Spanner").filter((s) => s.getAttribute("type") === "Tie") : [];
-                  const tieStart = ties.some((s) => kid(s, "next"));
-                  const tieStop = ties.some((s) => kid(s, "prev"));
+                  // MuseScore 2: <Tie id> on the first note, <endSpanner id> on the second.
+                  const tieStart = ties.some((s) => kid(s, "next")) || (!!n && !!kid(n, "Tie"));
+                  const tieStop = ties.some((s) => kid(s, "prev")) || (!!n && kids(n, "endSpanner").some((e) => tieIds.has(e.getAttribute("id") ?? "")));
                   if (tieStop) el(note, "tie", null, { type: "stop" });
                   if (tieStart) el(note, "tie", null, { type: "start" });
                   el(note, "voice", k * 4 + v + 1);
@@ -538,14 +613,17 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
                   for (let d = 0; d < dots; d++) el(note, "dot");
                   const acc = n ? kid(n, "Accidental") : null;
                   if (acc && ACCIDENTAL[text(acc, "subtype")]) el(note, "accidental", ACCIDENTAL[text(acc, "subtype")]);
-                  if (tupletInfo.length && !graceTag) {
-                    const ti = tupletInfo[tupletInfo.length - 1];
+                  if ((tupletInfo.length || ref) && !graceTag) {
+                    const ti = ref ?? tupletInfo[tupletInfo.length - 1];
                     const tm = el(note, "time-modification");
                     el(tm, "actual-notes", ti.actual);
                     el(tm, "normal-notes", ti.normal);
                   }
                   const stem = text(c, "StemDirection");
                   if (stem === "up" || stem === "down") el(note, "stem", stem);
+                  // Ghost notes in brackets, dead notes as a cross.
+                  if (n && text(n, "dead") === "1") el(note, "notehead", "x");
+                  else if (n && text(n, "ghost") === "1") el(note, "notehead", "normal", { parentheses: "yes" });
                   if (p.staves.length > 1) el(note, "staff", k + 1);
                   // Notations: ties, slurs, articulations, ornaments, fermata, tab string/fret.
                   const nots: Element[] = [];
@@ -560,6 +638,11 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
                   if (ni === 0 && !virtual) {
                     for (const s of kids(c, "Spanner").filter((x) => x.getAttribute("type") === "Slur")) {
                       el(notations(), "slur", null, { type: kid(s, "next") ? "start" : "stop", number: 1 });
+                    }
+                    const bows = kids(c, "Articulation").map((a) => TECHNICAL[text(a, "subtype")]).filter(Boolean);
+                    if (bows.length) {
+                      const tech = kid(notations(), "technical") ?? el(notations(), "technical");
+                      for (const b of bows) el(tech, b);
                     }
                     const arts = kids(c, "Articulation").map((a) => ARTIC[text(a, "subtype")]).filter(Boolean);
                     if (arts.length) {
@@ -610,6 +693,15 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
                       const tech = el(notations(), "technical");
                       el(tech, "string", Number(str) + 1);
                       el(tech, "fret", fret);
+                      // A bend: its curve's highest point (MuseScore: 100 = a whole tone), and a
+                      // release when it comes back down.
+                      const pts = n ? Array.from(n.getElementsByTagName("Bend")[0]?.getElementsByTagName("point") ?? []).map((x) => Number(x.getAttribute("pitch")) || 0) : [];
+                      const top = pts.length ? Math.max(...pts) : 0;
+                      if (top > 0) {
+                        const bend = el(tech, "bend");
+                        el(bend, "bend-alter", top / 50);
+                        if (pts[pts.length - 1] < top) el(bend, "release");
+                      }
                     }
                   }
                   if (ni === 0 && !virtual) {
@@ -653,7 +745,13 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
           const sub = (text(mk, "subtype") || label).toLowerCase();
           const dir = el(meas, "direction", null, { placement: "above" });
           el(el(dir, "direction-type"), "words", plain(kid(mk, "text")) || label);
-          if (sub === "fine") el(dir, "sound", null, { fine: "yes" });
+          // A marker's role comes first from the jump that names it: where to leave for the
+          // coda ("play until"), where the coda is ("continue at"), or where to stop.
+          const leaveFor = jumpUntil.get(label);
+          if (leaveFor) el(dir, "sound", null, { tocoda: leaveFor });
+          else if (jumpContinue.has(label)) el(dir, "sound", null, { coda: label });
+          else if (jumpUntil.has(label) && sub !== "fine") el(dir, "sound", null, { fine: "yes" });
+          else if (sub === "fine") el(dir, "sound", null, { fine: "yes" });
           else if (sub.startsWith("segno")) el(dir, "sound", null, { segno: label });
           else if (sub === "tocoda" || sub === "tocodasym") el(dir, "sound", null, { tocoda: label });
           else if (sub.startsWith("coda") || sub === "varcoda") el(dir, "sound", null, { coda: label });
