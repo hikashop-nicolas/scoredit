@@ -278,11 +278,25 @@ export function createPageView(score: ScoreDoc, opts: ViewOptions): PageView {
   // Following: scroll to the playing system when it changes or leaves the view, even before it
   // is drawn (it is drawn once in view). A system taller than the view (a full orchestra on a
   // phone) is scrolled to once, then left for the reader to move around in.
+  // Halfway through a system, the next one is brought into view too, so it can be read ahead.
   let followed = -1;
+  let ahead = -1;
   function showPosition(m: number, q: number, quarters: number, follow: boolean): void {
     const i = systemOf(systems, m);
     const s = slots[i];
     if (!s) return;
+    const x = s.pos ? xAt(s.pos, m, q, quarters) : null;
+    if (follow && i === followed && ahead !== i && x !== null && x > s.el.clientWidth / 2 && slots[i + 1]) {
+      ahead = i;
+      const top = s.el.offsetTop - page.offsetTop;
+      const next = slots[i + 1].el;
+      const nextBottom = next.offsetTop - page.offsetTop + next.offsetHeight;
+      const want = Math.min(top - 12, nextBottom - root.clientHeight + 12);
+      if (want > root.scrollTop + 1) {
+        root.scrollTo({ top: want, behavior: "smooth" });
+        schedule();
+      }
+    }
     if (follow) {
       const top = s.el.offsetTop - page.offsetTop;
       const bottom = top + s.el.offsetHeight;
@@ -295,7 +309,6 @@ export function createPageView(score: ScoreDoc, opts: ViewOptions): PageView {
         schedule();
       }
     }
-    const x = s.pos ? xAt(s.pos, m, q, quarters) : null;
     if (x === null) {
       cursor.hidden = true;
       return;
