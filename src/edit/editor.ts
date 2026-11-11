@@ -1,7 +1,7 @@
 import type { ScoreDoc } from "../model/score";
 import { kid, kids, text } from "../model/xml";
 import { readMeasure, voiceKey, writeMeasure, type Event, type ReadMeasure } from "./measure";
-import { TYPES, addTechnicalXml, setTechValue, setBends, type Bend, addSpan, removeSpan, setFingering, setTremolo, spansOf, addSlur, defaultPosition, isTied, keepMarksFor, makeGrace, marksOf, placeInNote, removeSlur, setLyric, setMark, setPosition, slursOf, writtenFor, keyAlter, makeNote, midiOf, pieceOf, readPitch, setPitch, setTie, spellMidi, splitLength, type Pitch, type Written } from "./notes";
+import { TYPES, addOrnamentXml, setOrnamentAccidental, addTechnicalXml, setTechValue, setBends, type Bend, addSpan, removeSpan, setFingering, setTremolo, spansOf, addSlur, defaultPosition, isTied, keepMarksFor, makeGrace, marksOf, placeInNote, removeSlur, setLyric, setMark, setPosition, slursOf, writtenFor, keyAlter, makeNote, midiOf, pieceOf, readPitch, setPitch, setTie, spellMidi, splitLength, type Pitch, type Written } from "./notes";
 
 /** Where the next note goes: a beat in one voice of one staff of a part. */
 export interface Caret {
@@ -570,6 +570,28 @@ export class ScoreEditor {
       this.touch(at.part, at.measure);
       setTechValue(note, tag, value);
       return { from: at.measure, to: at.measure + 1, appended: 0 };
+    });
+  }
+
+  /** Adds an ornament written as XML (a rebuild copying one as it is). */
+  addOrnament(note: Element, xml: string): Change {
+    const at = this.locate(note);
+    if (!at) return { from: 0, to: 0, appended: 0 };
+    return this.transact(() => {
+      this.touch(at.part, at.measure);
+      addOrnamentXml(note, xml);
+      return { from: at.measure, to: at.measure + 1, appended: 0 };
+    });
+  }
+
+  /** Sets the accidental over the ornament of the event at the caret ("" takes it off). */
+  ornamentAccidental(caret: Caret, value: string): Change {
+    const ev = this.eventAt(caret);
+    if (!ev || ev.rest) return { from: caret.measure, to: caret.measure, appended: 0 };
+    return this.transact(() => {
+      this.touch(caret.part, caret.measure);
+      setOrnamentAccidental(ev.notes[0], value);
+      return { from: caret.measure, to: caret.measure + 1, appended: 0 };
     });
   }
 

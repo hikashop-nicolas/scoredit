@@ -39,7 +39,7 @@ export const HELPERS = `(() => {
     return Number(m[2]) * 7 + STEPS.indexOf(m[1]);
   };
   // The marks on a note, in words.
-  const NAMES_OF = { "strong-accent": "marcato", "trill-mark": "trill", arpeggiate: "arpeggio", "inverted-mordent": "inverted mordent" };
+  const NAMES_OF = { "strong-accent": "marcato", "trill-mark": "trill", arpeggiate: "arpeggio", "inverted-mordent": "inverted mordent", "inverted-turn": "inverted turn", "delayed-turn": "delayed turn" };
   const notationWords = (n) => {
     const words = [];
     const ends = (e, what) => words.push(what + (e.getAttribute("type") === "stop" ? " ends" : " starts"));
@@ -49,7 +49,8 @@ export const HELPERS = `(() => {
         for (const o of g.children) {
           if (o.tagName === "tremolo") (o.getAttribute("type") ?? "single") === "single" ? words.push("tremolo " + o.textContent.trim()) : ends(o, "tremolo");
           else if (o.tagName === "wavy-line") ends(o, "trill line");
-          else if (o.tagName !== "accidental-mark") words.push(NAMES_OF[o.tagName] ?? o.tagName);
+          else if (o.tagName === "accidental-mark") words.push(o.textContent.trim() + " over it");
+          else words.push(NAMES_OF[o.tagName] ?? o.tagName);
         }
       for (const g of kidsOf(nots, "technical"))
         for (const t of g.children) {
@@ -722,6 +723,23 @@ export const scenarios = [
       await d.tapStaff(1, 3, 1, "E4");
       await d.button("Arrow");
       await d.bars({ 1: "C4 quarter [pluck i], D4 quarter [hole half closed], E4 quarter [arrow up], F4 quarter" });
+    },
+  },
+  {
+    id: "turns-and-accidentals",
+    title: "Turns, an inverted mordent, and a sharp over a trill",
+    device: "desktop",
+    fixture: "melody.musicxml",
+    why: "A turn (a sideways S) plays the notes around the main one; an inverted turn goes the other way; an inverted mordent is a quick note above and back. A small sharp, flat or natural over an ornament changes the note it decorates with: each press of its button moves to the next.",
+    look: "A turn, an inverted turn and an inverted mordent over the first three notes, and tr with a small sharp over the fourth.",
+    async run(d) {
+      await d.button("Marks");
+      for (const [beat, pitch, label] of [[1, "C4", "Turn"], [2, "D4", "Inverted turn"], [3, "E4", "Inverted mordent"], [4, "F4", "Trill"]]) {
+        await d.tapStaff(1, beat, 1, pitch);
+        await d.button(label);
+      }
+      await d.button("Accidental over the ornament");
+      await d.bars({ 1: "C4 quarter [turn], D4 quarter [inverted turn], E4 quarter [inverted mordent], F4 quarter [trill; sharp over it]" });
     },
   },
   {

@@ -264,7 +264,7 @@ function placeIn(parent: Element, child: Element, order: string[]): Element {
 export const ARTICULATIONS = ["accent", "strong-accent", "staccato", "tenuto", "detached-legato", "staccatissimo", "spiccato", "scoop", "plop", "doit", "falloff", "breath-mark", "caesura", "stress", "unstress", "soft-accent"];
 /** Technical marks that are plain signs (bowings, harmonics...): put on and off like accents. */
 export const TECHNICAL_MARKS = ["up-bow", "down-bow", "harmonic", "open-string", "stopped", "snap-pizzicato", "thumb-position", "tap", "fingernails", "double-tongue", "triple-tongue", "heel", "toe", "brass-bend", "flip", "smear", "open", "half-muted", "golpe"];
-export const ORNAMENTS = ["trill-mark", "turn", "delayed-turn", "inverted-turn", "delayed-inverted-turn", "vertical-turn", "shake", "mordent", "inverted-mordent", "schleifer", "haydn"];
+export const ORNAMENTS = ["trill-mark", "turn", "delayed-turn", "inverted-turn", "delayed-inverted-turn", "vertical-turn", "inverted-vertical-turn", "shake", "mordent", "inverted-mordent", "schleifer", "haydn"];
 
 /** The marks on a note: articulation and ornament names, and "fermata". */
 export function marksOf(note: Element): string[] {
@@ -598,4 +598,54 @@ export function addTechnicalXml(note: Element, xml: string): void {
   const n = notationsOf(note, true);
   const t = kid(n, "technical") ?? placeIn(n, doc.createElementNS(null, "technical"), NOTATION_ORDER);
   t.appendChild(doc.importNode(parsed, true));
+}
+
+// ---- Ornaments with details (a long mordent, an accidental over a trill...) and any other.
+
+/** Whether an ornament element says more than its name (attributes, content). */
+const detailed = (e: Element) => e.attributes.length > 0 || !!e.textContent?.trim() || !!e.firstElementChild;
+
+/**
+ * Ornaments a plain mark does not render: unknown ones, accidentals over an ornament, and
+ * known ones with details. As written, for copying whole (spans excluded).
+ */
+export function otherOrnaments(note: Element): string[] {
+  const ser = new XMLSerializer();
+  return kids(note, "notations").flatMap((nots) =>
+    kids(nots, "ornaments").flatMap((o) => kids(o).filter((c) => c.tagName !== "wavy-line" && c.tagName !== "tremolo" && (!ORNAMENTS.includes(c.tagName) || detailed(c))).map((c) => ser.serializeToString(c))),
+  );
+}
+
+/** The plain ornament marks (no details), which setMark can put back. */
+export function plainOrnaments(note: Element): string[] {
+  return kids(note, "notations").flatMap((nots) => kids(nots, "ornaments").flatMap((o) => kids(o).filter((c) => ORNAMENTS.includes(c.tagName) && !detailed(c)).map((c) => c.tagName)));
+}
+
+/** Adds an ornament written as XML, at the end of the note's ornaments. */
+export function addOrnamentXml(note: Element, xml: string): void {
+  const parsed = new DOMParser().parseFromString(`<x>${xml}</x>`, "application/xml").documentElement.firstElementChild;
+  if (!parsed) return;
+  const doc = note.ownerDocument;
+  const n = notationsOf(note, true);
+  const o = kid(n, "ornaments") ?? placeIn(n, doc.createElementNS(null, "ornaments"), NOTATION_ORDER);
+  o.appendChild(doc.importNode(parsed, true));
+}
+
+/** The accidental shown over a note's ornament ("" if none): sharp, flat, natural... */
+export function ornamentAccidental(note: Element): string {
+  for (const nots of kids(note, "notations")) for (const o of kids(nots, "ornaments")) for (const a of kids(o, "accidental-mark")) return a.textContent?.trim() ?? "";
+  return "";
+}
+
+/** Sets (or, empty, removes) the accidental over a note's ornament. */
+export function setOrnamentAccidental(note: Element, value: string): void {
+  for (const nots of kids(note, "notations")) for (const o of kids(nots, "ornaments")) for (const a of kids(o, "accidental-mark")) a.remove();
+  if (!value) return;
+  const doc = note.ownerDocument;
+  const n = notationsOf(note, true);
+  const o = kid(n, "ornaments") ?? placeIn(n, doc.createElementNS(null, "ornaments"), NOTATION_ORDER);
+  const a = doc.createElementNS(null, "accidental-mark");
+  a.setAttribute("placement", "above");
+  a.textContent = value;
+  o.appendChild(a);
 }

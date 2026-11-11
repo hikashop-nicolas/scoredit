@@ -5,7 +5,7 @@ import { kids, text } from "../model/xml";
 import { buildTimeline } from "../play/timeline";
 import { ScoreEditor, type Caret } from "./editor";
 import { readMeasure, voiceKey } from "./measure";
-import { bendsOf, otherTechnical, techValue, fingeringOf, lyricsOf, marksOf, readPitch, slursOf, spansOf, tremoloOf, type Pitch } from "./notes";
+import { bendsOf, otherOrnaments, otherTechnical, techValue, fingeringOf, lyricsOf, marksOf, readPitch, slursOf, spansOf, tremoloOf, type Pitch } from "./notes";
 
 const note = (step: string, dur: number, type: string, extra = "") => `<note><pitch><step>${step}</step><octave>4</octave></pitch><duration>${dur}</duration><voice>1</voice><type>${type}</type>${extra}</note>`;
 const rest = `<note><rest measure="yes"/><duration>4</duration><voice>1</voice></note>`;
@@ -264,5 +264,20 @@ describe("Entering notes", () => {
     expect(otherTechnical(notes()[3])).toEqual(["<handbell>damp</handbell>"]);
     ed.techValue(notes()[0], "pluck", "");
     expect(techValue(notes()[0], "pluck")).toBe("");
+  });
+
+  it("copies detailed and rare ornaments, and sets the accidental over one", () => {
+    const s = score(note("C", 1, "quarter") + note("D", 1, "quarter") + note("E", 1, "quarter") + note("F", 1, "quarter"));
+    const ed = new ScoreEditor(s);
+    const notes = () => Array.from(s.measures[0][0].getElementsByTagName("note"));
+    ed.addOrnament(notes()[0], '<mordent long="yes"/>');
+    ed.addOrnament(notes()[1], "<inverted-vertical-turn/>");
+    ed.mark(at(0, 2), "trill-mark");
+    ed.ornamentAccidental(at(0, 2), "flat");
+    expect(otherOrnaments(notes()[0])).toEqual(['<mordent long="yes"/>']);
+    expect(otherOrnaments(notes()[2])).toEqual(['<accidental-mark placement="above">flat</accidental-mark>']);
+    expect(marksOf(notes()[1])).toEqual(["inverted-vertical-turn"]);
+    ed.ornamentAccidental(at(0, 2), "");
+    expect(otherOrnaments(notes()[2])).toEqual([]);
   });
 });

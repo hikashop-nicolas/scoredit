@@ -2,7 +2,7 @@ import { ScoreDoc } from "../model/score";
 import { kid, kids, text } from "../model/xml";
 import { ScoreEditor, type Caret } from "./editor";
 import { readMeasure, writeMeasure, type Event } from "./measure";
-import { SPANS, bendsOf, otherTechnical, fingeringOf, type Bend, lyricsOf, marksOf, midiOf, readPitch, slursOf, spansOf, tremoloOf, type Lyric, type Pitch, type SlurEnd, type SpanEnd } from "./notes";
+import { ORNAMENTS, SPANS, bendsOf, otherOrnaments, otherTechnical, plainOrnaments, fingeringOf, type Bend, lyricsOf, marksOf, midiOf, readPitch, slursOf, spansOf, tremoloOf, type Lyric, type Pitch, type SlurEnd, type SpanEnd } from "./notes";
 
 // Rebuilding a score through the editor, as a test of it: an empty copy of the score (bars,
 // signatures, clefs, repeats and text kept, every note a rest) gets each note entered again,
@@ -32,14 +32,15 @@ export interface Entry {
   bends: { midi: number; bends: Bend[] }[];
   /** Plucks, holes, arrows and any other technical sign, copied as written. */
   technical: { midi: number; xml: string[] }[];
+  /** Ornaments with details or of other kinds, copied as written (on the first note). */
+  ornaments: string[];
 }
 
 /** What a rebuild could not enter (the editor does not do these yet), by kind. */
 export type Skipped = Record<string, number>;
 
-const NOT_ENTERED: [what: string, test: (n: Element) => boolean][] = [
-  ["other ornaments", (n) => Array.from(n.getElementsByTagName("ornaments")).some((o) => kids(o).some((c) => !["trill-mark", "turn", "delayed-turn", "inverted-turn", "delayed-inverted-turn", "vertical-turn", "mordent", "inverted-mordent", "wavy-line", "tremolo", "accidental-mark", "haydn", "shake", "schleifer"].includes(c.tagName)))],
-];
+// Everything a note can carry is entered now; kinds left out would be listed here.
+const NOT_ENTERED: [what: string, test: (n: Element) => boolean][] = [];
 
 const TYPE_Q: Record<string, number> = { breve: 8, whole: 4, half: 2, quarter: 1, eighth: 0.5, "16th": 0.25, "32nd": 0.125, "64th": 0.0625, "128th": 0.03125 };
 
@@ -88,8 +89,9 @@ export function plan(score: ScoreDoc): { entries: Entry[]; skipped: Skipped } {
           const start = starts.get(i) ?? null;
           const at0: Caret = { part, measure: m, staff, voice, pos: ev.pos / per };
           // A tuplet that starts with a rest is laid out all the same.
-          const marks = [...new Set(ev.notes.flatMap(marksOf))];
-          const none = { graces: [], lyrics: [], slurs: [], tremolo: 0, spans: [], fingerings: [], bends: [], technical: [] };
+          // Ornament marks only when plain; detailed ones are copied whole (below).
+          const marks = [...new Set(ev.notes.flatMap((n) => marksOf(n).filter((m) => !ORNAMENTS.includes(m) || plainOrnaments(n).includes(m))))];
+          const none = { graces: [], lyrics: [], slurs: [], tremolo: 0, spans: [], fingerings: [], bends: [], technical: [], ornaments: [] };
           // A rest opening a tuplet, or carrying a fermata, is written as it is.
           if (ev.rest && (start || marks.length)) entries.push({ at: at0, pitches: [], quarters: ev.dur / per, ties: [], tuplet: start ?? undefined, rest: true, marks, ...none });
           if (ev.rest) return;
@@ -109,6 +111,7 @@ export function plan(score: ScoreDoc): { entries: Entry[]; skipped: Skipped } {
             slurs: ev.notes.flatMap(slursOf),
             tremolo: Math.max(0, ...ev.notes.map(tremoloOf)),
             spans: ev.notes.flatMap(spansOf),
+            ornaments: ev.notes.flatMap(otherOrnaments),
             technical: ev.notes.flatMap((n) => {
               const p = readPitch(n);
               const x = otherTechnical(n);
@@ -193,6 +196,10 @@ export function rebuild(score: ScoreDoc): { doc: ScoreDoc; skipped: Skipped; ent
     for (const m of e.marks) ed.mark(e.at, m, true);
     for (const l of e.lyrics) ed.lyric(e.at, l.text, l.syllabic, l.number);
     if (e.tremolo) ed.tremolo(e.at, e.tremolo);
+    if (e.ornaments.length) {
+      const first = ed.eventAt(e.at)?.notes[0];
+      if (first) for (const xml of e.ornaments) ed.addOrnament(first, xml);
+    }
     const ev = e.fingerings.length || e.bends.length || e.technical.length ? ed.eventAt(e.at) : null;
     const noteOf = (midi: number) => ev?.notes.find((x) => { const p = readPitch(x); return !!p && midiOf(p) === midi; });
     for (const f of e.fingerings) {
@@ -280,6 +287,7 @@ export function noteList(score: ScoreDoc): string[] {
         const starts = ev.notes.reduce((n, x) => n + count(x, "start"), 0);
         const stops = ev.notes.reduce((n, x) => n + count(x, "stop"), 0);
         if (!derived(key)) {
+          for (const o of ev.notes.flatMap(otherOrnaments)) out.push(`${at}|ornament ${o.replace(/\s+/g, " ")}`);
           const tr = Math.max(0, ...ev.notes.map(tremoloOf));
           if (tr) out.push(`${at}|tremolo ${tr} strokes`);
           for (const n of ev.notes) {
@@ -341,6 +349,7 @@ export function describeNote(key: string, score: ScoreDoc): string {
   if (kind === "slurs") return `${where}: ${pitch.slice(6)} of slurs`;
   if (kind === "tremolo" && /strokes/.test(pitch)) return `${where}: ${pitch}`;
   if (kind === "fingering") return `${where}: fingering ${pitch.split(" ")[1]} on ${NAMES[Number(pitch.split(" ")[3]) % 12] + (Math.floor(Number(pitch.split(" ")[3]) / 12) - 1)}`;
+  if (kind === "ornament") return `${where}: ornament ${pitch.slice(9).replace(/<\/?([a-z-]+)[^>]*>/g, " $1 ").replace(/\s+/g, " ").trim()}`;
   if (kind === "technical") return `${where}: ${pitch.slice(10).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim()}`;
   if (kind === "bend") return `${where}: bend of ${pitch.split(" ")[1]} semitones${pitch.includes("pre-bend") ? ", pre-bent" : ""}${pitch.includes("release") ? ", released" : ""}`;
   if (["glissando", "slide", "trill", "tremolo", "hammer-on", "pull-off"].includes(kind)) return `${where}: ${pitch.replace(/(\d+) start (\d+) end/, "$1 start, $2 end")}`;

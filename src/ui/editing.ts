@@ -1,6 +1,6 @@
 import { ScoreEditor, type Caret, type Change, type Clip } from "../edit/editor";
 import { readMeasure, voiceKey, type Event } from "../edit/measure";
-import { techValue, bendsOf, fingeringOf, type Bend, keyAlter, lyricsOf, marksOf, midiOf, readPitch, spellMidi, tremoloOf, type Pitch } from "../edit/notes";
+import { ornamentAccidental, techValue, bendsOf, fingeringOf, type Bend, keyAlter, lyricsOf, marksOf, midiOf, readPitch, spellMidi, tremoloOf, type Pitch } from "../edit/notes";
 import type { ScoreDoc } from "../model/score";
 import { kid, kids, text } from "../model/xml";
 import type { PageView, Pick } from "../render/page-view";
@@ -74,6 +74,11 @@ const ICONS = {
   pluck: svg('<text x="12" y="17" text-anchor="middle" font-size="13" font-style="italic" font-weight="700" fill="currentColor" stroke="none">p i</text>'),
   hole: svg('<circle cx="12" cy="12" r="7"/><path d="M12 5a7 7 0 0 0 0 14z" fill="currentColor"/>'),
   arrow: svg('<line x1="12" x2="12" y1="20" y2="5"/><polyline points="7 10 12 5 17 10"/>'),
+  turn: svg('<path d="M3 14c0-5 5-5 7-1s2 5 4 5 7-2 7-6-5-4-7-1-4 6-7 6-4-1-4-3z"/>'),
+  invertedTurn: svg('<path d="M3 14c0-5 5-5 7-1s2 5 4 5 7-2 7-6-5-4-7-1-4 6-7 6-4-1-4-3z"/><line x1="12" x2="12" y1="5" y2="20"/>'),
+  delayedTurn: svg('<path d="M9 14c0-4 4-4 5-1s2 4 3 4 5-2 5-5-4-3-5-1-3 5-5 5-3-1-3-2z"/><circle cx="4" cy="16" r="2" fill="currentColor"/>'),
+  invertedMordent: svg('<polyline points="3 14 7 9 10 14 14 9 17 14 21 9"/>'),
+  ornamentAccidental: svg('<text x="12" y="10" text-anchor="middle" font-size="10" fill="currentColor" stroke="none">♯</text><path d="M4 18q2-3 4 0t4 0 4 0 4 0"/>'),
   lyrics: svg('<text x="12" y="17" text-anchor="middle" font-size="12" font-weight="700" fill="currentColor" stroke="none">Aa</text>'),
   triplet: svg('<polyline points="4 9 4 5 20 5 20 9"/><text x="12" y="19" text-anchor="middle" font-size="11" font-weight="700" fill="currentColor" stroke="none">3</text>'),
   del: svg('<polyline points="4 7 20 7"/><path d="M6 7l1 13h10l1-13"/><path d="M9 7V4h6v3"/>'),
@@ -280,6 +285,10 @@ export function createEditing(host: EditingHost): Editing {
     ["fermata", ICONS.fermata, "fermata"],
     ["trill-mark", ICONS.trill, "trill"],
     ["mordent", ICONS.mordent, "mordent"],
+    ["inverted-mordent", ICONS.invertedMordent, "invertedMordent"],
+    ["turn", ICONS.turn, "turn"],
+    ["inverted-turn", ICONS.invertedTurn, "invertedTurn"],
+    ["delayed-turn", ICONS.delayedTurn, "delayedTurn"],
     ["shake", ICONS.shake, "shake"],
     ["schleifer", ICONS.schleifer, "schleifer"],
     ["tap", ICONS.tap, "tap"],
@@ -307,10 +316,19 @@ export function createEditing(host: EditingHost): Editing {
       const next = values[(values.indexOf(now) + 1) % (values.length + 1)] ?? "";
       landed(editor.techValue(n, tag, next));
     });
+  // The small accidental over an ornament: sharp, flat, natural, off.
+  const ornAccBtn = button(ICONS.ornamentAccidental, t("ornamentAccidental"), () => {
+    if (!sel) return;
+    const ev = editor.eventAt(sel.at);
+    if (!ev || ev.rest) return;
+    const order = ["sharp", "flat", "natural"];
+    const now = ornamentAccidental(ev.notes[0]);
+    landed(editor.ornamentAccidental(sel.at, order[(order.indexOf(now) + 1) % (order.length + 1)] ?? ""));
+  });
   const pluckBtn = cycleBtn("pluck", ICONS.pluck, "pluck", ["p", "i", "m", "a"]);
   const holeBtn = cycleBtn("hole", ICONS.hole, "hole", ["yes", "half", "no"]);
   const arrowBtn = cycleBtn("arrow", ICONS.arrow, "arrow", ["up", "down"]);
-  row3.append(...markBtns, slurBtn, graceBtn, lyricsBtn, arpBtn, tremBtn, glissBtn, trillLineBtn, fingerBtn, upBowBtn, downBowBtn, hammerBtn, pullBtn, bendBtn, pluckBtn, holeBtn, arrowBtn);
+  row3.append(...markBtns, slurBtn, graceBtn, lyricsBtn, arpBtn, tremBtn, glissBtn, trillLineBtn, fingerBtn, upBowBtn, downBowBtn, hammerBtn, pullBtn, bendBtn, pluckBtn, holeBtn, arrowBtn, ornAccBtn);
 
   const toShown = (p: number) => host.shown()?.indexOf(p) ?? p;
   const toFull = (rp: number) => host.shown()?.[rp] ?? rp;
