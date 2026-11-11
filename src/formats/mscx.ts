@@ -82,6 +82,16 @@ function spell(tpc: number, midi: number): { step: string; alter: number; octave
   return { step, alter, octave };
 }
 
+/** A clef at the very start of a staff's first measure (before any note), if there is one. */
+function firstClef(measure: Element | undefined): boolean {
+  const voice = measure ? kid(measure, "voice") : null;
+  for (const c of voice ? kids(voice) : []) {
+    if (c.tagName === "Clef") return true;
+    if (c.tagName === "Chord" || c.tagName === "Rest") return false;
+  }
+  return false;
+}
+
 const plain = (el: Element | null): string => (el?.textContent ?? "").replace(/\s+/g, " ").trim();
 
 interface PartDef {
@@ -245,8 +255,9 @@ export function readMscx(source: string): { doc: Document; sections: number[] } 
           if (p.tab[k]) {
             const sd = el(attrs, "staff-details", null, p.staves.length > 1 ? { number: k + 1 } : undefined);
             el(sd, "staff-lines", p.strings.length || 6);
-          } else if (def && m === 0 && !measuresOf[partStaves[pi][k]]?.[0]?.getElementsByTagName("Clef").length) {
-            addClef(attrs, def, k + 1, p.staves.length > 1);
+          } else if (!firstClef(measuresOf[partStaves[pi][k]]?.[0])) {
+            // Every staff gets its clef: a lone numbered clef is taken for the first staff otherwise.
+            addClef(attrs, def || (kid(s, "StaffType")?.getAttribute("group") === "percussion" ? "PERC" : "G"), k + 1, p.staves.length > 1);
           }
         });
       }
