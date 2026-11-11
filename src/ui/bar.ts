@@ -22,6 +22,7 @@ const ICON_KBD = svgIcon('<rect x="2" y="6" width="20" height="12" rx="1"/><line
 const ICON_TAB = '<span class="sv-tab-label" aria-hidden="true">TAB</span>';
 const ICON_FRETS = svgIcon('<rect x="2" y="7" width="20" height="10" rx="1"/><line x1="8" x2="8" y1="7" y2="17"/><line x1="14" x2="14" y1="7" y2="17"/><line x1="20" x2="20" y1="7" y2="17"/><line x1="2" x2="22" y1="10.5" y2="10.5"/><line x1="2" x2="22" y1="13.5" y2="13.5"/>');
 const ICON_PARTS = svgIcon('<line x1="9" x2="21" y1="6" y2="6"/><line x1="9" x2="21" y1="12" y2="12"/><line x1="9" x2="21" y1="18" y2="18"/><polyline points="3 6 4.5 7.5 7 4.5"/><polyline points="3 12 4.5 13.5 7 10.5"/><line x1="3" x2="7" y1="18" y2="18"/>');
+const ICON_EDIT = svgIcon('<path d="M4 20h4L19 9l-4-4L4 16z"/><line x1="13.5" x2="17.5" y1="6.5" y2="10.5"/>');
 const ICON_LINE = svgIcon('<line x1="2" x2="22" y1="9" y2="9"/><line x1="2" x2="22" y1="15" y2="15"/><polyline points="17 5 21 12 17 19"/>');
 
 export interface BarOptions {
@@ -45,6 +46,8 @@ export interface BarOptions {
   tab?: { on: boolean; toggle(on: boolean): void };
   /** Shows or hides parts: the indices shown, null for all. */
   onParts?(shown: number[] | null): void;
+  /** An Edit button, for scores that can be edited. */
+  onEdit?(): void;
 }
 
 export interface Bar {
@@ -240,6 +243,7 @@ export function createBar(o: BarOptions): Bar {
     tabBtn.setAttribute("aria-pressed", String(tabOn));
     el.append(tabBtn);
   }
+  if (o.onEdit) el.append(button(ICON_EDIT, t("edit"), () => o.onEdit?.()));
   el.append(partsBtn, partsPop, grow, slider, label);
   let fs: HTMLButtonElement | null = null;
   if (o.onFullscreen) {

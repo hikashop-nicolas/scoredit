@@ -9,6 +9,10 @@ export interface Positions {
   /** Top of the first staff and bottom of the last, px. */
   top: number;
   bottom: number;
+  /** Each staff drawn: its part (in the rendered score) and staff number, top and bottom line, px. */
+  staves: { part: number; staff: number; top: number; bottom: number; lines: number }[];
+  /** Each note head drawn, for picking: its voice and beat, and its rank in its chord from the lowest. */
+  drawn: { g: SVGGElement; part: number; staff: number; voice: string; measure: number; onset: number; rank: number; x: number; y: number }[];
 }
 
 export const noteKey = (measure: number, onset: number) => `${measure}|${Math.round(onset * 960)}`;
@@ -21,6 +25,18 @@ export function collectPositions(osmd: OpenSheetMusicDisplay, first: number, zoo
   const notes: Positions["notes"] = new Map();
   let top = Infinity;
   let bottom = -Infinity;
+  const staves: Positions["staves"] = [];
+  const drawn: Positions["drawn"] = [];
+  const instruments = osmd.Sheet.Instruments;
+  const staffOf = (st: { ParentInstrument: unknown }) => {
+    const ins = st.ParentInstrument as (typeof instruments)[number];
+    return { part: instruments.indexOf(ins), staff: ins.Staves.indexOf(st as never) + 1 };
+  };
+  for (const sl of osmd.GraphicSheet.MusicPages[0]?.MusicSystems[0]?.StaffLines ?? []) {
+    const y = sl.PositionAndShape.AbsolutePosition.y * u;
+    const lines = sl.ParentStaff.StafflineCount || 5;
+    staves.push({ ...staffOf(sl.ParentStaff), top: y, bottom: y + (lines - 1) * u, lines });
+  }
   osmd.GraphicSheet.MeasureList.forEach((staves, k) => {
     const m = first + k;
     const seen = new Map<number, number>();
@@ -42,9 +58,15 @@ export function collectPositions(osmd: OpenSheetMusicDisplay, first: number, zoo
         const key = Math.round(q * 960);
         if (!seen.has(key) || x < seen.get(key)!) seen.set(key, x);
         for (const ve of se.graphicalVoiceEntries) {
+          const where = gm.ParentStaff ? staffOf(gm.ParentStaff) : { part: 0, staff: 1 };
+          const voice = String(ve.parentVoiceEntry?.ParentVoice?.VoiceId ?? 1);
+          const byPitch = [...ve.notes].sort((a, b) => (a.sourceNote.halfTone ?? 0) - (b.sourceNote.halfTone ?? 0));
           for (const gn of ve.notes) {
             const g = (gn as unknown as { getSVGGElement?(): SVGGElement }).getSVGGElement?.();
             if (!g) continue;
+            if (!gn.sourceNote.isRest())
+              drawn.push({ g, ...where, voice, measure: m, onset: q, rank: byPitch.indexOf(gn), x: gn.PositionAndShape.AbsolutePosition.x * u - crop, y: gn.PositionAndShape.AbsolutePosition.y * u });
+            else drawn.push({ g, ...where, voice, measure: m, onset: q, rank: -1, x: gn.PositionAndShape.AbsolutePosition.x * u - crop, y: gn.PositionAndShape.AbsolutePosition.y * u });
             const nk = noteKey(m, q);
             const list = notes.get(nk);
             if (list) list.push(g);
@@ -56,7 +78,7 @@ export function collectPositions(osmd: OpenSheetMusicDisplay, first: number, zoo
     const onsets = [...seen.entries()].map(([k, x]) => [k / 960, x] as [number, number]).sort((a, b) => a[0] - b[0]);
     if (Number.isFinite(left)) beats.set(m, { onsets, left, right });
   });
-  return { beats, notes, top: Number.isFinite(top) ? top : 0, bottom: Number.isFinite(bottom) ? bottom : 0 };
+  return { beats, notes, top: Number.isFinite(top) ? top : 0, bottom: Number.isFinite(bottom) ? bottom : 0, staves, drawn };
 }
 
 /** x of quarter offset q in measure m (px in the render's frame), or null if not in it. */

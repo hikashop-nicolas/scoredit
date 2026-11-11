@@ -1,7 +1,7 @@
 import type { ScoreDoc } from "../model/score";
 import { kid, kids, text } from "../model/xml";
 import { readMeasure, voiceKey, writeMeasure, type Event, type ReadMeasure } from "./measure";
-import { TYPES, isTied, keyAlter, makeNote, midiOf, pieceOf, readPitch, setPitch, setTie, spellMidi, splitLength, type Pitch, type Written } from "./notes";
+import { TYPES, isTied, placeInNote, keyAlter, makeNote, midiOf, pieceOf, readPitch, setPitch, setTie, spellMidi, splitLength, type Pitch, type Written } from "./notes";
 
 /** Where the next note goes: a beat in one voice of one staff of a part. */
 export interface Caret {
@@ -208,6 +208,7 @@ export class ScoreEditor {
       const n = base.cloneNode(true) as Element;
       for (const tag of ["tie", "notations", "lyric", "accidental", "beam"]) for (const e of kids(n, tag)) e.remove();
       setPitch(n, pitch);
+      if (!kid(n, "chord")) placeInNote(n, this.score.doc.createElementNS(null, "chord"));
       base.after(n);
       const r = readMeasure(this.score.measures[caret.part][caret.measure]);
       writeMeasure(this.score.measures[caret.part][caret.measure], r);

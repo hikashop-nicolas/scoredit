@@ -5,6 +5,7 @@ import { Player } from "../play/player";
 import type { SoundDownloads } from "../play/sounds";
 import { buildTimeline, type Timeline } from "../play/timeline";
 import { Fretboard, fretTuning, position } from "../ui/fretboard";
+import { createEditing } from "../ui/editing";
 import { Keyboard, flash } from "../ui/keyboard";
 import { createKeysView, noteColors } from "./keys-view";
 import { createLineView, type LineView } from "./line-view";
@@ -42,6 +43,10 @@ export interface ScoreViewerOptions {
    * the first choice (indices into score.parts, null for all); `onChange` hears the user's.
    */
   parts?: { show?: number[] | null; onChange?(shown: number[] | null): void };
+  /** Shows an Edit button: notes can then be entered and changed (on the page layout). */
+  editable?: boolean;
+  /** The score changed by an edit (the host marks the file modified; score.serialize() has it). */
+  onChange?(): void;
 }
 
 export interface ScoreViewerHandle {
@@ -59,6 +64,9 @@ export interface ScoreViewerHandle {
   /** Indices of the parts shown, null for all. */
   readonly parts: number[] | null;
   setParts(shown: number[] | null): void;
+  /** Whether edit mode is on. */
+  readonly editing: boolean;
+  setEditing(on: boolean): void;
   /** Starts or pauses playback (the bar's play button). */
   togglePlay(): void;
   /** The player, once playback was used. */
@@ -92,6 +100,7 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
   let pageZoom = clampZoom(opts.zoom ?? (container.clientWidth > 0 && container.clientWidth < 700 ? 0.6 : 1));
   const shell = document.createElement("div");
   shell.className = "sv-shell";
+  shell.tabIndex = -1;
   container.append(shell);
 
   let view: View;
@@ -115,6 +124,44 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
     tab: opts.tablature ? { on: opts.tablature.on, toggle: (on) => setScore(opts.tablature!.toggle(on)) } : undefined,
     onFullscreen: opts.onFullscreen,
     onParts: opts.parts ? (p) => setParts(p, true) : undefined,
+    onEdit: opts.editable ? () => setEditing(true) : undefined,
+  });
+
+  // Edit mode: the palette takes the bar's place; edits draw again what they changed.
+  let editingOn = false;
+  const editing = createEditing({
+    score: () => score,
+    shown: () => shownParts,
+    view: () => (mode === "page" ? (view as PageView) : null),
+    changed: (c) => {
+      player?.dispose();
+      player = null;
+      timeline = null;
+      shownTimeline = null;
+      bar.setPlaying(false);
+      if (shownParts) shownScore = score.only(shownParts);
+      if (mode === "page") (view as PageView).refresh(shownScore, c.from, c.appended ? score.measureCount : c.to);
+      opts.onChange?.();
+    },
+    done: () => setEditing(false),
+  });
+  function setEditing(on: boolean): void {
+    if (on === editingOn || (on && !opts.editable)) return;
+    editingOn = on;
+    if (on) {
+      player?.pause();
+      if (mode !== "page") setLayout("page");
+      editing.attach(view as PageView);
+      editing.start();
+    } else editing.stop();
+    bar.el.hidden = on;
+    shell.focus({ preventScroll: true });
+  }
+  shell.addEventListener("keydown", (e) => {
+    if (editingOn && editing.key(e)) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
   });
   bar.setParts(score.parts.map((p) => p.name), shownParts);
 
@@ -232,7 +279,7 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
     el.addEventListener("pointerup", (e) => {
       const d = down;
       down = null;
-      if (!d || e.pointerId !== d.id || pinching) return;
+      if (!d || e.pointerId !== d.id || pinching || editingOn) return;
       if (Math.hypot(e.clientX - d.x, e.clientY - d.y) > 8 || performance.now() - d.t > 400) return;
       const hit = view.hit(e.clientX, e.clientY);
       if (!hit) return;
@@ -261,6 +308,7 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
     bar.setLayout(mode);
     bindPinch(view.root);
     bindTap(view.root);
+    if (editingOn) editing.attach(mode === "page" ? (view as PageView) : null);
   }
 
   function setScore(next: ScoreDoc): void {
@@ -269,6 +317,7 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
     timeline = null;
     bar.setPlaying(false);
     score = next;
+    editing.reset();
     color = noteColors(score);
     shownParts = validParts(shownParts, score);
     bar.setParts(score.parts.map((p) => p.name), shownParts);
@@ -354,7 +403,7 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
     el.addEventListener("touchcancel", end, { passive: true });
   }
 
-  shell.append(bar.el);
+  shell.append(editing.el, bar.el);
   mount();
 
   return {
@@ -378,6 +427,10 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
     get parts() {
       return shownParts;
     },
+    get editing() {
+      return editingOn;
+    },
+    setEditing,
     setParts: (p) => setParts(p),
     togglePlay,
     get player() {

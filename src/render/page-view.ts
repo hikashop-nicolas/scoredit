@@ -5,8 +5,30 @@ import { kid, kids, text } from "../model/xml";
 import { collectPositions, hitAt, xAt, type Positions } from "./positions";
 import type { View, ViewOptions } from "./view";
 
+/** What a tap or click on the page points at, for editing. */
+export interface Pick {
+  measure: number;
+  quarter: number;
+  /** Part (in the rendered score) and staff under the point, with half staff spaces down from its top line. */
+  part: number;
+  staff: number;
+  step: number;
+  lines: number;
+  /** Client y of that line or space, for showing where a note would go. */
+  snapY: number;
+  /** The note head under the point, if any. */
+  note: Positions["drawn"][number] | null;
+}
+
 export interface PageView extends View {
   readonly systems: readonly SystemRange[];
+  /** Points to the score after an edit (the same piece) and draws measures [from, to) again. */
+  refresh(next: ScoreDoc, from: number, to: number): void;
+  pick(clientX: number, clientY: number): Pick | null;
+  /** The note-entry caret on a staff at a beat, or none. */
+  showCaret(c: { measure: number; quarter: number; part: number; staff: number } | null): void;
+  /** Marks the drawn notes of these (measure, onset, part, staff, voice, rank) as selected. */
+  select(keys: { measure: number; onset: number; part: number; staff: number; voice: string; rank?: number }[]): void;
   /** The fitted width model, in OSMD units (for tests and tuning). */
   readonly layoutParams: Readonly<{ measureBase: number; perWeight: number; systemStart: number; width: number }>;
 }
@@ -32,7 +54,8 @@ interface Slot {
 
 // The page layout: each system (line) is its own OSMD render of a MusicXML slice, so a
 // long score opens at the speed of its first screen and an edit re-renders one line.
-export function createPageView(score: ScoreDoc, opts: ViewOptions): PageView {
+export function createPageView(initial: ScoreDoc, opts: ViewOptions): PageView {
+  let score = initial;
   let zoom = opts.zoom;
   const root = document.createElement("div");
   root.className = "sv-root";
@@ -101,6 +124,21 @@ export function createPageView(score: ScoreDoc, opts: ViewOptions): PageView {
   };
   const settleTimer = window.setTimeout(settle, 3000);
 
+  /** Line breaks for measures from `from` on (the first system gives room to the full part names). */
+  function breaksFrom(from: number): SystemRange[] {
+    const shift = (rs: SystemRange[], by: number) => rs.map((r) => ({ start: r.start + by, end: r.end + by }));
+    // Systems give up room for the part names on their left: full on the first, short after.
+    const label = (names: string[]) => (names.some(Boolean) ? Math.max(...names.map((n) => n.length)) * LABEL_CHAR + 2 : 0);
+    const later = units - label(score.parts.map((p) => p.abbreviation || (score.parts.length > 1 ? abbreviate(p.name) : "")));
+    let fresh = shift(breakSystems(weights.slice(from), { ...params, width: later }), from);
+    // The first system also carries the part names and the time signature.
+    if (from === 0 && fresh.length > 1 && score.parts.some((p) => p.name)) {
+      const first = breakSystems(weights, { ...params, width: units - label(score.parts.map((p) => p.name)) - TIME_WIDTH - firstCut })[0];
+      if (first.end < fresh[0].end) fresh = [first, ...shift(breakSystems(weights.slice(first.end), { ...params, width: later }), first.end)];
+    }
+    return fresh;
+  }
+
   /** Breaks the score into systems again, keeping systems [0, keep) as they are. */
   function layout(reweigh = true, keep = 0): void {
     generation++;
@@ -113,18 +151,7 @@ export function createPageView(score: ScoreDoc, opts: ViewOptions): PageView {
     const kept = slots.slice(0, keep);
     for (const s of slots.slice(keep)) s.el.remove();
     const from = keep ? systems[keep - 1].end : 0;
-    const shift = (rs: SystemRange[]) => rs.map((r) => ({ start: r.start + from, end: r.end + from }));
-    // Systems give up room for the part names on their left: full on the first, short after.
-    const label = (names: string[]) => (names.some(Boolean) ? Math.max(...names.map((n) => n.length)) * LABEL_CHAR + 2 : 0);
-    const later = units - label(score.parts.map((p) => p.abbreviation || (score.parts.length > 1 ? abbreviate(p.name) : "")));
-    let fresh = shift(breakSystems(weights.slice(from), { ...params, width: later }));
-    // The first system also carries the part names and the time signature.
-    if (from === 0 && fresh.length > 1 && score.parts.some((p) => p.name)) {
-      const first = breakSystems(weights, { ...params, width: units - label(score.parts.map((p) => p.name)) - TIME_WIDTH - firstCut })[0];
-      if (first.end < fresh[0].end) {
-        fresh = [first, ...breakSystems(weights.slice(first.end), { ...params, width: later }).map((r) => ({ start: r.start + first.end, end: r.end + first.end }))];
-      }
-    }
+    const fresh = breaksFrom(from);
     systems = [...systems.slice(0, keep), ...fresh];
     const h = estimate();
     slots = [
@@ -215,7 +242,10 @@ export function createPageView(score: ScoreDoc, opts: ViewOptions): PageView {
       r.SheetSubtitleHeight *= shrink;
       r.SheetComposerHeight *= shrink;
       host.style.width = `${width}px`;
-      slot.el.textContent = "";
+      // Drawn again in place: the old drawing stays until the new one is ready.
+      const swap = !!slot.osmd;
+      if (swap) host.style.cssText += ";position:absolute;left:0;top:0;visibility:hidden";
+      else slot.el.textContent = "";
       slot.el.append(host);
       await osmd.load(score.slice(range.start, range.end, { header: first, abbreviate: !first }));
       if (gen !== generation) return;
@@ -237,8 +267,13 @@ export function createPageView(score: ScoreDoc, opts: ViewOptions): PageView {
         layout(false);
         return;
       }
+      if (swap) {
+        for (const c of [...slot.el.children]) if (c !== host && !c.classList.contains("sv-cursor") && !c.classList.contains("sv-caret")) c.remove();
+        host.style.position = host.style.left = host.style.top = host.style.visibility = "";
+      }
       slot.osmd = osmd;
       slot.pos = collectPositions(osmd, range.start, zoom);
+      slotRendered(i);
       slot.height = slot.el.offsetHeight;
       slot.el.style.minHeight = "";
       opts.onSystemRendered?.(i, performance.now() - t0);
@@ -341,6 +376,92 @@ export function createPageView(score: ScoreDoc, opts: ViewOptions): PageView {
     }
   }
 
+  // ---- Editing: redraw after an edit, picking, caret and selection.
+  function refresh(next: ScoreDoc, from: number, to: number): void {
+    score = next;
+    if (weights.length !== score.measureCount) weights = Array.from({ length: score.measureCount }, (_, m) => score.measureWeight(m));
+    else for (let m = Math.max(0, from); m < Math.min(to, weights.length); m++) weights[m] = score.measureWeight(m);
+    const i = Math.max(0, systemOf(systems, from));
+    const j = Math.max(i, systemOf(systems, Math.max(from, to - 1)));
+    const fresh = breaksFrom(systems[i]?.start ?? 0);
+    const same = fresh.length >= j - i + 1 && systems.slice(i, j + 1).every((r, k) => r.start === fresh[k].start && r.end === fresh[k].end) && systems.length - i === fresh.length;
+    if (!same) {
+      layout(false, i);
+      return;
+    }
+    generation++;
+    for (let k = i; k <= j; k++) {
+      const s = slots[k];
+      if (s.osmd) void renderSystem(k, generation);
+    }
+  }
+
+  let caretAt: { measure: number; quarter: number; part: number; staff: number } | null = null;
+  const caret = document.createElement("div");
+  caret.className = "sv-caret";
+  function showCaret(c: typeof caretAt): void {
+    caretAt = c;
+    if (!c) return void caret.remove();
+    const i = systemOf(systems, c.measure);
+    const s = slots[i];
+    const box = s?.pos?.staves.find((b) => b.part === c.part && b.staff === c.staff);
+    const x = s?.pos ? xAt(s.pos, c.measure, c.quarter, Number.MAX_SAFE_INTEGER) : null;
+    if (!s || !box || x === null) return void caret.remove();
+    if (caret.parentElement !== s.el) s.el.append(caret);
+    const pad = 8 * zoom;
+    caret.style.transform = `translateX(${x}px)`;
+    caret.style.top = `${box.top - pad}px`;
+    caret.style.height = `${box.bottom - box.top + 2 * pad}px`;
+  }
+
+  let selected: Parameters<PageView["select"]>[0] = [];
+  function select(keys: typeof selected): void {
+    for (const g of page.querySelectorAll(".sv-sel")) g.classList.remove("sv-sel");
+    selected = keys;
+    for (const k of keys) {
+      const s = slots[systemOf(systems, k.measure)];
+      for (const d of s?.pos?.drawn ?? [])
+        if (d.measure === k.measure && Math.abs(d.onset - k.onset) < 1e-6 && d.part === k.part && d.staff === k.staff && d.voice === k.voice && (k.rank === undefined || d.rank === k.rank)) d.g.classList.add("sv-sel");
+    }
+  }
+
+  // A system drawn (again): the caret and selection in it are put back.
+  function slotRendered(i: number): void {
+    if (caretAt && systemOf(systems, caretAt.measure) === i) showCaret(caretAt);
+    if (selected.some((k) => systemOf(systems, k.measure) === i)) select(selected);
+  }
+
+  function pick(cx: number, cy: number): Pick | null {
+    for (const s of slots) {
+      const r = s.el.getBoundingClientRect();
+      if (cy < r.top || cy >= r.bottom || !s.pos) continue;
+      const x = cx - r.left;
+      const y = cy - r.top;
+      const at = hitAt(s.pos, x);
+      if (!at) return null;
+      // The staff nearest the point.
+      let box = s.pos.staves[0];
+      let best = Infinity;
+      for (const b of s.pos.staves) {
+        const d = y < b.top ? b.top - y : y > b.bottom ? y - b.bottom : 0;
+        if (d < best) [best, box] = [d, b];
+      }
+      if (!box) return null;
+      const half = (5 * zoom) / 1;
+      const step = Math.round((y - box.top) / half);
+      // A note head within a staff space of the point.
+      let note: Pick["note"] = null;
+      let nd = 9 * zoom * 1.4;
+      for (const d of s.pos.drawn) {
+        if (d.part !== box.part || d.staff !== box.staff) continue;
+        const dist = Math.hypot(d.x + 5 * zoom - x, d.y - y);
+        if (dist < nd) [nd, note] = [dist, d];
+      }
+      return { measure: note?.measure ?? at.measure, quarter: note?.onset ?? at.quarter, part: box.part, staff: box.staff, step, lines: box.lines, snapY: r.top + box.top + step * half, note };
+    }
+    return null;
+  }
+
   const onScroll = () => schedule();
   root.addEventListener("scroll", onScroll, { passive: true });
   let resizeTimer = 0;
@@ -367,6 +488,10 @@ export function createPageView(score: ScoreDoc, opts: ViewOptions): PageView {
     preview: previewZoom,
     showPosition,
     hidePosition: () => (cursor.hidden = true),
+    refresh,
+    pick,
+    showCaret,
+    select,
     highlight,
     hit(cx: number, cy: number) {
       for (const s of slots) {

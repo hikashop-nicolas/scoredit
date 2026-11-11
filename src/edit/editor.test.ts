@@ -90,8 +90,10 @@ describe("Entering notes", () => {
     ed.enter(c, { pitches: null, quarters: 1 });
     ed.addToChord(at(0, 0, s), P("G"));
     expect(show(s, 0)).toBe("C4+E4+G4:1 r:1 r:2");
+    ed.addToChord(at(0, 0, s), P("B"));
+    expect(show(s, 0)).toBe("C4+E4+G4+B4:1 r:1 r:2");
     ed.setLength(at(0, 0, s), 2);
-    expect(show(s, 0)).toBe("C4+E4+G4:2 r:2");
+    expect(show(s, 0)).toBe("C4+E4+G4+B4:2 r:2");
   });
 
   it("undoes and redoes", () => {

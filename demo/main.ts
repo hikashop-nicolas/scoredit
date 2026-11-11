@@ -26,6 +26,8 @@ function open(bytes: Uint8Array, name: string): void {
       layout: ((l) => (l === "line" || l === "keys" ? l : "page"))(new URLSearchParams(location.search).get("layout")),
       onError: (e) => console.error(e),
       sounds,
+      editable: true,
+      onChange: () => ((window as unknown as { svEdits?: number }).svEdits = ((window as unknown as { svEdits?: number }).svEdits ?? 0) + 1),
       // ?parts=drums shows the parts of one instrument family, as a host setting would.
       parts: { show: ((f) => (f ? score.parts.flatMap((p, i) => (partFamily(p) === f ? [i] : [])) : null))(new URLSearchParams(location.search).get("parts")) },
       tablature: loaded.fretted ? { on: loaded.tab, toggle: (on) => loadScore(bytes, { tab: on ? "always" : "never" }).score } : undefined,
