@@ -19,6 +19,7 @@ const ICON_PLAY = svgIcon('<polygon points="7 4 20 12 7 20 7 4" fill="currentCol
 const ICON_PAUSE = svgIcon('<rect x="6" y="4" width="4" height="16" fill="currentColor"/><rect x="14" y="4" width="4" height="16" fill="currentColor"/>');
 const ICON_KEYS = svgIcon('<rect x="3" y="13" width="18" height="8" rx="1"/><line x1="8" x2="8" y1="13" y2="21"/><line x1="13" x2="13" y1="13" y2="21"/><line x1="18" x2="18" y1="13" y2="21"/><line x1="6" x2="6" y1="3" y2="9"/><line x1="11" x2="11" y1="5" y2="11"/><line x1="16" x2="16" y1="2" y2="8"/>');
 const ICON_KBD = svgIcon('<rect x="2" y="6" width="20" height="12" rx="1"/><line x1="7" x2="7" y1="6" y2="18"/><line x1="12" x2="12" y1="6" y2="18"/><line x1="17" x2="17" y1="6" y2="18"/><rect x="5.5" y="6" width="3" height="7" fill="currentColor"/><rect x="15.5" y="6" width="3" height="7" fill="currentColor"/>');
+const ICON_TAB = '<span class="sv-tab-label" aria-hidden="true">TAB</span>';
 const ICON_LINE = svgIcon('<line x1="2" x2="22" y1="9" y2="9"/><line x1="2" x2="22" y1="15" y2="15"/><polyline points="17 5 21 12 17 19"/>');
 
 export interface BarOptions {
@@ -35,6 +36,8 @@ export interface BarOptions {
   /** Playback speed, 1 = as written. */
   onSpeed(speed: number): void;
   onFullscreen?(): void;
+  /** A tab button, for scores with fretted parts. */
+  tab?: { on: boolean; toggle(on: boolean): void };
 }
 
 export interface Bar {
@@ -133,7 +136,19 @@ export function createBar(o: BarOptions): Bar {
   slider.addEventListener("change", () => o.onZoomCommit());
   const label = document.createElement("span");
   label.className = "sv-zoom-label";
-  el.append(playBtn, speedBtn, pop, seg, kbdBtn, grow, slider, label);
+  el.append(playBtn, speedBtn, pop, seg, kbdBtn);
+  if (o.tab) {
+    let tabOn = o.tab.on;
+    const tabBtn = button(ICON_TAB, t("tablature"), () => {
+      tabOn = !tabOn;
+      tabBtn.setAttribute("aria-pressed", String(tabOn));
+      o.tab!.toggle(tabOn);
+    });
+    tabBtn.classList.add("sv-bb-tab");
+    tabBtn.setAttribute("aria-pressed", String(tabOn));
+    el.append(tabBtn);
+  }
+  el.append(grow, slider, label);
   let fs: HTMLButtonElement | null = null;
   if (o.onFullscreen) {
     fs = button(ICON_FS, t("fullscreen"), () => o.onFullscreen?.());

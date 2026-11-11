@@ -153,7 +153,7 @@ export function mscxToMusicXml(source: string): Document {
   return readMscx(source).doc;
 }
 
-export function readMscx(source: string, opts: MscxOptions = {}): { doc: Document; sections: number[] } {
+export function readMscx(source: string, opts: MscxOptions = {}): { doc: Document; sections: number[]; fretted: boolean; tab: boolean } {
   const src = parseXml(source);
   const ms = src.documentElement;
   if (ms.tagName !== "museScore") throw new Error("Not a MuseScore file");
@@ -566,8 +566,20 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
                       const a = el(notations(), "articulations");
                       for (const x of arts) el(a, x);
                     }
-                    const orns = [...kids(c, "Ornament"), ...kids(c, "Articulation")].map((a) => ORNAMENT[text(a, "subtype")]).filter(Boolean);
-                    for (const x of orns) el(ornaments(), x);
+                    const ornEls = [...kids(c, "Ornament"), ...kids(c, "Articulation")].filter((a) => ORNAMENT[text(a, "subtype")]);
+                    const orns = ornEls.map((a) => ORNAMENT[text(a, "subtype")]);
+                    ornEls.forEach((a, i) => {
+                      // A MuseScore 4 ornament may name its upper or lower note (with its accidental),
+                      // and start on the upper note.
+                      const upperStart = kids(a).some((x) => /upper/i.test(x.tagName) && /^(1|true)$/.test(x.textContent?.trim() ?? ""));
+                      el(ornaments(), orns[i], null, orns[i] === "trill-mark" && upperStart ? { "start-note": "upper" } : undefined);
+                      const cue = kid(a, "Note");
+                      if (cue) {
+                        const alter = Math.floor((Number(text(cue, "tpc")) + 1) / 7) - 2;
+                        const mark = ({ 2: "double-sharp", 1: "sharp", 0: "natural", [-1]: "flat", [-2]: "flat-flat" } as Record<number, string>)[alter];
+                        if (mark) el(ornaments(), "accidental-mark", mark);
+                      }
+                    });
                     if (trillNext) {
                       if (!orns.includes("trill-mark")) el(ornaments(), "trill-mark");
                       el(ornaments(), "wavy-line", null, { type: "start" });
@@ -679,7 +691,8 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
   (measuresOf[0] ?? []).forEach((m, i) => {
     if (kids(m, "LayoutBreak").some((b) => text(b, "subtype") === "section") && i + 1 < nMeasures) sections.push(i + 1);
   });
-  return { doc: out, sections };
+  const fretted = parts.some((p) => p.strings.length > 0 && !p.drums);
+  return { doc: out, sections, fretted, tab: parts.some((p) => p.tab.includes(true)) };
 
   function addClef(at: Element, name: string, number: number, numbered: boolean): void {
     const [sign, line, octave] = CLEF[name] ?? CLEF.G;

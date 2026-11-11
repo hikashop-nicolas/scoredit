@@ -22,6 +22,8 @@ const CSS = `
 .sv-cursor{position:absolute;top:0;bottom:0;left:0;width:3px;margin-left:-1px;background:var(--sv-play,#1a73e8);opacity:.55;border-radius:2px;pointer-events:none;z-index:1}
 .sv-on path,.sv-on rect{fill:var(--sv-play,#1a73e8);stroke:var(--sv-play,#1a73e8)}
 .sv-bb-play{min-width:40px}
+.sv-bb-tab{width:auto;padding:0 6px}
+.sv-tab-label{font:600 10px/1 system-ui,sans-serif;letter-spacing:.06em}
 .sv-bar{position:relative}
 .sv-bar [hidden]{display:none}
 .sv-seg{display:inline-flex;flex:0 0 auto}

@@ -25,11 +25,18 @@ export interface ScoreViewerOptions {
   onError?(err: unknown): void;
   /** Called after a page system finished rendering, with its index and time in ms. */
   onSystemRendered?(index: number, ms: number): void;
+  /**
+   * Tablature for fretted parts: shows a tab button in the bar. `toggle` returns the score
+   * read again with (or without) the tab staff, and the viewer shows it.
+   */
+  tablature?: { on: boolean; toggle(on: boolean): ScoreDoc };
 }
 
 export interface ScoreViewerHandle {
   readonly score: ScoreDoc;
   readonly layout: LayoutMode;
+  /** Shows another score (the same piece read again), keeping layout and zoom. */
+  setScore(score: ScoreDoc): void;
   /** Page systems (empty in line layout). */
   readonly systems: readonly SystemRange[];
   /** The page width model, in OSMD units (for tests and tuning). */
@@ -55,7 +62,8 @@ export interface ScoreViewerHandle {
 // The viewer shell: a bottom bar (layout switch, zoom, fullscreen, host slot), pinch zoom,
 // and the active layout. The page layout reads like sheet music; the line layout runs the
 // score sideways on one line for playing along.
-export function createScoreViewer(container: HTMLElement, score: ScoreDoc, opts: ScoreViewerOptions = {}): ScoreViewerHandle {
+export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opts: ScoreViewerOptions = {}): ScoreViewerHandle {
+  let score = initial;
   injectStyles();
   let mode: LayoutMode = opts.layout ?? "page";
   let pageZoom = clampZoom(opts.zoom ?? (container.clientWidth > 0 && container.clientWidth < 700 ? 0.6 : 1));
@@ -79,13 +87,14 @@ export function createScoreViewer(container: HTMLElement, score: ScoreDoc, opts:
     onPlay: () => togglePlay(),
     onSpeed: (v) => setSpeed(v),
     onKeyboard: (on) => showKeyboard(on),
+    tab: opts.tablature ? { on: opts.tablature.on, toggle: (on) => setScore(opts.tablature!.toggle(on)) } : undefined,
     onFullscreen: opts.onFullscreen,
   });
 
   // The timeline is built once, when playback or the keyboard first needs it.
   let timeline: Timeline | null = null;
   const getTimeline = () => (timeline ??= buildTimeline(score));
-  const color = noteColors(score);
+  let color = noteColors(score);
 
   // The keyboard strip under the score (page and line layouts), lit as notes sound.
   let kbd: Keyboard | null = null;
@@ -190,6 +199,22 @@ export function createScoreViewer(container: HTMLElement, score: ScoreDoc, opts:
     bindTap(view.root);
   }
 
+  function setScore(next: ScoreDoc): void {
+    player?.dispose();
+    player = null;
+    timeline = null;
+    bar.setPlaying(false);
+    if (mode === "page") pageZoom = view.zoom;
+    view.destroy();
+    score = next;
+    color = noteColors(score);
+    if (kbd) {
+      showKeyboard(false);
+      showKeyboard(true);
+    }
+    mount();
+  }
+
   function setLayout(m: LayoutMode): void {
     if (m === mode) return;
     if (mode === "page") pageZoom = view.zoom;
@@ -248,7 +273,10 @@ export function createScoreViewer(container: HTMLElement, score: ScoreDoc, opts:
   mount();
 
   return {
-    score,
+    get score() {
+      return score;
+    },
+    setScore,
     get layout() {
       return mode;
     },

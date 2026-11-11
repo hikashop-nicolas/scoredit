@@ -109,6 +109,17 @@ describe("ornaments and pedal", () => {
     expect(tl.events.at(-1)!.time + tl.events.at(-1)!.dur).toBeCloseTo(4 * 0.6, 5);
   });
 
+  it("starts a trill on the upper note when asked, and follows an accidental on it", () => {
+    const tl = buildTimeline(new ScoreDoc(score([Q + n("E", 16, orn(`<trill-mark start-note="upper"/><accidental-mark>natural</accidental-mark>`))])));
+    expect(tl.events[0].midi).toBe(65); // F natural, though the key has F#
+    expect(tl.events[1].midi).toBe(64);
+  });
+
+  it("plays mordents as two quick notes then the main note", () => {
+    const tl = buildTimeline(new ScoreDoc(score([Q + n("D", 4, orn("<inverted-mordent/>")) + n("D", 4, orn("<mordent/>"))])));
+    expect(tl.events.map((e) => e.midi)).toEqual([62, 64, 62, 62, 60, 62]);
+  });
+
   it("repeats a single-note tremolo at its stroke value", () => {
     const tl = buildTimeline(new ScoreDoc(score([Q + n("C", 8, orn(`<tremolo type="single">2</tremolo>`))])));
     expect(tl.events).toHaveLength(8); // a half note in 16ths

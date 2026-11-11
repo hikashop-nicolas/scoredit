@@ -15,12 +15,14 @@ function open(bytes: Uint8Array, name: string): void {
   renderMs = 0;
   const t0 = performance.now();
   try {
-    const { score, format } = loadScore(bytes, { tab: new URLSearchParams(location.search).get("tab") === "1" ? "always" : "auto" });
+    const loaded = loadScore(bytes, { tab: new URLSearchParams(location.search).get("tab") === "1" ? "always" : "auto" });
+    const { score, format } = loaded;
     const parsed = performance.now() - t0;
     (window as unknown as { viewer?: unknown }).viewer = null;
     viewer = createScoreViewer(host, score, {
       layout: ((l) => (l === "line" || l === "keys" ? l : "page"))(new URLSearchParams(location.search).get("layout")),
       onError: (e) => console.error(e),
+      tablature: loaded.fretted ? { on: loaded.tab, toggle: (on) => loadScore(bytes, { tab: on ? "always" : "never" }).score } : undefined,
       onFullscreen: () => (document.fullscreenElement ? void document.exitFullscreen() : void host.requestFullscreen()),
       onSystemRendered: (i, ms) => {
         rendered++;
