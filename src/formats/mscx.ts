@@ -178,8 +178,11 @@ interface PartDef {
   diatonic: number;
   tab: boolean[];
   strings: number[];
-  /** Index of a tab staff scoredit adds (drawn from the notes' fret and string), or -1. */
+  /** Index of a staff scoredit adds (tab drawn from the notes' frets, or notation above a tab-only part), or -1. */
   virtual: number;
+  /** Staves read from tab but drawn as notation, with the instrument's own clef. */
+  notation: Set<number>;
+  clef: string;
   instrumentId: string;
 }
 
@@ -250,6 +253,8 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
       tab: types.map((t) => t === "tablature"),
       strings,
       virtual: -1,
+      notation: new Set<number>(),
+      clef: text(inst, "clef") || (/bass/i.test(text(inst, "instrumentId")) ? "F8vb" : "G8vb"),
       instrumentId: text(inst, "instrumentId"),
     };
   });
@@ -272,11 +277,35 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
     staffCursor += p.staves.length;
     return ids;
   });
-  // A fretted part without a tab staff gets one when MuseScore had it in an instrument part
-  // (or always, if asked): the same measures again, drawn as tab.
+  // Tab for fretted parts. "auto": tab where the file has it, and where MuseScore had it in an
+  // instrument part. "always": notation and tab (a tab-only part gets a notation staff above).
+  // "never": notation only (tab staves read as notation, or dropped next to a notation staff).
   const tabbed = tabInstruments(opts.excerpts ?? []);
   parts.forEach((p, pi) => {
-    if (!p.strings.length || p.tab.includes(true) || p.drums) return;
+    if (!p.strings.length || p.drums) return;
+    const hasTab = p.tab.includes(true);
+    const tabOnly = hasTab && p.tab.every(Boolean);
+    if (opts.tab === "never" && hasTab) {
+      if (tabOnly) {
+        p.notation = new Set(p.tab.map((_, k) => k));
+        p.tab = p.tab.map(() => false);
+      } else {
+        const keep = p.tab.map((t) => !t);
+        p.staves = p.staves.filter((_, k) => keep[k]);
+        partStaves[pi] = partStaves[pi].filter((_, k) => keep[k]);
+        p.tab = p.tab.filter((_, k) => keep[k]);
+      }
+      return;
+    }
+    if (opts.tab === "always" && tabOnly) {
+      p.staves = [p.staves[0], ...p.staves];
+      p.tab = [false, ...p.tab];
+      partStaves[pi] = [partStaves[pi][0], ...partStaves[pi]];
+      p.virtual = 0;
+      p.notation = new Set([0]);
+      return;
+    }
+    if (hasTab) return;
     const want = opts.tab === "always" || (opts.tab !== "never" && (tabbed.has(p.instrumentId) || tabbed.has(p.name)));
     if (!want) return;
     p.staves = [...p.staves, p.staves[0]];
@@ -361,7 +390,9 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
         }
         p.staves.forEach((s, k) => {
           const def = text(s, "defaultClef");
-          if (p.tab[k]) {
+          if (p.notation.has(k)) {
+            addClef(attrs, p.clef, k + 1, p.staves.length > 1);
+          } else if (p.tab[k]) {
             if (k === p.virtual || !firstClef(measuresOf[partStaves[pi][k]]?.[0])) addClef(attrs, "TAB", k + 1, p.staves.length > 1);
             const sd = el(attrs, "staff-details", null, p.staves.length > 1 ? { number: k + 1 } : undefined);
             el(sd, "staff-lines", p.strings.length || 6);
@@ -443,9 +474,12 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
                 break;
               }
               case "Clef": {
+                const type = text(c, "concertClefType") || text(c, "transposingClefType") || "G";
+                // A tab clef on a staff now drawn as notation: its notation clef is already set.
+                if (p.notation.has(k) && type.startsWith("TAB")) break;
                 goTo(pos);
                 const at = pos === 0 && m === 0 ? attrs : el(meas, "attributes");
-                addClef(at, text(c, "concertClefType") || text(c, "transposingClefType") || "G", k + 1, p.staves.length > 1);
+                addClef(at, type, k + 1, p.staves.length > 1);
                 break;
               }
               case "tick": {
