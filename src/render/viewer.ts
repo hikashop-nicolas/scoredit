@@ -62,6 +62,7 @@ export function createScoreViewer(container: HTMLElement, score: ScoreDoc, opts:
   container.append(shell);
 
   let view: View;
+  let pinching = false;
   let shown = 0;
   let zoomTimer = 0;
   const bar = createBar({
@@ -74,24 +75,56 @@ export function createScoreViewer(container: HTMLElement, score: ScoreDoc, opts:
       opts.onLayoutChange?.(m);
     },
     onPlay: () => togglePlay(),
+    onSpeed: (v) => setSpeed(v),
     onFullscreen: opts.onFullscreen,
   });
 
-  // Playback: the timeline is built on the first play; the view shows where it is.
+  // Playback: the timeline is built on the first play; the view shows where it is. Scrolling
+  // by hand pauses the view's following for a moment.
   let player: Player | null = null;
+  let followPaused = 0;
+  function ensurePlayer(): Player {
+    if (player) return player;
+    const tl = buildTimeline(score);
+    player = new Player(tl, {
+      onPosition: (p) => {
+        const span = tl.spans[p.span];
+        if (span) view.showPosition(span.measure, p.quarter, span.quarters, performance.now() > followPaused);
+      },
+      onNotes: (evs, on) => view.highlight(evs.map((e) => noteKey(e.measure, e.onset)), on),
+      onStateChange: (on) => bar.setPlaying(on),
+    });
+    player.setSpeed(speed);
+    return player;
+  }
   function togglePlay(): void {
-    if (!player) {
-      const tl = buildTimeline(score);
-      player = new Player(tl, {
-        onPosition: (p) => {
-          const span = tl.spans[p.span];
-          if (span) view.showPosition(span.measure, p.quarter, span.quarters, true);
-        },
-        onNotes: (evs, on) => view.highlight(evs.map((e) => noteKey(e.measure, e.onset)), on),
-        onStateChange: (on) => bar.setPlaying(on),
-      });
-    }
-    player.toggle();
+    ensurePlayer().toggle();
+  }
+  let speed = 1;
+  function setSpeed(v: number): void {
+    speed = v;
+    player?.setSpeed(v);
+  }
+
+  // A tap on the score moves playback there (and plays on if it was playing).
+  function bindTap(el: HTMLElement): void {
+    let down: { x: number; y: number; t: number; id: number } | null = null;
+    el.addEventListener("pointerdown", (e) => {
+      down = e.isPrimary ? { x: e.clientX, y: e.clientY, t: performance.now(), id: e.pointerId } : null;
+    });
+    el.addEventListener("pointerup", (e) => {
+      const d = down;
+      down = null;
+      if (!d || e.pointerId !== d.id || pinching) return;
+      if (Math.hypot(e.clientX - d.x, e.clientY - d.y) > 8 || performance.now() - d.t > 400) return;
+      const hit = view.hit(e.clientX, e.clientY);
+      if (!hit) return;
+      followPaused = 0;
+      ensurePlayer().seekMeasure(hit.measure, hit.quarter);
+    });
+    const pause = () => (followPaused = performance.now() + 2500);
+    el.addEventListener("wheel", pause, { passive: true });
+    el.addEventListener("touchmove", pause, { passive: true });
   }
 
   function mount(): void {
@@ -102,6 +135,7 @@ export function createScoreViewer(container: HTMLElement, score: ScoreDoc, opts:
     bar.sync(view.zoom);
     bar.setLayout(mode);
     bindPinch(view.root);
+    bindTap(view.root);
   }
 
   function setLayout(m: LayoutMode): void {
@@ -132,6 +166,8 @@ export function createScoreViewer(container: HTMLElement, score: ScoreDoc, opts:
   function bindPinch(el: HTMLElement): void {
     const dist = (e: TouchEvent) => Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY) || 1;
     let pinch: { dist: number; zoom: number } | null = null;
+    el.addEventListener("touchstart", (e) => (pinching = e.touches.length > 1 || pinching), { passive: true });
+    el.addEventListener("touchend", (e) => e.touches.length === 0 && setTimeout(() => (pinching = false), 50), { passive: true });
     el.addEventListener("touchstart", (e) => (pinch = e.touches.length === 2 ? { dist: dist(e), zoom: shown } : null), { passive: true });
     el.addEventListener(
       "touchmove",

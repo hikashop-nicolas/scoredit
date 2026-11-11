@@ -28,6 +28,8 @@ export interface BarOptions {
   onZoomCommit(): void;
   onLayout(mode: LayoutMode): void;
   onPlay(): void;
+  /** Playback speed, 1 = as written. */
+  onSpeed(speed: number): void;
   onFullscreen?(): void;
 }
 
@@ -57,6 +59,41 @@ export function createBar(o: BarOptions): Bar {
   let mode = o.layout;
   const playBtn = button(ICON_PLAY, t("play"), () => o.onPlay());
   playBtn.classList.add("sv-bb-play");
+  // Speed: a button showing it, opening a slider above the bar.
+  const speedBtn = document.createElement("button");
+  speedBtn.type = "button";
+  speedBtn.className = "sv-bb-btn sv-bb-speed";
+  speedBtn.title = t("speed");
+  speedBtn.setAttribute("aria-label", t("speed"));
+  speedBtn.setAttribute("aria-expanded", "false");
+  const pop = document.createElement("div");
+  pop.className = "sv-pop";
+  pop.hidden = true;
+  const speedRange = document.createElement("input");
+  speedRange.type = "range";
+  speedRange.min = "25";
+  speedRange.max = "150";
+  speedRange.step = "5";
+  speedRange.value = "100";
+  speedRange.setAttribute("aria-label", t("speed"));
+  const speedLabel = (v: number) => (speedBtn.textContent = `${v}%`);
+  speedLabel(100);
+  speedRange.addEventListener("input", () => {
+    speedLabel(Number(speedRange.value));
+    o.onSpeed(Number(speedRange.value) / 100);
+  });
+  pop.append(speedRange);
+  speedBtn.addEventListener("click", () => {
+    pop.hidden = !pop.hidden;
+    speedBtn.setAttribute("aria-expanded", String(!pop.hidden));
+    if (!pop.hidden) speedRange.focus();
+  });
+  document.addEventListener("pointerdown", (e) => {
+    if (!pop.hidden && !pop.contains(e.target as Node) && e.target !== speedBtn) {
+      pop.hidden = true;
+      speedBtn.setAttribute("aria-expanded", "false");
+    }
+  });
   const layoutBtn = button(ICON_LINE, "", () => o.onLayout(mode === "page" ? "line" : "page"));
   const grow = document.createElement("span");
   grow.className = "sv-bb-grow";
@@ -72,7 +109,7 @@ export function createBar(o: BarOptions): Bar {
   slider.addEventListener("change", () => o.onZoomCommit());
   const label = document.createElement("span");
   label.className = "sv-zoom-label";
-  el.append(playBtn, layoutBtn, grow, slider, label);
+  el.append(playBtn, speedBtn, pop, layoutBtn, grow, slider, label);
   let fs: HTMLButtonElement | null = null;
   if (o.onFullscreen) {
     fs = button(ICON_FS, t("fullscreen"), () => o.onFullscreen?.());

@@ -32,6 +32,19 @@ describe("playOrder", () => {
   });
 });
 
+describe("jumps", () => {
+  const dir = (snd: string) => `<direction><direction-type><words>x</words></direction-type><sound ${snd}/></direction>`;
+  it("plays D.C. al Fine without the repeats", () => {
+    const s = new ScoreDoc(score([ATTR + n("C", 2), n("D", 2) + dir('fine="yes"') + back, n("E", 2) + dir('dacapo="yes"')]));
+    expect(playOrder(s)).toEqual([0, 1, 0, 1, 2, 0, 1]);
+  });
+
+  it("plays D.S. al Coda", () => {
+    const s = new ScoreDoc(score([ATTR + n("C", 2), dir('segno="s"') + n("D", 2), n("E", 2) + dir('tocoda="c"'), n("F", 2) + dir('dalsegno="s"'), dir('coda="c"') + n("G", 2)]));
+    expect(playOrder(s)).toEqual([0, 1, 2, 3, 1, 2, 4]);
+  });
+});
+
 describe("buildTimeline", () => {
   it("times notes from tempo and divisions", () => {
     const tempo = `<direction><direction-type><words>Allegro</words></direction-type><sound tempo="120"/></direction>`;

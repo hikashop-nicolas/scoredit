@@ -74,3 +74,14 @@ export function xAt(pos: Positions, m: number, q: number, quarters: number): num
   const end = Math.max(xl, b.right - 6);
   return xl + ((end - xl) * (q - ql)) / Math.max(1e-6, quarters - ql);
 }
+
+/** The measure and quarter under x (px in the render's frame), or null. */
+export function hitAt(pos: Positions, x: number): { measure: number; quarter: number } | null {
+  for (const [m, b] of pos.beats) {
+    if (x < b.left - 4 || x >= b.right) continue;
+    let q = 0;
+    for (const [oq, ox] of b.onsets) if (ox <= x + 6) q = oq;
+    return { measure: m, quarter: q };
+  }
+  return null;
+}

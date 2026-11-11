@@ -1,7 +1,7 @@
 import { OpenSheetMusicDisplay } from "opensheetmusicdisplay";
 import { breakSystems, systemOf, type SystemRange } from "../layout/systems";
 import type { ScoreDoc } from "../model/score";
-import { collectPositions, xAt, type Positions } from "./positions";
+import { collectPositions, hitAt, xAt, type Positions } from "./positions";
 import type { View, ViewOptions } from "./view";
 
 export interface LineView extends View {
@@ -341,6 +341,11 @@ export function createLineView(score: ScoreDoc, opts: ViewOptions & { fit?: bool
     showPosition,
     hidePosition: () => (cursor.hidden = true),
     highlight,
+    hit(cx: number, _cy: number) {
+      const x = cx - root.getBoundingClientRect().left + root.scrollLeft;
+      const s = slots.find((c) => x >= c.el.offsetLeft && x < c.el.offsetLeft + c.el.offsetWidth);
+      return s?.pos ? hitAt(s.pos, x - s.el.offsetLeft) : null;
+    },
     preview: previewZoom,
     commit(z: number) {
       shown = z;

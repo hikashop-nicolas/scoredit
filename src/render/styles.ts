@@ -22,6 +22,10 @@ const CSS = `
 .sv-cursor{position:absolute;top:0;bottom:0;left:0;width:3px;margin-left:-1px;background:var(--sv-play,#1a73e8);opacity:.55;border-radius:2px;pointer-events:none;z-index:1}
 .sv-on path,.sv-on rect{fill:var(--sv-play,#1a73e8);stroke:var(--sv-play,#1a73e8)}
 .sv-bb-play{min-width:40px}
+.sv-bar{position:relative}
+.sv-bb-speed{font-variant-numeric:tabular-nums;min-width:52px}
+.sv-pop{position:absolute;bottom:calc(100% + 6px);left:8px;z-index:3;padding:10px 12px;background:var(--sv-chrome,#2b2f36);border:1px solid var(--sv-btn-border,#4a4f57);border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,.3)}
+.sv-pop input{width:180px;accent-color:var(--sv-accent,#6e7bff)}
 .sv-bar-end{display:contents}
 .sv-reading .sv-bar-end{display:none}
 `;

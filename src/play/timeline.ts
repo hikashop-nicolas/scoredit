@@ -39,6 +39,7 @@ export interface Timeline {
 const STEP: Record<string, number> = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
 const DYN: Record<string, number> = { pppp: 20, ppp: 30, pp: 42, p: 55, mp: 68, mf: 80, f: 95, ff: 108, fff: 118, ffff: 125, sf: 105, sfz: 108, fp: 95 };
 const DEFAULT_BPM = 100;
+const GRACE = 0.07;
 
 // Tempo, from <sound tempo> or a metronome mark, keyed by quarter offset in the measure.
 function tempoMarks(score: ScoreDoc, m: number): [number, number][] {
@@ -91,9 +92,22 @@ export function playOrder(score: ScoreDoc): number[] {
     for (let k = from; k < n; k++) if (ending(ms[k], "stop") || ending(ms[k], "discontinue")) return k;
     return from;
   };
+  // Jumps: <sound dacapo|dalsegno|tocoda> where they are read, <sound segno|coda|fine> where they lead.
+  const sounds = (m: Element) => Array.from(m.getElementsByTagName("sound"));
+  const attr = (m: Element, a: string) => sounds(m).map((x) => x.getAttribute(a)).find((v) => v !== null && v !== "no") ?? null;
+  const target = (a: string, name: string) => {
+    const k = ms.findIndex((m) => sounds(m).some((x) => x.getAttribute(a) === name || (name === "yes" && x.hasAttribute(a))));
+    return k >= 0 ? k : ms.findIndex((m) => attr(m, a) !== null);
+  };
+  // After a D.C./D.S., repeats are not taken again and only the last ending of a group plays.
+  const lastEnding = (k: number) => {
+    const stop = endingStop(k);
+    return !(stop + 1 < n && ending(ms[stop + 1], "start"));
+  };
   const order: number[] = [];
   let repeatStart = 0;
   let pass = 1;
+  let jumped = false;
   for (let i = 0, guard = 0; i < n && guard < n * 20; guard++) {
     const m = ms[i];
     if (repeat(m, "forward") && i !== repeatStart) {
@@ -101,13 +115,24 @@ export function playOrder(score: ScoreDoc): number[] {
       pass = 1;
     }
     const nums = ending(m, "start");
-    if (nums && !nums.includes(pass)) {
+    if (nums && (jumped ? !lastEnding(i) : !nums.includes(pass))) {
       i = endingStop(i) + 1;
       continue;
     }
     order.push(i);
+    if (jumped && attr(m, "fine") !== null) break;
+    if (jumped) {
+      const toCoda = attr(m, "tocoda");
+      if (toCoda !== null) {
+        const c = target("coda", toCoda);
+        if (c > i) {
+          i = c;
+          continue;
+        }
+      }
+    }
     const back = repeat(m, "backward");
-    if (back) {
+    if (back && !jumped) {
       const times = Number(back.getAttribute("times")) || 2;
       if (pass < times) {
         pass++;
@@ -116,6 +141,22 @@ export function playOrder(score: ScoreDoc): number[] {
       }
       pass = 1;
       repeatStart = i + 1;
+    }
+    if (!jumped) {
+      if (attr(m, "dacapo") !== null) {
+        jumped = true;
+        i = 0;
+        continue;
+      }
+      const ds = attr(m, "dalsegno");
+      if (ds !== null) {
+        const sg = target("segno", ds);
+        if (sg >= 0) {
+          jumped = true;
+          i = sg;
+          continue;
+        }
+      }
     }
     i++;
   }
@@ -228,7 +269,16 @@ export function buildTimeline(score: ScoreDoc): Timeline {
             break;
           }
           case "note": {
-            if (kid(c, "grace")) break;
+            const grace = kid(c, "grace");
+            if (grace) {
+              // A grace note sounds short, just ahead of the beat it leads into.
+              const gp = kid(c, "pitch");
+              if (!gp || kid(c, "chord")) break;
+              const gm = (Number(text(gp, "octave")) + 1) * 12 + (STEP[text(gp, "step")] ?? 0) + (Number(text(gp, "alter")) || 0) + shift;
+              const at = Math.max(span.start, span.start + quarterToSec(span, pos / div) - GRACE);
+              events.push({ time: at, dur: GRACE, midi: gm, velocity: velocity[p], channel: parts[p].channel, part: p, staff: Number(text(c, "staff")) || 1, measure: m, onset: pos / div, el: c });
+              break;
+            }
             const chord = !!kid(c, "chord");
             const onset = chord ? lastOnset : pos / div;
             if (!chord) {

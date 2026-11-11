@@ -2,7 +2,7 @@ import { OpenSheetMusicDisplay } from "opensheetmusicdisplay";
 import { breakSystems, systemOf, type SystemRange } from "../layout/systems";
 import type { ScoreDoc } from "../model/score";
 import { kid, kids, text } from "../model/xml";
-import { collectPositions, xAt, type Positions } from "./positions";
+import { collectPositions, hitAt, xAt, type Positions } from "./positions";
 import type { View, ViewOptions } from "./view";
 
 export interface PageView extends View {
@@ -330,6 +330,14 @@ export function createPageView(score: ScoreDoc, opts: ViewOptions): PageView {
     showPosition,
     hidePosition: () => (cursor.hidden = true),
     highlight,
+    hit(cx: number, cy: number) {
+      for (const s of slots) {
+        const r = s.el.getBoundingClientRect();
+        if (cy < r.top || cy >= r.bottom || !s.pos) continue;
+        return hitAt(s.pos, cx - r.left);
+      }
+      return null;
+    },
     commit(z: number) {
       shown = z;
       commitZoom();

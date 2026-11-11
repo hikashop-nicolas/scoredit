@@ -14,6 +14,8 @@ export interface View {
   hidePosition(): void;
   /** Lights or unlights the notes starting at these `noteKey`s. */
   highlight(keys: string[], on: boolean): void;
+  /** The measure and beat under a client point, for "play from here". */
+  hit(clientX: number, clientY: number): { measure: number; quarter: number } | null;
 }
 
 export interface ViewOptions {

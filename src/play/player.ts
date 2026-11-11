@@ -1,5 +1,5 @@
 import WebAudioTinySynth from "../vendor/tinysynth.js";
-import type { MeasureSpan, NoteEvent, Timeline } from "./timeline";
+import { quarterToSec, type MeasureSpan, type NoteEvent, type Timeline } from "./timeline";
 
 export interface PlayPosition {
   /** Seconds into the piece (in played order). */
@@ -125,10 +125,12 @@ export class Player {
     if (was) this.play();
   }
 
-  /** Moves to the first time measure m is played. */
-  seekMeasure(m: number): void {
-    const span = this.timeline.spans.find((s) => s.measure === m);
-    if (span) this.seek(span.start);
+  /** Moves to quarter q of measure m: its next pass from the current position, else its first. */
+  seekMeasure(m: number, q = 0): void {
+    const spans = this.timeline.spans;
+    const now = this.time;
+    const span = spans.find((s) => s.measure === m && s.end > now) ?? spans.find((s) => s.measure === m);
+    if (span) this.seek(span.start + quarterToSec(span, q));
   }
 
   stop(): void {
