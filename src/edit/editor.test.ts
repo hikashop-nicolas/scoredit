@@ -148,4 +148,14 @@ describe("Entering notes", () => {
     expect(notes.map((n) => n.getElementsByTagName("tuplet")[0]?.getAttribute("type") ?? "")).toEqual(["start", "", "stop"]);
     expect(buildTimeline(s).events.map((e) => Math.round(e.onset * 300) / 300)).toEqual([0, 1 / 3, 2 / 3].map((x) => Math.round(x * 300) / 300));
   });
+
+  it("copies a range and pastes it as one undo step", () => {
+    const s = score(note("C", 1, "quarter") + note("D", 1, "quarter") + note("E", 2, "half"), rest);
+    const ed = new ScoreEditor(s);
+    const clip = ed.copy(at(0, 0), at(0, 1));
+    ed.paste(at(1, 0), clip);
+    expect(show(s, 1)).toBe("C4:1 D4:1 r:2");
+    ed.undo();
+    expect(show(s, 1)).toBe("r:4");
+  });
 });

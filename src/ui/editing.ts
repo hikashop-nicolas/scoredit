@@ -1,4 +1,4 @@
-import { ScoreEditor, type Caret, type Change } from "../edit/editor";
+import { ScoreEditor, type Caret, type Change, type Clip } from "../edit/editor";
 import { readMeasure, voiceKey, type Event } from "../edit/measure";
 import { keyAlter, midiOf, readPitch, spellMidi, type Pitch } from "../edit/notes";
 import type { ScoreDoc } from "../model/score";
@@ -110,7 +110,8 @@ export function createEditing(host: EditingHost): Editing {
   let editor = new ScoreEditor(host.score());
   let caret: Caret | null = null;
   // The selected event (or one note of it), and the last note entered counts as selected.
-  let sel: { at: Caret; note: Element | null } | null = null;
+  let sel: { at: Caret; note: Element | null; end?: Caret } | null = null;
+  let clip: Clip[] = [];
   let quarters = 1;
   let dots = 0;
   let input = false;
@@ -197,7 +198,10 @@ export function createEditing(host: EditingHost): Editing {
     view.showCaret(input && caret ? { measure: caret.measure, quarter: caret.pos, part: toShown(caret.part), staff: caret.staff } : null);
     const keys = [];
     const ev = sel ? editor.eventAt(sel.at) : null;
-    if (sel && ev) {
+    if (sel?.end) {
+      for (const { at, ev: e } of editor.eventsBetween(sel.at, sel.end))
+        keys.push({ measure: at.measure, onset: e.pos / editor.info(at.part, at.measure).perQuarter, part: toShown(at.part), staff: at.staff, voice: at.voice });
+    } else if (sel && ev) {
       const per = editor.info(sel.at.part, sel.at.measure).perQuarter;
       const base = { measure: sel.at.measure, onset: ev.pos / per, part: toShown(sel.at.part), staff: sel.at.staff, voice: sel.at.voice };
       if (sel.note && ev.notes.includes(sel.note)) keys.push({ ...base, rank: sorted(ev).indexOf(sel.note) });
@@ -290,6 +294,29 @@ export function createEditing(host: EditingHost): Editing {
     landed(r.change);
   }
 
+  function copy(cut: boolean): void {
+    if (!sel) return;
+    clip = editor.copy(sel.at, sel.end ?? sel.at);
+    if (!cut) return;
+    const items = editor.eventsBetween(sel.at, sel.end ?? sel.at);
+    if (!items.length) return;
+    const change = editor.group(() => {
+      for (const { at } of [...items].reverse()) editor.remove(at);
+      return { from: items[0].at.measure, to: items[items.length - 1].at.measure + 1, appended: 0 };
+    });
+    sel = { at: items[0].at, note: null };
+    landed(change);
+  }
+
+  function paste(): void {
+    const at = caret ?? sel?.at;
+    if (!at || !clip.length) return;
+    const r = editor.paste(at, clip);
+    sel = { at, note: null, end: undefined };
+    caret = r.caret;
+    landed(r.change);
+  }
+
   /** A triplet the length of the chosen value at the caret; its slots fill as notes come. */
   function triplet(): void {
     const at = caret ?? sel?.at;
@@ -301,6 +328,15 @@ export function createEditing(host: EditingHost): Editing {
 
   function remove(): void {
     if (!sel) return;
+    if (sel.end) {
+      const items = editor.eventsBetween(sel.at, sel.end);
+      const change = editor.group(() => {
+        for (const { at } of [...items].reverse()) editor.remove(at);
+        return { from: items[0]?.at.measure ?? sel!.at.measure, to: (items[items.length - 1]?.at.measure ?? sel!.at.measure) + 1, appended: 0 };
+      });
+      sel = items[0] ? { at: items[0].at, note: null } : null;
+      return landed(change);
+    }
     landed(editor.remove(sel.at, sel.note ?? undefined));
     sel = editor.eventAt(sel.at) ? { at: sel.at, note: null } : null;
     sync();
@@ -322,8 +358,8 @@ export function createEditing(host: EditingHost): Editing {
   }
 
   /** The event before or after the selection (or caret) in its voice. */
-  function step(dir: 1 | -1): void {
-    const from = sel?.at ?? caret;
+  function step(dir: 1 | -1, extend = false): void {
+    const from = (extend ? sel?.end : null) ?? sel?.at ?? caret;
     if (!from) return;
     const s = editor.score;
     const key = voiceKey(from.staff, from.voice);
@@ -343,8 +379,11 @@ export function createEditing(host: EditingHost): Editing {
       i = dir > 0 ? 0 : list.length - 1;
     }
     const at = { ...from, measure: m, pos: list[i].pos / per(m) };
-    sel = { at, note: null };
-    caret = { ...at };
+    if (extend && sel) sel = { ...sel, note: null, end: at };
+    else {
+      sel = { at, note: null };
+      caret = { ...at };
+    }
     sync();
   }
 
@@ -400,6 +439,13 @@ export function createEditing(host: EditingHost): Editing {
       if (pitch) enter([pitch]);
       else sync();
       return;
+    }
+    if (shiftKey && sel && part === sel.at.part) {
+      const staff = p.note?.staff ?? p.staff;
+      if (staff === sel.at.staff) {
+        sel = { ...sel, note: null, end: { ...sel.at, measure: p.note?.measure ?? p.measure, pos: p.note?.onset ?? p.quarter } };
+        return sync();
+      }
     }
     if (p.note) {
       const at: Caret = { part, measure: p.note.measure, staff: p.note.staff, voice: p.note.voice, pos: p.note.onset };
@@ -544,6 +590,9 @@ export function createEditing(host: EditingHost): Editing {
     }
     if (mod && (k === "y" || k === "Y")) return redo(), true;
     if (mod && !e.altKey && e.code === "Digit3") return triplet(), true;
+    if (mod && !e.altKey && (k === "c" || k === "C")) return copy(false), true;
+    if (mod && !e.altKey && (k === "x" || k === "X")) return copy(true), true;
+    if (mod && !e.altKey && (k === "v" || k === "V")) return paste(), true;
     if (mod && e.altKey && /^[1-4]$/.test(e.code.replace("Digit", ""))) {
       voiceN = Number(e.code.replace("Digit", ""));
       if (caret) caret = { ...caret, voice: editor.voiceId(caret.part, caret.staff, voiceN) };
@@ -583,7 +632,7 @@ export function createEditing(host: EditingHost): Editing {
       transpose((k === "ArrowUp" ? 1 : -1) * (mod ? 12 : 1));
       return true;
     }
-    if (k === "ArrowLeft" || k === "ArrowRight") return step(k === "ArrowLeft" ? -1 : 1), true;
+    if (k === "ArrowLeft" || k === "ArrowRight") return step(k === "ArrowLeft" ? -1 : 1, e.shiftKey), true;
     return false;
   }
 

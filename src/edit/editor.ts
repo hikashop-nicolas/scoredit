@@ -22,6 +22,13 @@ export interface NoteInput {
   quarters: number;
 }
 
+/** Copied music: each event's pitches (null for a rest), length and tie on. */
+export interface Clip {
+  pitches: Pitch[] | null;
+  quarters: number;
+  tie: boolean;
+}
+
 /** What an edit changed: measures [from, to) to draw again, and measures added or removed at the end. */
 export interface Change {
   from: number;
@@ -173,6 +180,57 @@ export class ScoreEditor {
       }
       this.fixTies(caret.part, key, caret.measure - 1, last + 1);
       return { caret: this.advance(caret.part, caret.measure, start, len, caret), change: { from: caret.measure, to: last + 1, appended: 0 } };
+    });
+  }
+
+  /** Several edits as one undo step. */
+  group<T>(fn: () => T): T {
+    return this.transact(fn);
+  }
+
+  /** The events of one voice from a's event to b's, both included, in order. */
+  eventsBetween(a: Caret, b: Caret): { at: Caret; ev: Event }[] {
+    const [from, to] = a.measure < b.measure || (a.measure === b.measure && a.pos <= b.pos) ? [a, b] : [b, a];
+    const key = voiceKey(from.staff, from.voice);
+    const out: { at: Caret; ev: Event }[] = [];
+    for (let m = from.measure; m <= to.measure && m < this.score.measureCount; m++) {
+      const per = this.info(from.part, m).perQuarter;
+      for (const ev of readMeasure(this.score.measures[from.part][m]).voices.get(key) ?? []) {
+        const q = ev.pos / per;
+        const end = (ev.pos + ev.dur) / per;
+        if (m === from.measure && end <= from.pos) continue;
+        if (m === to.measure && q > to.pos) continue;
+        out.push({ at: { ...from, measure: m, pos: q }, ev });
+      }
+    }
+    return out;
+  }
+
+  /** Copies events as pitches and lengths, for pasting. */
+  copy(a: Caret, b: Caret): Clip[] {
+    return this.eventsBetween(a, b).map(({ at, ev }) => ({
+      pitches: ev.rest ? null : ev.notes.map(readPitch).filter((p): p is Pitch => !!p),
+      quarters: ev.dur / this.info(at.part, at.measure).perQuarter,
+      tie: !ev.rest && isTied(ev.notes[0], "start"),
+    }));
+  }
+
+  /** Writes copied events from the caret on (one undo step); returns the caret after them. */
+  paste(caret: Caret, clip: Clip[]): { caret: Caret; change: Change } {
+    return this.transact(() => {
+      let c = caret;
+      let to = caret.measure + 1;
+      for (const item of clip) {
+        const r = this.enter(c, { pitches: item.pitches, quarters: item.quarters });
+        if (item.tie) {
+          const ev = this.eventAt(c);
+          if (ev) for (const n of ev.notes) setTie(n, "start", true);
+        }
+        to = Math.max(to, r.change.to);
+        c = r.caret;
+      }
+      this.fixTies(caret.part, voiceKey(caret.staff, caret.voice), caret.measure, to);
+      return { caret: c, change: { from: caret.measure, to, appended: 0 } };
     });
   }
 
