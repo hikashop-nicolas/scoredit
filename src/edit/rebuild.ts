@@ -68,7 +68,10 @@ export function plan(score: ScoreDoc): { entries: Entry[]; skipped: Skipped } {
             if (marked(evs[j], "stop")) break;
             if (!marked(evs[i], "start") && Object.values(TYPE_Q).some((q) => Math.abs(sum / normal - q) < 1e-6)) break;
           }
-          starts.set(i, { quarters: sum, actual, normal });
+          // A tuplet missing its last notes (a silence left out) is laid out whole all the same.
+          const whole = Object.values(TYPE_Q).some((q) => Math.abs(sum / normal - q) < 1e-6);
+          const base = whole ? sum / normal : Math.min(...Object.values(TYPE_Q).filter((q) => q * normal >= sum - 1e-6));
+          starts.set(i, { quarters: base * normal, actual, normal });
           i = j + 1;
         }
         evs.forEach((ev, i) => {

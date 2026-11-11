@@ -1,4 +1,7 @@
 import { OpenSheetMusicDisplay } from "opensheetmusicdisplay";
+import { patchOsmd } from "./osmd-patches";
+
+patchOsmd();
 import { breakSystems, systemOf, type SystemRange } from "../layout/systems";
 import { abbreviate, type ScoreDoc } from "../model/score";
 import { kid, kids, text } from "../model/xml";
