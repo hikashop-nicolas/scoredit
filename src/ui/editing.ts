@@ -188,7 +188,11 @@ export function createEditing(host: EditingHost): Editing {
   row1.className = "sv-pal-row";
   const row2 = document.createElement("div");
   row2.className = "sv-pal-row";
-  el.append(strip, row1, row2);
+  // The two groups share a line when there is room (desktop), else stack (phone).
+  const rows = document.createElement("div");
+  rows.className = "sv-pal";
+  rows.append(row1, row2);
+  el.append(strip, rows);
 
   const inputBtn = button(ICONS.input, t("noteInput"), () => setInput(!input));
   const durBtns = DURATIONS.map(([q, icon, label]) => button(icon, t(label), () => setDuration(q)));

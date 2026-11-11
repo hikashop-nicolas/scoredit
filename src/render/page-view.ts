@@ -25,6 +25,8 @@ export interface PageView extends View {
   /** Points to the score after an edit (the same piece) and draws measures [from, to) again. */
   refresh(next: ScoreDoc, from: number, to: number): void;
   pick(clientX: number, clientY: number): Pick | null;
+  /** The client point of a staff position (`step` half spaces below the top line) at a beat, or null if not drawn. */
+  pointFor(measure: number, quarter: number, part: number, staff: number, step: number): { x: number; y: number } | null;
   /** The note-entry caret on a staff at a beat, or none. */
   showCaret(c: { measure: number; quarter: number; part: number; staff: number } | null): void;
   /** Marks the drawn notes of these (measure, onset, part, staff, voice, rank) as selected. */
@@ -490,6 +492,14 @@ export function createPageView(initial: ScoreDoc, opts: ViewOptions): PageView {
     hidePosition: () => (cursor.hidden = true),
     refresh,
     pick,
+    pointFor(measure: number, quarter: number, part: number, staff: number, step: number) {
+      const s = slots[systemOf(systems, measure)];
+      const box = s?.pos?.staves.find((b) => b.part === part && b.staff === staff);
+      const x = s?.pos ? xAt(s.pos, measure, quarter, Number.MAX_SAFE_INTEGER) : null;
+      if (!s || !box || x === null) return null;
+      const r = s.el.getBoundingClientRect();
+      return { x: r.left + x + 3 * zoom, y: r.top + box.top + step * 5 * zoom };
+    },
     showCaret,
     select,
     highlight,

@@ -41,8 +41,16 @@ npm run corpus   # fetch the test corpus (OpenScore, CC0) into corpus/; converts
 npm run dev      # demo at http://127.0.0.1:5173, with the local corpus in its picker
 npm test
 npm run test:corpus   # the corpus checks against MuseScore's own export (needs the corpus)
+npm run test:e2e      # edit mode driven in headless Chrome (desktop and phone); report in e2e-report/
 # then http://127.0.0.1:5173/sounds.html: a blind listening test of the instrument sounds
 ```
 
 The corpus folder is gitignored and only the dev server serves it: scores downloaded
 from elsewhere for testing never end up in the repo or the built demo.
+
+`npm run test:e2e` plays edit-mode scenarios (typing notes, taps, long press, keyboard and
+fretboard strips, triplets, copy/paste, drums, undo, saving) on the small scores in
+demo/fixtures/ with real mouse, touch and key events, and checks what the score then holds
+and what playback would sound. The report, e2e-report/index.html, explains each scenario in
+plain words with a screenshot, so it reads without knowing music. `npm run test:e2e -- tie`
+runs only the scenarios whose id contains "tie". It needs Chrome (or CHROME_PATH).

@@ -1,3 +1,5 @@
+import * as scoreditLib from "../src/index";
+import { layoutKeys, keyRange } from "../src/ui/keyboard";
 import { SOUNDS_CDN, createScoreViewer, loadScore, partFamily, remoteSounds, type ScoreViewerHandle } from "../src/index";
 
 // Recorded sounds: from the local corpus copy of scoredit-sounds, or ?sounds=cdn for jsDelivr.
@@ -56,7 +58,7 @@ document.getElementById("file")!.addEventListener("change", async (e) => {
 });
 
 async function openUrl(path: string): Promise<void> {
-  const res = await fetch(`corpus/${path}`);
+  const res = await fetch(path.startsWith("fixtures/") ? path : `corpus/${path}`);
   open(new Uint8Array(await res.arrayBuffer()), path);
 }
 select.addEventListener("change", () => select.value && void openUrl(select.value));
@@ -66,6 +68,8 @@ fetch("corpus-index.json")
   .then((r) => (r.ok ? r.json() : []))
   .then((files: string[]) => {
     for (const f of files) select.add(new Option(f, f));
+    const fixture = new URLSearchParams(location.search).get("fixture");
+    if (fixture) return void openUrl(`fixtures/${fixture}`);
     const want = new URLSearchParams(location.search).get("f");
     if (want) {
       select.value = want;
@@ -75,3 +79,6 @@ fetch("corpus-index.json")
   .catch(() => select.remove());
 
 document.addEventListener("fullscreenchange", () => viewer?.setReadingMode(document.fullscreenElement === host));
+
+// For the end-to-end tests (e2e/): the library and the strip's key layout.
+Object.assign(window, { scoreditLib, scoreditKeys: { layoutKeys, keyRange } });

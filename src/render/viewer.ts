@@ -64,6 +64,11 @@ export interface ScoreViewerHandle {
   /** Indices of the parts shown, null for all. */
   readonly parts: number[] | null;
   setParts(shown: number[] | null): void;
+  /**
+   * The client point of a staff position (half spaces below its top line) at a beat, in the
+   * page layout, for driving the viewer in tests. Part indices are the score's.
+   */
+  pointFor(measure: number, quarter: number, part: number, staff: number, step: number): { x: number; y: number } | null;
   /** Whether edit mode is on. */
   readonly editing: boolean;
   setEditing(on: boolean): void;
@@ -426,6 +431,11 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
     setLayout,
     get parts() {
       return shownParts;
+    },
+    pointFor(measure, quarter, part, staff, step) {
+      if (mode !== "page") return null;
+      const shown = shownParts ? shownParts.indexOf(part) : part;
+      return shown < 0 ? null : (view as PageView).pointFor(measure, quarter, shown, staff, step);
     },
     get editing() {
       return editingOn;

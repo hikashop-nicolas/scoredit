@@ -12,5 +12,6 @@ export { breakSystems, systemOf, type SystemRange, type BreakOptions } from "./l
 export { ScoreEditor, type Caret, type Change, type NoteInput } from "./edit/editor";
 export { createScoreViewer, type LayoutMode, type ScoreViewerHandle, type ScoreViewerOptions } from "./render/viewer";
 export type { LineView } from "./render/line-view";
+export { buildTimeline, type Timeline, type NoteEvent } from "./play/timeline";
 export { remoteSounds, SOUNDS_CDN, type RemoteSoundsOptions, type SoundDownloads, type SoundRequest } from "./play/sounds";
 export { setLocale, t } from "./ui/i18n";

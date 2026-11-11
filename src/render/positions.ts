@@ -100,7 +100,9 @@ export function xAt(pos: Positions, m: number, q: number, quarters: number): num
 /** The measure and quarter under x (px in the render's frame), or null. */
 export function hitAt(pos: Positions, x: number): { measure: number; quarter: number } | null {
   for (const [m, b] of pos.beats) {
-    if (x < b.left - 4 || x >= b.right) continue;
+    // The first note can stand left of where the bar's clef and signatures end.
+    const left = Math.min(b.left, (b.onsets[0]?.[1] ?? b.left) - 6);
+    if (x < left - 4 || x >= b.right) continue;
     let q = 0;
     for (const [oq, ox] of b.onsets) if (ox <= x + 6) q = oq;
     return { measure: m, quarter: q };

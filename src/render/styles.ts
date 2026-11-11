@@ -21,10 +21,12 @@ const CSS = `
 .sv-chunk svg{display:block}
 .sv-edit{flex:0 0 auto;display:flex;flex-direction:column;gap:4px;padding:5px 8px;background:var(--sv-chrome,#2b2f36);color:var(--sv-bar-fg,#e6e6e6);border-top:1px solid var(--sv-border,#1c1f24);font:13px system-ui,sans-serif}
 .sv-edit[hidden],.sv-pitch-strip[hidden]{display:none}
-.sv-pal-row{display:flex;flex-wrap:wrap;gap:4px;justify-content:center}
-.sv-pal-row .sv-bb-btn{min-width:38px;min-height:38px;justify-content:center}
+.sv-pal{display:flex;flex-wrap:wrap;justify-content:center;align-items:center;gap:4px 14px}
+.sv-pal-row{display:flex;gap:4px;justify-content:center;min-width:0;max-width:100%}
+.sv-pal-row .sv-bb-btn{flex:0 1 40px;min-width:26px;min-height:40px;padding:0;justify-content:center}
+@media (pointer:fine){.sv-pal-row .sv-bb-btn{flex-basis:36px;min-height:34px}}
 .sv-pal-row .sv-bb-btn:disabled{opacity:.35}
-.sv-pal-done{margin-left:auto}
+
 .sv-glyph{font-size:20px;line-height:1;font-family:"Noto Music","Segoe UI Symbol",system-ui,sans-serif}
 .sv-voice{display:inline-grid;place-items:center;width:20px;height:20px;border-radius:50%;color:#fff;font-weight:600;font-size:12px}
 .sv-voice-1{background:#1a73e8}.sv-voice-2{background:#188038}.sv-voice-3{background:#e8710a}.sv-voice-4{background:#a142f4}
