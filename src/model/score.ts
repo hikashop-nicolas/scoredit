@@ -115,14 +115,23 @@ export class ScoreDoc {
    * MusicXML for measures [a, b) on their own: the header, each part's measures, and at
    * the first measure the attributes in force there, so it renders as a new system would.
    */
-  slice(a: number, b: number, opts: { header?: boolean } = {}): string {
+  slice(a: number, b: number, opts: { header?: boolean; abbreviate?: boolean } = {}): string {
     const out = parseXml("<score-partwise/>");
     const root = out.documentElement;
     for (const at of Array.from(this.root.attributes)) root.setAttribute(at.name, at.value);
     for (const c of kids(this.root)) {
       if (c.tagName === "part") continue;
       if (!opts.header && (c.tagName === "credit" || c.tagName === "work" || c.tagName === "movement-title" || c.tagName === "movement-number")) continue;
-      root.appendChild(out.importNode(c, true));
+      const copy = root.appendChild(out.importNode(c, true)) as Element;
+      // Later systems name parts by their short name, made up where the score has none. Each
+      // slice renders as a first system, so the short name goes where the name is read.
+      if (opts.abbreviate && c.tagName === "part-list")
+        for (const sp of kids(copy, "score-part")) {
+          const short = text(sp, "part-abbreviation") || (this.parts.length > 1 ? abbreviate(text(sp, "part-name")) : "");
+          const name = kid(sp, "part-name");
+          if (name) name.textContent = short;
+          kid(sp, "part-name-display")?.remove();
+        }
     }
     kids(this.root, "part").forEach((part, p) => {
       const np = out.importNode(part, false) as Element;
@@ -173,6 +182,16 @@ export class ScoreDoc {
   serialize(): string {
     return new XMLSerializer().serializeToString(this.doc);
   }
+}
+
+/** A short name for a part: short names kept, else the first word cut, with its number. */
+export function abbreviate(name: string): string {
+  const n = name.trim();
+  if (n.length <= 8) return n;
+  const words = n.split(/\s+/);
+  const first = words[0].length > 5 ? words[0].slice(0, 4) + "." : words[0];
+  const last = words[words.length - 1];
+  return words.length > 1 && /^([IVX]+|\d+)$/.test(last) ? `${first} ${last}` : first;
 }
 
 // Directions shown once per system, above the top part.

@@ -1,6 +1,6 @@
 import { OpenSheetMusicDisplay } from "opensheetmusicdisplay";
 import { breakSystems, systemOf, type SystemRange } from "../layout/systems";
-import type { ScoreDoc } from "../model/score";
+import { abbreviate, type ScoreDoc } from "../model/score";
 import { kid, kids, text } from "../model/xml";
 import { collectPositions, hitAt, xAt, type Positions } from "./positions";
 import type { View, ViewOptions } from "./view";
@@ -15,7 +15,8 @@ export interface PageView extends View {
 const UNIT_PX = 10;
 const MARGIN = 2;
 const BREAK = { measureBase: 5, perWeight: 2.6, systemStart: 9 };
-const NAMES_WIDTH = 10;
+// Width of one character of a part name, in OSMD units.
+const LABEL_CHAR = 0.9;
 const TIME_WIDTH = 4;
 // How far outside the viewport systems are rendered ahead, and kept, in viewport heights.
 const AHEAD = 1;
@@ -113,12 +114,15 @@ export function createPageView(score: ScoreDoc, opts: ViewOptions): PageView {
     for (const s of slots.slice(keep)) s.el.remove();
     const from = keep ? systems[keep - 1].end : 0;
     const shift = (rs: SystemRange[]) => rs.map((r) => ({ start: r.start + from, end: r.end + from }));
-    let fresh = shift(breakSystems(weights.slice(from), { ...params, width: units }));
+    // Systems give up room for the part names on their left: full on the first, short after.
+    const label = (names: string[]) => (names.some(Boolean) ? Math.max(...names.map((n) => n.length)) * LABEL_CHAR + 2 : 0);
+    const later = units - label(score.parts.map((p) => p.abbreviation || (score.parts.length > 1 ? abbreviate(p.name) : "")));
+    let fresh = shift(breakSystems(weights.slice(from), { ...params, width: later }));
     // The first system also carries the part names and the time signature.
     if (from === 0 && fresh.length > 1 && score.parts.some((p) => p.name)) {
-      const first = breakSystems(weights, { ...params, width: units - NAMES_WIDTH - TIME_WIDTH - firstCut })[0];
+      const first = breakSystems(weights, { ...params, width: units - label(score.parts.map((p) => p.name)) - TIME_WIDTH - firstCut })[0];
       if (first.end < fresh[0].end) {
-        fresh = [first, ...breakSystems(weights.slice(first.end), { ...params, width: units }).map((r) => ({ start: r.start + first.end, end: r.end + first.end }))];
+        fresh = [first, ...breakSystems(weights.slice(first.end), { ...params, width: later }).map((r) => ({ start: r.start + first.end, end: r.end + first.end }))];
       }
     }
     systems = [...systems.slice(0, keep), ...fresh];
@@ -192,8 +196,8 @@ export function createPageView(score: ScoreDoc, opts: ViewOptions): PageView {
         drawComposer: first,
         drawLyricist: first,
         drawCredits: first,
-        drawPartNames: first,
-        drawPartAbbreviations: !first,
+        drawPartNames: true,
+        drawPartAbbreviations: false,
         stretchLastSystemLine: true,
       });
       const r = osmd.EngravingRules;
@@ -213,7 +217,7 @@ export function createPageView(score: ScoreDoc, opts: ViewOptions): PageView {
       host.style.width = `${width}px`;
       slot.el.textContent = "";
       slot.el.append(host);
-      await osmd.load(score.slice(range.start, range.end, { header: first }));
+      await osmd.load(score.slice(range.start, range.end, { header: first, abbreviate: !first }));
       if (gen !== generation) return;
       // load() resets OSMD's zoom to 1.
       osmd.zoom = zoom;

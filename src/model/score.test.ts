@@ -5,7 +5,7 @@ import { detectFormat } from "../formats/detect";
 import { loadScore } from "../formats/load";
 import { readMxl } from "../formats/mxl";
 import { breakSystems, systemOf } from "../layout/systems";
-import { ScoreDoc, partFamily } from "./score";
+import { ScoreDoc, abbreviate, partFamily } from "./score";
 import { kids, parseXml } from "./xml";
 
 const note = (step: string, dur = 1, extra = "") => `<note><pitch><step>${step}</step><octave>4</octave></pitch><duration>${dur}</duration>${extra}</note>`;
@@ -152,5 +152,9 @@ describe("Showing some parts", () => {
   it("tells instrument families apart by name before program", () => {
     const f = (name: string, program: number | null = null) => partFamily({ id: "", name, abbreviation: "", program });
     expect([f("Alto Saxophone"), f("Tenor Trombone"), f("Double Bass"), f("Bass Guitar"), f("Soprano"), f("Contrabassoon"), f("", 33), f("Lead", 128)]).toEqual(["winds", "brass", "strings", "bass", "voice", "winds", "bass", "drums"]);
+  });
+
+  it("makes up short part names", () => {
+    expect(["Piano", "Clarinetto in B♭ II", "Tamburo Militare", "Violin 2"].map(abbreviate)).toEqual(["Piano", "Clar. II", "Tamb.", "Violin 2"]);
   });
 });
