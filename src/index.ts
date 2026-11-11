@@ -7,7 +7,7 @@
 export { detectFormat, type ScoreFormat } from "./formats/detect";
 export { loadScore, type LoadedScore, type LoadOptions } from "./formats/load";
 export { readMxl } from "./formats/mxl";
-export { ScoreDoc, type PartInfo } from "./model/score";
+export { ScoreDoc, partFamily, PART_FAMILIES, type PartFamily, type PartInfo } from "./model/score";
 export { breakSystems, systemOf, type SystemRange, type BreakOptions } from "./layout/systems";
 export { createScoreViewer, type LayoutMode, type ScoreViewerHandle, type ScoreViewerOptions } from "./render/viewer";
 export type { LineView } from "./render/line-view";

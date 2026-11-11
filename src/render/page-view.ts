@@ -56,6 +56,8 @@ export function createPageView(score: ScoreDoc, opts: ViewOptions): PageView {
   const params = { ...BREAK };
   const samples: [weight: number, need: number][] = [];
   let calibrations = 0;
+  // Extra room the first system gives up when its part names run longer than allowed for.
+  let firstCut = 0;
   let weights: number[] = [];
   let units = 0;
 
@@ -114,7 +116,7 @@ export function createPageView(score: ScoreDoc, opts: ViewOptions): PageView {
     let fresh = shift(breakSystems(weights.slice(from), { ...params, width: units }));
     // The first system also carries the part names and the time signature.
     if (from === 0 && fresh.length > 1 && score.parts.some((p) => p.name)) {
-      const first = breakSystems(weights, { ...params, width: units - NAMES_WIDTH - TIME_WIDTH })[0];
+      const first = breakSystems(weights, { ...params, width: units - NAMES_WIDTH - TIME_WIDTH - firstCut })[0];
       if (first.end < fresh[0].end) {
         fresh = [first, ...breakSystems(weights.slice(first.end), { ...params, width: units }).map((r) => ({ start: r.start + first.end, end: r.end + first.end }))];
       }
@@ -195,6 +197,8 @@ export function createPageView(score: ScoreDoc, opts: ViewOptions): PageView {
         stretchLastSystemLine: true,
       });
       const r = osmd.EngravingRules;
+      // Every bar drawn on its own (no multi-bar rests), so playback can point at it.
+      r.AutoGenerateMultipleRestMeasuresFromRestMeasures = false;
       r.PageLeftMargin = MARGIN;
       r.PageRightMargin = MARGIN;
       r.PageTopMargin = first ? 2 : 0;
@@ -216,7 +220,10 @@ export function createPageView(score: ScoreDoc, opts: ViewOptions): PageView {
       osmd.render();
       let rebreak = learn(osmd, range, first);
       const lines = osmd.GraphicSheet.MusicPages.reduce((n, p) => n + p.MusicSystems.length, 0);
-      if (!rebreak && !first && lines > 1 && range.end - range.start > 1 && calibrations < 6) {
+      if (!rebreak && first && lines > 1 && range.end - range.start > 1 && firstCut < units / 2) {
+        firstCut += units * 0.12;
+        rebreak = true;
+      } else if (!rebreak && !first && lines > 1 && range.end - range.start > 1 && calibrations < 6) {
         // Still too full for OSMD: widen every measure a little.
         params.measureBase *= 1.1;
         calibrations++;

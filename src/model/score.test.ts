@@ -5,7 +5,7 @@ import { detectFormat } from "../formats/detect";
 import { loadScore } from "../formats/load";
 import { readMxl } from "../formats/mxl";
 import { breakSystems, systemOf } from "../layout/systems";
-import { ScoreDoc } from "./score";
+import { ScoreDoc, partFamily } from "./score";
 import { kids, parseXml } from "./xml";
 
 const note = (step: string, dur = 1, extra = "") => `<note><pitch><step>${step}</step><octave>4</octave></pitch><duration>${dur}</duration>${extra}</note>`;
@@ -29,7 +29,7 @@ describe("ScoreDoc", () => {
   const s = new ScoreDoc(XML);
 
   it("reads parts, measures and header", () => {
-    expect(s.parts).toEqual([{ id: "P1", name: "Flute", abbreviation: "Fl." }]);
+    expect(s.parts).toEqual([{ id: "P1", name: "Flute", abbreviation: "Fl.", program: null }]);
     expect(s.measureCount).toBe(4);
     expect(s.title).toBe("Little tune");
     expect(s.composer).toBe("Anon");
@@ -122,5 +122,35 @@ describe("breakSystems", () => {
     expect(systemOf(sys, 0)).toBe(0);
     expect(systemOf(sys, 4)).toBe(1);
     expect(systemOf(sys, 8)).toBe(2);
+  });
+});
+
+describe("Showing some parts", () => {
+  const BAND = `<?xml version="1.0"?><score-partwise version="4.0"><part-list>
+    <part-group type="start" number="1"/>
+    <score-part id="P1"><part-name>Piano</part-name><midi-instrument id="P1-I1"><midi-program>1</midi-program></midi-instrument></score-part>
+    <part-group type="stop" number="1"/>
+    <score-part id="P2"><part-name>Kit</part-name><midi-instrument id="P2-I1"><midi-channel>10</midi-channel></midi-instrument></score-part>
+  </part-list>
+  <part id="P1"><measure number="1"><attributes><divisions>1</divisions></attributes><direction placement="above"><direction-type><metronome><beat-unit>quarter</beat-unit><per-minute>90</per-minute></metronome></direction-type><sound tempo="90"/></direction>${note("C", 4)}</measure>
+    <measure number="2">${note("D", 4)}<direction placement="above"><direction-type><words>D.C.</words></direction-type><sound dacapo="yes"/></direction></measure></part>
+  <part id="P2"><measure number="1"><attributes><divisions>1</divisions></attributes>${note("E", 4)}</measure><measure number="2">${note("E", 4)}</measure></part>
+</score-partwise>`;
+
+  it("keeps the chosen parts and moves system text onto the first shown", () => {
+    const full = new ScoreDoc(BAND);
+    expect(full.parts.map(partFamily)).toEqual(["keys", "drums"]);
+    const kit = full.only([1]);
+    expect(kit.parts.map((p) => p.name)).toEqual(["Kit"]);
+    expect(kit.doc.getElementsByTagName("part-group")).toHaveLength(0);
+    const [m1, m2] = kit.measures[0];
+    expect(kids(m1).map((e) => e.tagName)).toEqual(["attributes", "direction", "note"]);
+    expect(kids(m2).map((e) => e.tagName)).toEqual(["note", "direction"]);
+    expect(full.doc.getElementsByTagName("direction")).toHaveLength(2); // the full score is untouched
+  });
+
+  it("tells instrument families apart by name before program", () => {
+    const f = (name: string, program: number | null = null) => partFamily({ id: "", name, abbreviation: "", program });
+    expect([f("Alto Saxophone"), f("Tenor Trombone"), f("Double Bass"), f("Bass Guitar"), f("Soprano"), f("Contrabassoon"), f("", 33), f("Lead", 128)]).toEqual(["winds", "brass", "strings", "bass", "voice", "winds", "bass", "drums"]);
   });
 });

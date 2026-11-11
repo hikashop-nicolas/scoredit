@@ -172,6 +172,8 @@ export function createLineView(score: ScoreDoc, opts: ViewOptions & { fit?: bool
         drawPartAbbreviations: false,
       });
       const r = osmd.EngravingRules;
+      // Every bar drawn on its own (no multi-bar rests), so playback can point at it.
+      r.AutoGenerateMultipleRestMeasuresFromRestMeasures = false;
       r.PageLeftMargin = first ? 1 : 0;
       r.PageRightMargin = 0;
       r.PageTopMargin = 0;

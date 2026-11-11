@@ -40,6 +40,10 @@ const CSS = `
 .sv-bb-speed{font-variant-numeric:tabular-nums;min-width:52px}
 .sv-pop{position:absolute;bottom:calc(100% + 6px);left:8px;z-index:3;padding:10px 12px;background:var(--sv-chrome,#2b2f36);border:1px solid var(--sv-btn-border,#4a4f57);border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,.3)}
 .sv-pop input{width:180px;accent-color:var(--sv-accent,#6e7bff)}
+.sv-pop-parts{left:auto;right:8px;max-height:min(60vh,420px);overflow-y:auto;display:flex;flex-direction:column;gap:2px;min-width:180px;max-width:calc(100% - 16px)}
+.sv-pop-parts label{flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:6px 4px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sv-pop-parts input{width:auto;margin:0;flex:0 0 auto}
+.sv-pop-parts .sv-all{border-bottom:1px solid var(--sv-btn-border,#4a4f57);margin-bottom:4px;padding-bottom:8px}
 .sv-bar-end{display:contents}
 .sv-reading .sv-bar-end{display:none}
 `;

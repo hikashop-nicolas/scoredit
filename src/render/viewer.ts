@@ -37,6 +37,11 @@ export interface ScoreViewerOptions {
    * it the built-in synth and string model play; scoredit never downloads on its own.
    */
   sounds?: SoundDownloads | null;
+  /**
+   * Parts shown: a Parts button in the bar ticks them (playback keeps them all). `show` is
+   * the first choice (indices into score.parts, null for all); `onChange` hears the user's.
+   */
+  parts?: { show?: number[] | null; onChange?(shown: number[] | null): void };
 }
 
 export interface ScoreViewerHandle {
@@ -51,6 +56,9 @@ export interface ScoreViewerHandle {
   /** The line view while in line layout, for playback to drive. */
   readonly line: LineView | null;
   setLayout(layout: LayoutMode): void;
+  /** Indices of the parts shown, null for all. */
+  readonly parts: number[] | null;
+  setParts(shown: number[] | null): void;
   /** Starts or pauses playback (the bar's play button). */
   togglePlay(): void;
   /** The player, once playback was used. */
@@ -71,6 +79,14 @@ export interface ScoreViewerHandle {
 // score sideways on one line for playing along.
 export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opts: ScoreViewerOptions = {}): ScoreViewerHandle {
   let score = initial;
+  // The parts shown, and the score the views draw: the whole score, or those parts only.
+  const validParts = (p: number[] | null | undefined, s: ScoreDoc) => {
+    const ok = [...new Set(p ?? [])].filter((i) => i >= 0 && i < s.parts.length).sort((a, b) => a - b);
+    return ok.length && ok.length < s.parts.length ? ok : null;
+  };
+  let shownParts = validParts(opts.parts?.show, score);
+  let shownScore = shownParts ? score.only(shownParts) : score;
+  const visible = (e: { part: number }) => !shownParts || shownParts.includes(e.part);
   injectStyles();
   let mode: LayoutMode = opts.layout ?? "page";
   let pageZoom = clampZoom(opts.zoom ?? (container.clientWidth > 0 && container.clientWidth < 700 ? 0.6 : 1));
@@ -94,15 +110,20 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
     onPlay: () => togglePlay(),
     onSpeed: (v) => setSpeed(v),
     onKeyboard: (on) => showKeyboard(on),
-    fretboard: !!fretTuning(score, []),
+    fretboard: !!fretTuning(shownScore, []),
     onFretboard: (on) => showFretboard(on),
     tab: opts.tablature ? { on: opts.tablature.on, toggle: (on) => setScore(opts.tablature!.toggle(on)) } : undefined,
     onFullscreen: opts.onFullscreen,
+    onParts: opts.parts ? (p) => setParts(p, true) : undefined,
   });
+  bar.setParts(score.parts.map((p) => p.name), shownParts);
 
   // The timeline is built once, when playback or the keyboard first needs it.
   let timeline: Timeline | null = null;
   const getTimeline = () => (timeline ??= buildTimeline(score));
+  // The notes of the parts shown, for the keyboard, fretboard and falling notes.
+  let shownTimeline: Timeline | null = null;
+  const getShownTimeline = () => (shownTimeline ??= shownParts ? { ...getTimeline(), events: getTimeline().events.filter(visible) } : getTimeline());
   let color = noteColors(score);
 
   // The fretboard strip under the score, for fretted parts: positions lit as notes sound.
@@ -110,8 +131,8 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
   let tuning: number[] = [];
   function showFretboard(on: boolean): void {
     if (on && !frets) {
-      const tl = getTimeline();
-      tuning = fretTuning(score, tl.events) ?? [];
+      const tl = getShownTimeline();
+      tuning = fretTuning(shownScore, tl.events) ?? [];
       if (!tuning.length) return;
       frets = new Fretboard(tuning);
       let top = 0;
@@ -137,7 +158,7 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
       wrap.className = "sv-kbd";
       wrap.append(kbd.canvas);
       shell.insertBefore(wrap, bar.el);
-      const tl = getTimeline();
+      const tl = getShownTimeline();
       let lo = 127;
       let hi = 0;
       for (const e of tl.events) {
@@ -165,7 +186,9 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
         if (falls) falls.showTime(p.time);
         else if (span) view.showPosition(span.measure, p.quarter, span.quarters, performance.now() > followPaused);
       },
-      onNotes: (evs, on) => {
+      onNotes: (all, on) => {
+        const evs = shownParts ? all.filter(visible) : all;
+        if (!evs.length) return;
         view.highlight(evs.map((e) => noteKey(e.measure, e.onset)), on);
         if (frets) {
           for (const e of evs) {
@@ -226,10 +249,10 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
     const common = { onError: opts.onError, onZoom: (z: number) => ((shown = z), bar.sync(z)) };
     falls = null;
     if (mode === "keys") {
-      falls = createKeysView(score, getTimeline, { ...common, zoom: 1 });
+      falls = createKeysView(score, getShownTimeline, { ...common, zoom: 1 });
       falls.showTime(player?.time ?? 0);
       view = falls;
-    } else view = mode === "page" ? createPageView(score, { ...common, zoom: pageZoom, onSystemRendered: opts.onSystemRendered }) : createLineView(score, { ...common, zoom: pageZoom });
+    } else view = mode === "page" ? createPageView(shownScore, { ...common, zoom: pageZoom, onSystemRendered: opts.onSystemRendered }) : createLineView(shownScore, { ...common, zoom: pageZoom });
     if (kbd) kbd.canvas.parentElement!.hidden = mode === "keys";
     if (frets) frets.canvas.parentElement!.hidden = mode === "keys";
     shown = view.zoom;
@@ -245,10 +268,27 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
     player = null;
     timeline = null;
     bar.setPlaying(false);
-    if (mode === "page") pageZoom = view.zoom;
-    view.destroy();
     score = next;
     color = noteColors(score);
+    shownParts = validParts(shownParts, score);
+    bar.setParts(score.parts.map((p) => p.name), shownParts);
+    remount();
+  }
+
+  // Shows other parts: playback goes on, the views and strips are built again.
+  function setParts(next: number[] | null, fromBar = false): void {
+    shownParts = validParts(next, score);
+    if (!fromBar) bar.setParts(score.parts.map((p) => p.name), shownParts);
+    remount();
+    opts.parts?.onChange?.(shownParts);
+  }
+
+  function remount(): void {
+    if (mode === "page") pageZoom = view.zoom;
+    view.destroy();
+    shownScore = shownParts ? score.only(shownParts) : score;
+    shownTimeline = null;
+    bar.setFretboard(!!fretTuning(shownScore, timeline ? getShownTimeline().events : []));
     if (kbd) {
       showKeyboard(false);
       showKeyboard(true);
@@ -335,6 +375,10 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
       return mode === "line" ? (view as LineView) : null;
     },
     setLayout,
+    get parts() {
+      return shownParts;
+    },
+    setParts: (p) => setParts(p),
     togglePlay,
     get player() {
       return player;

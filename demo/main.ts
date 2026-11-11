@@ -1,4 +1,4 @@
-import { SOUNDS_CDN, createScoreViewer, loadScore, remoteSounds, type ScoreViewerHandle } from "../src/index";
+import { SOUNDS_CDN, createScoreViewer, loadScore, partFamily, remoteSounds, type ScoreViewerHandle } from "../src/index";
 
 // Recorded sounds: from the local corpus copy of scoredit-sounds, or ?sounds=cdn for jsDelivr.
 const sounds = remoteSounds({ base: new URLSearchParams(location.search).get("sounds") === "cdn" ? SOUNDS_CDN : new URL("corpus/sounds/gm/", location.href).href });
@@ -26,6 +26,8 @@ function open(bytes: Uint8Array, name: string): void {
       layout: ((l) => (l === "line" || l === "keys" ? l : "page"))(new URLSearchParams(location.search).get("layout")),
       onError: (e) => console.error(e),
       sounds,
+      // ?parts=drums shows the parts of one instrument family, as a host setting would.
+      parts: { show: ((f) => (f ? score.parts.flatMap((p, i) => (partFamily(p) === f ? [i] : [])) : null))(new URLSearchParams(location.search).get("parts")) },
       tablature: loaded.fretted ? { on: loaded.tab, toggle: (on) => loadScore(bytes, { tab: on ? "always" : "never" }).score } : undefined,
       onFullscreen: () => (document.fullscreenElement ? void document.exitFullscreen() : void host.requestFullscreen()),
       onSystemRendered: (i, ms) => {

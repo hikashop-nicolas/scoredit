@@ -21,6 +21,7 @@ const ICON_KEYS = svgIcon('<rect x="3" y="13" width="18" height="8" rx="1"/><lin
 const ICON_KBD = svgIcon('<rect x="2" y="6" width="20" height="12" rx="1"/><line x1="7" x2="7" y1="6" y2="18"/><line x1="12" x2="12" y1="6" y2="18"/><line x1="17" x2="17" y1="6" y2="18"/><rect x="5.5" y="6" width="3" height="7" fill="currentColor"/><rect x="15.5" y="6" width="3" height="7" fill="currentColor"/>');
 const ICON_TAB = '<span class="sv-tab-label" aria-hidden="true">TAB</span>';
 const ICON_FRETS = svgIcon('<rect x="2" y="7" width="20" height="10" rx="1"/><line x1="8" x2="8" y1="7" y2="17"/><line x1="14" x2="14" y1="7" y2="17"/><line x1="20" x2="20" y1="7" y2="17"/><line x1="2" x2="22" y1="10.5" y2="10.5"/><line x1="2" x2="22" y1="13.5" y2="13.5"/>');
+const ICON_PARTS = svgIcon('<line x1="9" x2="21" y1="6" y2="6"/><line x1="9" x2="21" y1="12" y2="12"/><line x1="9" x2="21" y1="18" y2="18"/><polyline points="3 6 4.5 7.5 7 4.5"/><polyline points="3 12 4.5 13.5 7 10.5"/><line x1="3" x2="7" y1="18" y2="18"/>');
 const ICON_LINE = svgIcon('<line x1="2" x2="22" y1="9" y2="9"/><line x1="2" x2="22" y1="15" y2="15"/><polyline points="17 5 21 12 17 19"/>');
 
 export interface BarOptions {
@@ -42,6 +43,8 @@ export interface BarOptions {
   onFullscreen?(): void;
   /** A tab button, for scores with fretted parts. */
   tab?: { on: boolean; toggle(on: boolean): void };
+  /** Shows or hides parts: the indices shown, null for all. */
+  onParts?(shown: number[] | null): void;
 }
 
 export interface Bar {
@@ -51,6 +54,9 @@ export interface Bar {
   setLayout(mode: LayoutMode): void;
   setPlaying(on: boolean): void;
   reading(on: boolean): void;
+  /** The parts of the score and those shown (null: all); no button for a single part. */
+  setParts(names: string[], shown: number[] | null): void;
+  setFretboard(available: boolean): void;
 }
 
 function button(icon: string, label: string, onClick: () => void): HTMLButtonElement {
@@ -99,10 +105,73 @@ export function createBar(o: BarOptions): Bar {
     speedBtn.setAttribute("aria-expanded", String(!pop.hidden));
     if (!pop.hidden) speedRange.focus();
   });
+  // Parts: a button opening a list of the parts to tick.
+  const partsBtn = button(ICON_PARTS, t("parts"), () => {
+    partsPop.hidden = !partsPop.hidden;
+    partsBtn.setAttribute("aria-expanded", String(!partsPop.hidden));
+  });
+  partsBtn.setAttribute("aria-expanded", "false");
+  partsBtn.hidden = true;
+  const partsPop = document.createElement("div");
+  partsPop.className = "sv-pop sv-pop-parts";
+  partsPop.hidden = true;
+  let partBoxes: HTMLInputElement[] = [];
+  let allBox: HTMLInputElement | null = null;
+  const checkbox = (labelText: string, cls?: string) => {
+    const l = document.createElement("label");
+    if (cls) l.className = cls;
+    const c = document.createElement("input");
+    c.type = "checkbox";
+    l.append(c, document.createTextNode(labelText));
+    l.title = labelText;
+    partsPop.append(l);
+    return c;
+  };
+  const shownNow = (): number[] | null => {
+    const on = partBoxes.flatMap((b, i) => (b.checked ? [i] : []));
+    return on.length === partBoxes.length ? null : on;
+  };
+  const syncParts = () => {
+    const n = partBoxes.filter((b) => b.checked).length;
+    if (allBox) {
+      allBox.checked = n === partBoxes.length;
+      allBox.indeterminate = n > 0 && n < partBoxes.length;
+    }
+    partsBtn.classList.toggle("is-on", n < partBoxes.length);
+    partsBtn.setAttribute("aria-pressed", String(n < partBoxes.length));
+  };
+  const setParts = (names: string[], shown: number[] | null) => {
+    partsPop.replaceChildren();
+    partsBtn.hidden = names.length < 2 || !o.onParts;
+    if (partsBtn.hidden) partsPop.hidden = true;
+    allBox = checkbox(t("allParts"), "sv-all");
+    allBox.addEventListener("change", () => {
+      // "All" unticked keeps the first part: a score shows at least one.
+      partBoxes.forEach((b, i) => (b.checked = allBox!.checked || i === 0));
+      syncParts();
+      o.onParts?.(shownNow());
+    });
+    const set = shown ? new Set(shown) : null;
+    partBoxes = names.map((name, i) => {
+      const b = checkbox(name || `${t("parts")} ${i + 1}`);
+      b.checked = !set || set.has(i);
+      b.addEventListener("change", () => {
+        if (!partBoxes.some((x) => x.checked)) b.checked = true;
+        syncParts();
+        o.onParts?.(shownNow());
+      });
+      return b;
+    });
+    syncParts();
+  };
   document.addEventListener("pointerdown", (e) => {
     if (!pop.hidden && !pop.contains(e.target as Node) && e.target !== speedBtn) {
       pop.hidden = true;
       speedBtn.setAttribute("aria-expanded", "false");
+    }
+    if (!partsPop.hidden && !partsPop.contains(e.target as Node) && !partsBtn.contains(e.target as Node)) {
+      partsPop.hidden = true;
+      partsBtn.setAttribute("aria-expanded", "false");
     }
   });
   // The three layouts as one segmented control.
@@ -171,7 +240,7 @@ export function createBar(o: BarOptions): Bar {
     tabBtn.setAttribute("aria-pressed", String(tabOn));
     el.append(tabBtn);
   }
-  el.append(grow, slider, label);
+  el.append(partsBtn, partsPop, grow, slider, label);
   let fs: HTMLButtonElement | null = null;
   if (o.onFullscreen) {
     fs = button(ICON_FS, t("fullscreen"), () => o.onFullscreen?.());
@@ -188,8 +257,9 @@ export function createBar(o: BarOptions): Bar {
       b.setAttribute("aria-pressed", String(k === m));
     }
     kbdBtn.hidden = m === "keys";
-    fretBtn.hidden = m === "keys" || !o.fretboard;
+    fretBtn.hidden = m === "keys" || !fretAvailable;
   };
+  let fretAvailable = !!o.fretboard;
   const sync = (z: number) => {
     slider.value = String(zoomToSlider(z));
     label.textContent = `${Math.round(z * 100)}%`;
@@ -206,6 +276,12 @@ export function createBar(o: BarOptions): Bar {
       playBtn.innerHTML = on ? ICON_PAUSE : ICON_PLAY;
       playBtn.title = lbl;
       playBtn.setAttribute("aria-label", lbl);
+    },
+    setParts,
+    setFretboard(available: boolean) {
+      fretAvailable = available;
+      fretBtn.hidden = mode === "keys" || !available;
+      if (!available && fretOn) fretBtn.click();
     },
     reading(on: boolean) {
       if (!fs) return;

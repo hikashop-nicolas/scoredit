@@ -4,6 +4,8 @@ export interface PartInfo {
   id: string;
   name: string;
   abbreviation: string;
+  /** General MIDI program (0-127) from the part list, 128 for a drum kit, null if not given. */
+  program: number | null;
 }
 
 // The order MusicXML's schema wants inside <attributes>.
@@ -37,10 +39,13 @@ export class ScoreDoc {
     const named = new Map<string, PartInfo>();
     for (const sp of list ? kids(list, "score-part") : []) {
       const id = sp.getAttribute("id") ?? "";
-      named.set(id, { id, name: text(sp, "part-name"), abbreviation: text(sp, "part-abbreviation") });
+      const mi = kid(sp, "midi-instrument");
+      const prog = mi ? Number(text(mi, "midi-program")) : 0;
+      const program = mi && (kid(mi, "midi-unpitched") || text(mi, "midi-channel") === "10") ? 128 : prog ? prog - 1 : null;
+      named.set(id, { id, name: text(sp, "part-name"), abbreviation: text(sp, "part-abbreviation"), program });
     }
     const partEls = kids(this.root, "part");
-    this.parts = partEls.map((p) => named.get(p.getAttribute("id") ?? "") ?? { id: p.getAttribute("id") ?? "", name: "", abbreviation: "" });
+    this.parts = partEls.map((p) => named.get(p.getAttribute("id") ?? "") ?? { id: p.getAttribute("id") ?? "", name: "", abbreviation: "", program: null });
     this.measures = partEls.map((p) => kids(p, "measure"));
     this.reindex();
   }
@@ -133,9 +138,72 @@ export class ScoreDoc {
     return new XMLSerializer().serializeToString(out);
   }
 
+  /**
+   * The score with only the parts at these indices, for showing a few of them. System text
+   * (tempo, rehearsal marks, jumps) written on a hidden first part moves to the first shown.
+   */
+  only(keep: number[]): ScoreDoc {
+    const set = new Set(keep);
+    const out = parseXml("<score-partwise/>");
+    const root = out.documentElement;
+    for (const at of Array.from(this.root.attributes)) root.setAttribute(at.name, at.value);
+    const partEls = kids(this.root, "part");
+    const firstShown = partEls.findIndex((_, p) => set.has(p));
+    for (const c of kids(this.root)) {
+      if (c.tagName === "part") continue;
+      if (c.tagName !== "part-list") {
+        root.appendChild(out.importNode(c, true));
+        continue;
+      }
+      // Part groups (brackets) are dropped: their members may be hidden.
+      const list = root.appendChild(out.importNode(c, false)) as Element;
+      const ids = new Set(partEls.filter((_, p) => set.has(p)).map((e) => e.getAttribute("id")));
+      for (const sp of kids(c, "score-part")) if (ids.has(sp.getAttribute("id"))) list.appendChild(out.importNode(sp, true));
+    }
+    partEls.forEach((part, p) => {
+      if (!set.has(p)) return;
+      const np = root.appendChild(out.importNode(part, true)) as Element;
+      if (p === firstShown && p > 0) copySystemText(out, this.measures[0], kids(np, "measure"));
+    });
+    const doc = new ScoreDoc(out);
+    doc.sections = this.sections;
+    return doc;
+  }
+
   serialize(): string {
     return new XMLSerializer().serializeToString(this.doc);
   }
+}
+
+// Directions shown once per system, above the top part.
+const SYSTEM_TEXT = new Set(["metronome", "rehearsal", "segno", "coda"]);
+function isSystemText(d: Element): boolean {
+  const snd = kid(d, "sound");
+  if (snd && ["tempo", "dacapo", "dalsegno", "fine", "tocoda", "segno", "coda"].some((a) => snd.hasAttribute(a))) return true;
+  return kids(d, "direction-type").some((dt) => kids(dt).some((c) => SYSTEM_TEXT.has(c.tagName)));
+}
+
+// Copies system text from one part's measures to another's: at the start of the measure when
+// it stood at the start, else at the end (where jumps and Fine stand).
+function copySystemText(doc: Document, from: Element[], to: Element[]): void {
+  from.forEach((m, i) => {
+    const target = to[i];
+    if (!target) return;
+    let pos = 0;
+    for (const c of kids(m)) {
+      const dur = Number(text(c, "duration")) || 0;
+      if (c.tagName === "backup") pos -= dur;
+      else if (c.tagName === "forward") pos += dur;
+      else if (c.tagName === "note" && !kid(c, "chord") && !kid(c, "grace")) pos += dur;
+      else if (c.tagName === "direction" && isSystemText(c)) {
+        const copy = doc.importNode(c, true) as Element;
+        for (const st of kids(copy, "staff")) st.remove();
+        for (const v of kids(copy, "voice")) v.remove();
+        if (pos > 0) target.appendChild(copy);
+        else target.insertBefore(copy, kids(target).find((e) => e.tagName === "note" || e.tagName === "backup" || e.tagName === "forward") ?? null);
+      }
+    }
+  });
 }
 
 // The renderer lays out systems itself: page and system breaks from the source would
@@ -194,4 +262,38 @@ function timewiseToPartwise(src: Document): Document {
     }
   }
   return out;
+}
+
+export type PartFamily = "keys" | "guitar" | "bass" | "drums" | "strings" | "winds" | "brass" | "voice" | "other";
+export const PART_FAMILIES: PartFamily[] = ["keys", "guitar", "bass", "drums", "strings", "winds", "brass", "voice"];
+
+const BY_NAME: [PartFamily, RegExp][] = [
+  ["drums", /drum|batterie|perc|snare|cymbal|timpani|timbales|pauke|tambour|xylo|glock|marimba|vibra|bell|cloche|triangle|bateria|schlagzeug/i],
+  ["winds", /flute|fl[uû]te|piccolo|oboe|hautbois|clarinet|bassoon|basson|sax|recorder|fl[oö]te|fagott|klarinette|cor anglais|english horn/i],
+  ["brass", /trumpet|trompette|horn|cor\b|trombone|tuba|cornet|euphonium|flugel|bugle|posaune|trompete/i],
+  ["guitar", /guitar|gitar|guitare|chitarra|guitarra|gitarre|ukulele|banjo|mandolin/i],
+  ["keys", /piano|organ|orgue|orgel|keyboard|clavier|harpsichord|clavecin|cembalo|synth|celesta|accordion|accord[ée]on/i],
+  ["strings", /violin|viol|cello|violon|geige|contrabass|harp|harpe|string|cordes/i],
+  ["bass", /bass|basse|bajo|basso/i],
+  ["voice", /voice|vocal|voix|chant|soprano|alto\b|tenor|t[ée]nor|baritone?|choir|ch(oe|œ)ur|chorus|coro|stimme|gesang|sopran/i],
+];
+
+/** The instrument family of a part, from its name, else its General MIDI program. */
+export function partFamily(p: PartInfo): PartFamily {
+  // An orchestra's double bass is a string; "bass" alone (or a bass guitar) is the bass. Voices
+  // come last: an alto sax or a tenor trombone is not a singer.
+  if (/double bass|contrabass\b|contrebasse|kontrabass|contrabbasso/i.test(p.name)) return "strings";
+  if (/bass (guitar|gitarre)|basse [ée]lectrique|electric bass/i.test(p.name)) return "bass";
+  for (const [f, re] of BY_NAME) if (re.test(p.name)) return f;
+  const g = p.program;
+  if (g === null) return "other";
+  if (g === 128 || g === 47 || (g >= 8 && g <= 15) || (g >= 112 && g <= 119)) return "drums";
+  if (g <= 7 || (g >= 16 && g <= 23)) return "keys";
+  if (g <= 31) return "guitar";
+  if (g <= 39) return "bass";
+  if (g <= 51 || g === 55) return "strings";
+  if (g <= 54) return "voice";
+  if (g <= 63) return "brass";
+  if (g <= 79) return "winds";
+  return "other";
 }
