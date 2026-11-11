@@ -332,11 +332,39 @@ export class ScoreEditor {
     });
   }
 
+  /** The drum a part draws nearest a staff position (from its notes), within `reach` steps. */
+  drumAt(part: number, step: string, octave: number, reach = 0): Pitch | null {
+    const d = (p: { step: string; octave: number }) => p.octave * 7 + "CDEFGAB".indexOf(p.step);
+    const want = d({ step, octave });
+    let best: Pitch | null = null;
+    for (const m of this.score.measures[part] ?? [])
+      for (const n of kids(m, "note")) {
+        const p = readPitch(n);
+        if (!p?.unpitched || Math.abs(d(p) - want) > reach) continue;
+        if (!best || Math.abs(d(p) - want) < Math.abs(d(best) - want)) best = p;
+        if (d(p) === want) return p;
+      }
+    return best;
+  }
+
+  /** Whether a part's notes are drums. */
+  isDrums(part: number): boolean {
+    for (const m of this.score.measures[part] ?? []) if (m.getElementsByTagName("unpitched").length) return true;
+    return false;
+  }
+
+  /** A drum's name, from the part list. */
+  drumName(id: string | undefined): string {
+    if (!id) return "";
+    for (const si of Array.from(this.score.root.getElementsByTagName("score-instrument"))) if (si.getAttribute("id") === id) return text(si, "instrument-name");
+    return "";
+  }
+
   /** Moves a note up or down, with the notes tied to it. */
   transpose(note: Element, semitones: number): Change {
     const at = this.locate(note);
     const p = readPitch(note);
-    if (!at || !p) return { from: 0, to: 0, appended: 0 };
+    if (!at || !p || p.unpitched) return { from: 0, to: 0, appended: 0 };
     const { fifths } = this.info(at.part, at.measure);
     const next = spellMidi(midiOf(p) + semitones, fifths);
     return this.retune(note, at, next);

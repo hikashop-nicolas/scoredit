@@ -95,6 +95,11 @@ function clefAt(score: ScoreDoc, part: number, m: number, staff: number): { sign
 function pitchOnStaff(clef: { sign: string; line: number; octave: number }, lines: number, step: number, fifths: number): Pitch | null {
   // Diatonic number (octave * 7 + C=0..B=6) of the clef's line.
   const base = clef.sign === "F" ? 3 * 7 + 3 : clef.sign === "C" ? 4 * 7 : clef.sign === "TAB" ? NaN : 4 * 7 + 4;
+  // One-line drum staves put their line at E4 (as scoredit reads them).
+  if (clef.sign === "percussion" && lines === 1) {
+    const d = 4 * 7 + 2 - step;
+    return { step: STEPS[((d % 7) + 7) % 7], alter: 0, octave: Math.floor(d / 7) };
+  }
   const line = clef.sign === "percussion" ? 2 : clef.line;
   if (Number.isNaN(base)) return null;
   const top = base + (lines - line) * 2 + clef.octave * 7;
@@ -418,13 +423,16 @@ export function createEditing(host: EditingHost): Editing {
     const voice = editor.voiceId(part, p.staff, voiceN);
     const at: Caret = { part, measure: p.measure, staff: p.staff, voice, pos: p.quarter };
     const clef = clefAt(editor.score, part, p.measure, p.staff);
-    return { caret: at, pitch: pitchOnStaff(clef, p.lines, p.step, editor.info(part, p.measure).fifths) };
+    const pitch = pitchOnStaff(clef, p.lines, p.step, editor.info(part, p.measure).fifths);
+    // A drum staff: the drum the part already draws on that line.
+    if (pitch && (clef.sign === "percussion" || editor.isDrums(part))) return { caret: at, pitch: editor.drumAt(part, pitch.step, pitch.octave, p.lines === 1 ? 99 : 1) };
+    return { caret: at, pitch };
   }
 
   function showBubble(p: Pick | null, x: number): void {
     const pitch = p ? pitchFor(p).pitch : null;
     if (!p || !pitch) return void (bubble.hidden = true);
-    bubble.textContent = nameOf(pitch);
+    bubble.textContent = pitch.unpitched ? editor.drumName(pitch.instrument) || nameOf(pitch) : nameOf(pitch);
     bubble.hidden = false;
     bubble.style.left = `${x}px`;
     bubble.style.top = `${p.snapY}px`;

@@ -158,4 +158,13 @@ describe("Entering notes", () => {
     ed.undo();
     expect(show(s, 1)).toBe("r:4");
   });
+
+  it("enters a drum as the part draws it", () => {
+    const kit = new ScoreDoc(`<?xml version="1.0"?><score-partwise version="4.0"><part-list><score-part id="P1"><part-name>Drums</part-name><score-instrument id="P1-I39"><instrument-name>Acoustic Snare</instrument-name></score-instrument><midi-instrument id="P1-I39"><midi-unpitched>39</midi-unpitched></midi-instrument></score-part></part-list><part id="P1"><measure number="1"><attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type></time><clef><sign>percussion</sign></clef></attributes><note><unpitched><display-step>C</display-step><display-octave>5</display-octave></unpitched><duration>4</duration><instrument id="P1-I39"/><voice>1</voice><type>whole</type></note></measure></part></score-partwise>`);
+    const ed = new ScoreEditor(kit);
+    const snare = ed.drumAt(0, "C", 5)!;
+    expect(ed.drumName(snare.instrument)).toBe("Acoustic Snare");
+    ed.enter(at(0, 0), { pitches: [snare], quarters: 1 });
+    expect(buildTimeline(kit).events.map((e) => [e.midi, e.onset, e.program])).toEqual([[38, 0, 128]]);
+  });
 });

@@ -68,6 +68,10 @@ export interface Pitch {
   step: string;
   alter: number;
   octave: number;
+  /** A drum: drawn at step/octave, played as this instrument of the part, with this head. */
+  unpitched?: boolean;
+  instrument?: string;
+  notehead?: string;
 }
 
 const STEP_SEMIS: Record<string, number> = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
@@ -96,6 +100,12 @@ export function keyAlter(step: string, fifths: number): number {
 }
 
 export function readPitch(note: Element): Pitch | null {
+  const u = kid(note, "unpitched");
+  if (u) {
+    const instrument = kid(note, "instrument")?.getAttribute("id") ?? undefined;
+    const notehead = text(note, "notehead") || undefined;
+    return { step: text(u, "display-step") || "E", alter: 0, octave: Number(text(u, "display-octave")) || 4, unpitched: true, instrument, notehead };
+  }
   const p = kid(note, "pitch");
   if (!p) return null;
   return { step: text(p, "step"), alter: Number(text(p, "alter")) || 0, octave: Number(text(p, "octave")) };
@@ -105,8 +115,21 @@ export function setPitch(note: Element, p: Pitch): void {
   kid(note, "rest")?.remove();
   kid(note, "unpitched")?.remove();
   kid(note, "pitch")?.remove();
-  const pitch = add(note, "pitch");
   const doc = note.ownerDocument;
+  if (p.unpitched) {
+    const u = add(note, "unpitched");
+    for (const [tag, v] of [["display-step", p.step], ["display-octave", p.octave]] as const) {
+      const e = doc.createElementNS(null, tag);
+      e.textContent = String(v);
+      u.appendChild(e);
+    }
+    kid(note, "instrument")?.remove();
+    if (p.instrument) add(note, "instrument", undefined, { id: p.instrument });
+    kid(note, "notehead")?.remove();
+    if (p.notehead) add(note, "notehead", p.notehead);
+    return;
+  }
+  const pitch = add(note, "pitch");
   const put = (tag: string, v: string | number) => {
     const e = doc.createElementNS(null, tag);
     e.textContent = String(v);
