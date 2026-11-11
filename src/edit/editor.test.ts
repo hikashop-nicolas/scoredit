@@ -5,7 +5,7 @@ import { kids, text } from "../model/xml";
 import { buildTimeline } from "../play/timeline";
 import { ScoreEditor, type Caret } from "./editor";
 import { readMeasure, voiceKey } from "./measure";
-import { lyricsOf, marksOf, readPitch, slursOf, type Pitch } from "./notes";
+import { fingeringOf, lyricsOf, marksOf, readPitch, slursOf, spansOf, tremoloOf, type Pitch } from "./notes";
 
 const note = (step: string, dur: number, type: string, extra = "") => `<note><pitch><step>${step}</step><octave>4</octave></pitch><duration>${dur}</duration><voice>1</voice><type>${type}</type>${extra}</note>`;
 const rest = `<note><rest measure="yes"/><duration>4</duration><voice>1</voice></note>`;
@@ -216,5 +216,25 @@ describe("Entering notes", () => {
     ed.setLength(at(0, 3), 2);
     const pieces = Array.from(s.root.getElementsByTagName("note")).filter((n) => n.getElementsByTagName("pitch").length);
     expect(pieces.map((n) => [marksOf(n).join(), lyricsOf(n).length])).toEqual([["accent", 1], ["", 0]]);
+  });
+
+  it("adds tremolos, arpeggios, glissandos, trill lines, fingerings and bowings", () => {
+    const s = score(note("C", 1, "quarter") + note("D", 1, "quarter") + note("E", 1, "quarter") + note("F", 1, "quarter"));
+    const ed = new ScoreEditor(s);
+    const notes = () => Array.from(s.measures[0][0].getElementsByTagName("note"));
+    ed.tremolo(at(0, 0), 3);
+    ed.span("glissando", at(0, 1), null, { value: "wavy" });
+    ed.span("trill line", at(0, 2), at(0, 3));
+    ed.fingering(notes()[3], "4");
+    ed.mark(at(0, 3), "up-bow");
+    expect(tremoloOf(notes()[0])).toBe(3);
+    expect(notes().map((n) => spansOf(n).map((x) => `${x.kind} ${x.type}`).join())).toEqual(["", "glissando start", "glissando stop,trill line start", "trill line stop"]);
+    expect(marksOf(notes()[2])).toContain("trill-mark");
+    expect([fingeringOf(notes()[3]), marksOf(notes()[3]).join()]).toEqual(["4", "up-bow"]);
+    ed.addToChord(at(0, 0), P("E"));
+    ed.mark(at(0, 0), "arpeggiate");
+    expect(notes().filter((n) => marksOf(n).includes("arpeggiate"))).toHaveLength(2);
+    ed.span("glissando", at(0, 1), null);
+    expect(spansOf(notes()[2]).filter((x) => x.kind === "glissando")).toHaveLength(0);
   });
 });

@@ -1,7 +1,7 @@
 import type { ScoreDoc } from "../model/score";
 import { kid, kids, text } from "../model/xml";
 import { readMeasure, voiceKey, writeMeasure, type Event, type ReadMeasure } from "./measure";
-import { TYPES, addSlur, defaultPosition, isTied, keepMarksFor, makeGrace, marksOf, placeInNote, removeSlur, setLyric, setMark, setPosition, slursOf, writtenFor, keyAlter, makeNote, midiOf, pieceOf, readPitch, setPitch, setTie, spellMidi, splitLength, type Pitch, type Written } from "./notes";
+import { TYPES, addSpan, removeSpan, setFingering, setTremolo, spansOf, addSlur, defaultPosition, isTied, keepMarksFor, makeGrace, marksOf, placeInNote, removeSlur, setLyric, setMark, setPosition, slursOf, writtenFor, keyAlter, makeNote, midiOf, pieceOf, readPitch, setPitch, setTie, spellMidi, splitLength, type Pitch, type Written } from "./notes";
 
 /** Where the next note goes: a beat in one voice of one staff of a part. */
 export interface Caret {
@@ -469,7 +469,8 @@ export class ScoreEditor {
       this.touch(caret.part, caret.measure);
       const want = on ?? !ev.notes.some((n) => marksOf(n).includes(mark));
       // On the chord's first note, as MuseScore writes it; off every note.
-      ev.notes.forEach((n, i) => setMark(n, mark, want && i === 0));
+      // An arpeggio goes on every note of the chord.
+      ev.notes.forEach((n, i) => setMark(n, mark, want && (i === 0 || mark === "arpeggiate")));
       return { from: caret.measure, to: caret.measure + 1, appended: 0 };
     });
   }
@@ -501,6 +502,63 @@ export class ScoreEditor {
         addSlur(last, { type: "stop", number });
       }
       return { from: Math.min(a.measure, end.measure), to: Math.max(a.measure, end.measure) + 1, appended: 0 };
+    });
+  }
+
+  /** A single-note tremolo of 1-4 strokes on the event at the caret (0 takes it off). */
+  tremolo(caret: Caret, strokes: number): Change {
+    const ev = this.eventAt(caret);
+    if (!ev || ev.rest) return { from: caret.measure, to: caret.measure, appended: 0 };
+    return this.transact(() => {
+      this.touch(caret.part, caret.measure);
+      setTremolo(ev.notes[0], strokes);
+      return { from: caret.measure, to: caret.measure + 1, appended: 0 };
+    });
+  }
+
+  /**
+   * A span from the event at a to the one at b (the next note when b is null): a glissando,
+   * slide, trill line (b may be a itself) or two-note tremolo (value: line type, strokes).
+   * One already there is taken off, unless add.
+   */
+  span(kind: string, a: Caret, b: Caret | null, opts: { value?: string; add?: boolean; trillMark?: boolean } = {}): Change {
+    const from = this.eventAt(a);
+    const end = b ?? this.nextEvent(a);
+    const to = end ? this.eventAt(end) : null;
+    const none = { from: a.measure, to: a.measure, appended: 0 };
+    if (!from || from.rest || !end || !to || to.rest) return none;
+    const same = to.pos === from.pos && end.measure === a.measure;
+    if (same && kind !== "trill line") return none;
+    return this.transact(() => {
+      this.touch(a.part, a.measure);
+      this.touch(end.part, end.measure);
+      const first = from.notes[0];
+      const last = same ? first : to.notes[0];
+      const existing = opts.add ? undefined : spansOf(first).find((x) => x.kind === kind && x.type === "start" && spansOf(last).some((y) => y.kind === kind && y.type === "stop" && y.number === x.number));
+      if (existing) {
+        removeSpan(first, existing);
+        removeSpan(last, { ...existing, type: "stop" });
+      } else {
+        const used = new Set([...spansOf(first), ...spansOf(last)].filter((x) => x.kind === kind).map((x) => x.number));
+        let number = 1;
+        while (used.has(number) && number < 16) number++;
+        // A trill line starts with "tr" unless told otherwise (a wavy line alone).
+        if (kind === "trill line" && opts.trillMark !== false) setMark(first, "trill-mark", true);
+        addSpan(first, { kind, type: "start", number, value: opts.value });
+        addSpan(last, { kind, type: "stop", number, value: opts.value });
+      }
+      return { from: Math.min(a.measure, end.measure), to: Math.max(a.measure, end.measure) + 1, appended: 0 };
+    });
+  }
+
+  /** Sets a note's fingering ("" takes it off). */
+  fingering(note: Element, value: string): Change {
+    const at = this.locate(note);
+    if (!at) return { from: 0, to: 0, appended: 0 };
+    return this.transact(() => {
+      this.touch(at.part, at.measure);
+      setFingering(note, value);
+      return { from: at.measure, to: at.measure + 1, appended: 0 };
     });
   }
 

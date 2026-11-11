@@ -1,6 +1,6 @@
 import { ScoreEditor, type Caret, type Change, type Clip } from "../edit/editor";
 import { readMeasure, voiceKey, type Event } from "../edit/measure";
-import { keyAlter, lyricsOf, marksOf, midiOf, readPitch, spellMidi, type Pitch } from "../edit/notes";
+import { fingeringOf, keyAlter, lyricsOf, marksOf, midiOf, readPitch, spellMidi, tremoloOf, type Pitch } from "../edit/notes";
 import type { ScoreDoc } from "../model/score";
 import { kid, kids, text } from "../model/xml";
 import type { PageView, Pick } from "../render/page-view";
@@ -58,6 +58,13 @@ const ICONS = {
   mordent: svg('<polyline points="3 14 7 9 10 14 14 9 17 14 21 9"/><line x1="12" x2="12" y1="5" y2="19"/>'),
   slur: svg('<path d="M3 15c5-9 13-9 18 0"/>'),
   grace: svg('<ellipse cx="9" cy="17" rx="3.2" ry="2.3" transform="rotate(-20 9 17)" fill="currentColor"/><line x1="12" x2="12" y1="16" y2="5"/><path d="M12 5q4 2 3 6"/><line x1="7" x2="17" y1="12" y2="7"/>'),
+  arpeggio: svg('<path d="M12 3c3 1.5-3 3 0 4.5s-3 3 0 4.5-3 3 0 4.5 -3 3 0 4.5"/>'),
+  tremolo: svg('<line x1="12" x2="12" y1="3" y2="21"/><line x1="7" x2="17" y1="9" y2="6"/><line x1="7" x2="17" y1="13" y2="10"/><line x1="7" x2="17" y1="17" y2="14"/>'),
+  glissando: svg('<circle cx="5" cy="17" r="2.2" fill="currentColor"/><circle cx="19" cy="7" r="2.2" fill="currentColor"/><path d="M7 15l2-1-1-2 2-1-1-2 2-1-1-2 2-1"/>'),
+  trillLine: svg('<text x="6" y="11" text-anchor="middle" font-size="9" font-style="italic" font-weight="700" fill="currentColor" stroke="none">tr</text><path d="M3 16q1.5-3 3 0t3 0 3 0 3 0 3 0 3 0"/>'),
+  fingering: svg('<text x="12" y="17" text-anchor="middle" font-size="13" font-weight="700" fill="currentColor" stroke="none">1 3</text>'),
+  upBow: svg('<polyline points="6 6 12 18 18 6"/>'),
+  downBow: svg('<polyline points="6 18 6 6 18 6 18 18"/>'),
   lyrics: svg('<text x="12" y="17" text-anchor="middle" font-size="12" font-weight="700" fill="currentColor" stroke="none">Aa</text>'),
   triplet: svg('<polyline points="4 9 4 5 20 5 20 9"/><text x="12" y="19" text-anchor="middle" font-size="11" font-weight="700" fill="currentColor" stroke="none">3</text>'),
   del: svg('<polyline points="4 7 20 7"/><path d="M6 7l1 13h10l1-13"/><path d="M9 7V4h6v3"/>'),
@@ -268,8 +275,15 @@ export function createEditing(host: EditingHost): Editing {
   const markBtns = MARKS.map(([m, icon, label]) => button(icon, t(label), () => mark(m)));
   const slurBtn = button(ICONS.slur, t("slur"), () => slur());
   const graceBtn = button(ICONS.grace, t("graceNote"), () => grace(true));
-  const lyricsBtn = button(ICONS.lyrics, t("lyrics"), () => openLyrics(lyricBar.hidden !== false));
-  row3.append(...markBtns, slurBtn, graceBtn, lyricsBtn);
+  const lyricsBtn = button(ICONS.lyrics, t("lyrics"), () => openField("lyrics", lyricBar.hidden !== false || fieldMode !== "lyrics"));
+  const arpBtn = button(ICONS.arpeggio, t("arpeggio"), () => mark("arpeggiate"));
+  const tremBtn = button(ICONS.tremolo, t("tremolo"), () => tremolo());
+  const glissBtn = button(ICONS.glissando, t("glissando"), () => span("glissando", "wavy"));
+  const trillLineBtn = button(ICONS.trillLine, t("trillLine"), () => span("trill line"));
+  const fingerBtn = button(ICONS.fingering, t("fingering"), () => openField("fingering", lyricBar.hidden !== false || fieldMode !== "fingering"));
+  const upBowBtn = button(ICONS.upBow, t("upBow"), () => mark("up-bow"));
+  const downBowBtn = button(ICONS.downBow, t("downBow"), () => mark("down-bow"));
+  row3.append(...markBtns, slurBtn, graceBtn, lyricsBtn, arpBtn, tremBtn, glissBtn, trillLineBtn, fingerBtn, upBowBtn, downBowBtn);
 
   const toShown = (p: number) => host.shown()?.indexOf(p) ?? p;
   const toFull = (rp: number) => host.shown()?.[rp] ?? rp;
@@ -290,9 +304,13 @@ export function createEditing(host: EditingHost): Editing {
     pressed(keysBtn, !strip.hidden);
     pressed(marksBtn, !row3.hidden);
     pressed(slurBtn, !!slurFrom);
-    pressed(lyricsBtn, !lyricBar.hidden);
+    pressed(lyricsBtn, !lyricBar.hidden && fieldMode === "lyrics");
+    pressed(fingerBtn, !lyricBar.hidden && fieldMode === "fingering");
     const selMarks = selectedEvents().flatMap(({ ev }) => ev.notes.flatMap(marksOf));
     MARKS.forEach(([m], i) => pressed(markBtns[i], selMarks.includes(m)));
+    pressed(arpBtn, selMarks.includes("arpeggiate"));
+    pressed(upBowBtn, selMarks.includes("up-bow"));
+    pressed(downBowBtn, selMarks.includes("down-bow"));
     pressed(dotBtn, dots > 0);
     DURATIONS.forEach(([q], i) => pressed(durBtns[i], q === quarters));
     view?.root.classList.toggle("sv-inputting", active && input);
@@ -498,10 +516,13 @@ export function createEditing(host: EditingHost): Editing {
     landed(r.change);
   }
 
-  // ---- Lyrics: the field takes the selected note's syllable; space or "-" moves to the next
-  // note (a hyphen joins the syllables of a word), Enter too, Escape closes.
+  // ---- The text field, for lyrics or fingerings. Lyrics: the selected note's syllable;
+  // space or "-" moves to the next note (a hyphen joins a word's syllables). Fingerings: one
+  // note at a time, a chord from its lowest note up. Enter moves on too, Escape closes.
+  let fieldMode: "lyrics" | "fingering" = "lyrics";
   let hyphenBefore = false;
-  function openLyrics(open: boolean): void {
+  let fingerIndex = 0;
+  function openField(mode: "lyrics" | "fingering", open: boolean): void {
     if (!open) {
       lyricBar.hidden = true;
       sync();
@@ -510,39 +531,82 @@ export function createEditing(host: EditingHost): Editing {
     }
     if (!sel) return;
     if (input) setInput(false);
+    fieldMode = mode;
+    lyricInput.placeholder = t(mode === "lyrics" ? "lyricsHint" : "fingeringHint");
+    lyricInput.setAttribute("aria-label", t(mode === "lyrics" ? "lyrics" : "fingering"));
+    lyricInput.inputMode = mode === "fingering" ? "numeric" : "text";
     lyricBar.hidden = false;
     hyphenBefore = false;
-    showLyric();
+    fingerIndex = 0;
+    showField();
     lyricInput.focus();
     sync();
   }
-  function showLyric(): void {
+  const openLyrics = (open: boolean) => openField("lyrics", open);
+  function fingerNote(): Element | null {
     const ev = sel ? editor.eventAt(sel.at) : null;
-    lyricInput.value = ev && !ev.rest ? (lyricsOf(ev.notes[0])[0]?.text ?? "") : "";
+    return ev && !ev.rest ? (sorted(ev)[fingerIndex] ?? null) : null;
   }
-  function commitLyric(hyphen: boolean): void {
+  function showField(): void {
+    const ev = sel ? editor.eventAt(sel.at) : null;
+    if (fieldMode === "fingering") {
+      const n = fingerNote();
+      lyricInput.value = n ? fingeringOf(n) : "";
+      if (sel) sel = { ...sel, note: n };
+    } else lyricInput.value = ev && !ev.rest ? (lyricsOf(ev.notes[0])[0]?.text ?? "") : "";
+  }
+  function commitField(hyphen: boolean): void {
     if (!sel) return;
     const words = lyricInput.value.trim();
-    if (words) {
-      const syllabic = hyphenBefore ? (hyphen ? "middle" : "end") : hyphen ? "begin" : "single";
-      landed(editor.lyric(sel.at, words, syllabic));
+    if (fieldMode === "fingering") {
+      const n = fingerNote();
+      if (n && words !== fingeringOf(n)) landed(editor.fingering(n, words));
+      const ev = editor.eventAt(sel.at);
+      if (ev && fingerIndex + 1 < ev.notes.length) fingerIndex++;
+      else {
+        fingerIndex = 0;
+        const next = editor.nextEvent(sel.at);
+        if (next) sel = { at: next, note: null };
+      }
+    } else {
+      if (words) {
+        const syllabic = hyphenBefore ? (hyphen ? "middle" : "end") : hyphen ? "begin" : "single";
+        landed(editor.lyric(sel.at, words, syllabic));
+      }
+      hyphenBefore = hyphen && !!words;
+      const next = editor.nextEvent(sel.at);
+      if (next) sel = { at: next, note: null };
     }
-    hyphenBefore = hyphen && !!words;
-    const next = editor.nextEvent(sel.at);
-    if (next) sel = { at: next, note: null };
-    showLyric();
+    showField();
     sync();
   }
   lyricInput.addEventListener("keydown", (e) => {
     e.stopPropagation();
-    if (e.key === " " || e.key === "Enter" || e.key === "-") {
+    if (e.key === " " || e.key === "Enter" || (e.key === "-" && fieldMode === "lyrics")) {
       e.preventDefault();
-      commitLyric(e.key === "-");
+      commitField(e.key === "-");
     } else if (e.key === "Escape") {
       e.preventDefault();
-      openLyrics(false);
+      openField(fieldMode, false);
     }
   });
+
+  /** A glissando, trill line or two-note tremolo over the selected range, else from the selected note to the next. */
+  function span(kind: string, value?: string): void {
+    if (!sel) return;
+    const end = sel.end ?? (kind === "trill line" ? sel.at : null);
+    landed(editor.span(kind, sel.at, end, { value }));
+  }
+
+  /** A tremolo: between the two selected notes, else on the selected one (on or off). */
+  function tremolo(): void {
+    if (!sel) return;
+    const items = selectedEvents();
+    if (items.length === 2) return landed(editor.span("tremolo", items[0].at, items[1].at, { value: "3" }));
+    const ev = editor.eventAt(sel.at);
+    if (!ev || ev.rest) return;
+    landed(editor.tremolo(sel.at, tremoloOf(ev.notes[0]) ? 0 : 3));
+  }
 
   function remove(): void {
     if (!sel) return;

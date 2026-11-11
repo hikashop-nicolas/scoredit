@@ -38,6 +38,31 @@ export const HELPERS = `(() => {
     const m = /^([A-G])[^0-9-]*(-?\\d)$/.exec(name);
     return Number(m[2]) * 7 + STEPS.indexOf(m[1]);
   };
+  // The marks on a note, in words.
+  const NAMES_OF = { "strong-accent": "marcato", "trill-mark": "trill", arpeggiate: "arpeggio", "inverted-mordent": "inverted mordent" };
+  const notationWords = (n) => {
+    const words = [];
+    const ends = (e, what) => words.push(what + (e.getAttribute("type") === "stop" ? " ends" : " starts"));
+    for (const nots of kidsOf(n, "notations")) {
+      for (const g of kidsOf(nots, "articulations")) for (const a of g.children) words.push(NAMES_OF[a.tagName] ?? a.tagName);
+      for (const g of kidsOf(nots, "ornaments"))
+        for (const o of g.children) {
+          if (o.tagName === "tremolo") (o.getAttribute("type") ?? "single") === "single" ? words.push("tremolo " + o.textContent.trim()) : ends(o, "tremolo");
+          else if (o.tagName === "wavy-line") ends(o, "trill line");
+          else if (o.tagName !== "accidental-mark") words.push(NAMES_OF[o.tagName] ?? o.tagName);
+        }
+      for (const g of kidsOf(nots, "technical"))
+        for (const t of g.children) {
+          if (t.tagName === "fingering") words.push("finger " + t.textContent.trim());
+          else if (t.tagName !== "string" && t.tagName !== "fret") words.push(t.tagName);
+        }
+      if (kidsOf(nots, "fermata").length) words.push("fermata");
+      if (kidsOf(nots, "arpeggiate").length) words.push("arpeggio");
+      for (const tag of ["glissando", "slide"]) for (const e of kidsOf(nots, tag)) ends(e, tag);
+      for (const sl of kidsOf(nots, "slur")) ends(sl, "slur");
+    }
+    return words;
+  };
   const center = (el) => {
     const r = el.getBoundingClientRect();
     return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
@@ -52,15 +77,11 @@ export const HELPERS = `(() => {
           const name = noteName(score, n);
           if (kidsOf(n, "chord").length && out.length) {
             out[out.length - 1].names.push(name);
+            for (const w of notationWords(n)) if (w.startsWith("finger")) out[out.length - 1].extras.push(w);
             continue;
           }
           const tie = kidsOf(n, "tie").some((t) => t.getAttribute("type") === "start") ? " (tied to the next)" : "";
-          const extras = [];
-          for (const nots of kidsOf(n, "notations")) {
-            for (const g of [...kidsOf(nots, "articulations"), ...kidsOf(nots, "ornaments")]) for (const a of g.children) extras.push(a.tagName.replace("strong-accent", "marcato").replace("trill-mark", "trill"));
-            if (kidsOf(nots, "fermata").length) extras.push("fermata");
-            for (const sl of kidsOf(nots, "slur")) extras.push(sl.getAttribute("type") === "stop" ? "slur ends" : "slur starts");
-          }
+          const extras = notationWords(n);
           for (const l of kidsOf(n, "lyric")) { const sy = txt(l, "syllabic"); extras.push('lyric "' + txt(l, "text") + (sy === "begin" || sy === "middle" ? "-" : "") + '"'); }
           let g = n.previousElementSibling;
           const graces = [];
@@ -582,6 +603,61 @@ export const scenarios = [
       for (const c of "world") await d.key(c);
       await d.key(" ");
       await d.bars({ 1: 'C4 quarter [lyric "Hel-"], D4 quarter [lyric "lo"], E4 quarter [lyric "world"], F4 quarter' });
+    },
+  },
+  {
+    id: "tremolo-arpeggio",
+    title: "A tremolo on a note, and an arpeggio on a chord",
+    device: "desktop",
+    fixture: "piano.musicxml",
+    why: "A tremolo (slashes through the stem) repeats a note very fast. An arpeggio (a wavy line before a chord) rolls the chord's notes one after another, from the lowest. Both come from the Marks row.",
+    look: "A chord with a wavy line before it in bar 1, then a note with three slashes on its stem.",
+    async run(d) {
+      await d.key("n");
+      await d.key("5");
+      await d.key("c");
+      await d.key("e", { shift: true });
+      await d.key("g", { shift: true });
+      await d.button("Marks");
+      await d.button("Arpeggio");
+      await d.key("d");
+      await d.button("Tremolo");
+      await d.bars({ 1: "C5+E5+G5 quarter [arpeggio], D5 quarter [tremolo 3], half rest" });
+    },
+  },
+  {
+    id: "glissando-trill-line",
+    title: "A glissando between two notes, and a trill line over two notes",
+    device: "desktop",
+    fixture: "melody.musicxml",
+    why: "A glissando (a wavy line from one note to the next) slides between them. A trill line (tr followed by a wavy line) keeps the trill going over the notes it covers: select them with Shift+Right first.",
+    look: "A wavy line from the first note to the second, and tr with a wavy line over the third and fourth.",
+    async run(d) {
+      await d.tapStaff(1, 1, 1, "C4");
+      await d.button("Marks");
+      await d.button("Glissando");
+      await d.tapStaff(1, 3, 1, "E4");
+      await d.key("ArrowRight", { shift: true });
+      await d.button("Trill line");
+      await d.bars({ 1: "C4 quarter [glissando starts], D4 quarter [glissando ends], E4 quarter [trill; trill line starts], F4 quarter [trill line ends]" });
+    },
+  },
+  {
+    id: "fingering-bowing",
+    title: "Fingerings typed under the notes, and a bowing sign",
+    device: "desktop",
+    fixture: "melody.musicxml",
+    why: "A fingering is the number of the finger that plays a note. The Fingering button opens a field: type a number, space moves to the next note. Up-bow (a V) tells a string player to push the bow.",
+    look: "Small numbers 1, 2, 3 over the first three notes, and a V over the fourth.",
+    async run(d) {
+      await d.tapStaff(1, 1, 1, "C4");
+      await d.button("Marks");
+      await d.button("Fingering");
+      for (const k of ["1", " ", "2", " ", "3", " "]) await d.key(k);
+      await d.key("Escape");
+      await d.tapStaff(1, 4, 1, "F4");
+      await d.button("Up-bow");
+      await d.bars({ 1: "C4 quarter [finger 1], D4 quarter [finger 2], E4 quarter [finger 3], F4 quarter [up-bow]" });
     },
   },
   {

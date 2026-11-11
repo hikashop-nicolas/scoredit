@@ -262,6 +262,8 @@ function placeIn(parent: Element, child: Element, order: string[]): Element {
 }
 
 export const ARTICULATIONS = ["accent", "strong-accent", "staccato", "tenuto", "detached-legato", "staccatissimo", "spiccato", "scoop", "plop", "doit", "falloff", "breath-mark", "caesura", "stress", "unstress", "soft-accent"];
+/** Technical marks that are plain signs (bowings, harmonics...): put on and off like accents. */
+export const TECHNICAL_MARKS = ["up-bow", "down-bow", "harmonic", "open-string", "stopped", "snap-pizzicato", "thumb-position"];
 export const ORNAMENTS = ["trill-mark", "turn", "delayed-turn", "inverted-turn", "delayed-inverted-turn", "vertical-turn", "shake", "mordent", "inverted-mordent", "schleifer", "haydn"];
 
 /** The marks on a note: articulation and ornament names, and "fermata". */
@@ -271,7 +273,9 @@ export function marksOf(note: Element): string[] {
   for (const nots of kids(note, "notations")) {
     for (const g of kids(nots, "articulations")) for (const a of kids(g)) if (ARTICULATIONS.includes(a.tagName)) out.push(a.tagName);
     for (const g of kids(nots, "ornaments")) for (const o of kids(g)) if (ORNAMENTS.includes(o.tagName)) out.push(o.tagName);
+    for (const g of kids(nots, "technical")) for (const t of kids(g)) if (TECHNICAL_MARKS.includes(t.tagName)) out.push(t.tagName);
     if (kid(nots, "fermata")) out.push("fermata");
+    if (kid(nots, "arpeggiate")) out.push("arpeggiate");
   }
   return out;
 }
@@ -279,7 +283,7 @@ export function marksOf(note: Element): string[] {
 /** Puts a mark on a note or takes it off (on omitted: toggles). Returns whether it is on. */
 export function setMark(note: Element, mark: string, on?: boolean): boolean {
   const doc = note.ownerDocument;
-  const group = mark === "fermata" ? null : ARTICULATIONS.includes(mark) ? "articulations" : "ornaments";
+  const group = mark === "fermata" || mark === "arpeggiate" ? null : ARTICULATIONS.includes(mark) ? "articulations" : TECHNICAL_MARKS.includes(mark) ? "technical" : "ornaments";
   // Any of the note's <notations> may hold it.
   let nots = notationsOf(note);
   let holder = group && nots ? kid(nots, group) : nots;
@@ -359,20 +363,22 @@ export function setLyric(note: Element, number: string, words: string | null, sy
 
 /** Takes marks off a piece of a split note that are only the first piece's (or the last's). */
 export function keepMarksFor(note: Element, first: boolean, last: boolean): void {
-  if (!first) {
-    for (const l of kids(note, "lyric")) l.remove();
-    const nots = kid(note, "notations");
-    if (nots) {
-      for (const tag of ["articulations", "ornaments", "fermata"]) for (const e of kids(nots, tag)) e.remove();
-      for (const s of kids(nots, "slur")) if (s.getAttribute("type") === "start") s.remove();
+  const isStop = (e: Element) => e.getAttribute("type") === "stop";
+  const isStart = (e: Element) => e.getAttribute("type") === "start" || (e.tagName === "tremolo" && (e.getAttribute("type") ?? "single") === "single");
+  if (!first) for (const l of kids(note, "lyric")) l.remove();
+  for (const nots of kids(note, "notations")) {
+    if (!first) {
+      for (const tag of ["articulations", "fermata", "arpeggiate", "technical"]) for (const e of kids(nots, tag)) e.remove();
+      for (const orn of kids(nots, "ornaments")) for (const o of kids(orn)) if (!isStop(o)) o.remove();
+      for (const tag of ["slur", "glissando", "slide"]) for (const e of kids(nots, tag)) if (isStart(e)) e.remove();
     }
+    if (!last) {
+      for (const tag of ["slur", "glissando", "slide"]) for (const e of kids(nots, tag)) if (isStop(e)) e.remove();
+      for (const orn of kids(nots, "ornaments")) for (const o of kids(orn)) if (isStop(o)) o.remove();
+    }
+    for (const orn of kids(nots, "ornaments")) if (!orn.firstElementChild) orn.remove();
+    if (!nots.firstElementChild) nots.remove();
   }
-  if (!last) {
-    const nots = kid(note, "notations");
-    for (const s of nots ? kids(nots, "slur") : []) if (s.getAttribute("type") === "stop") s.remove();
-  }
-  const nots = kid(note, "notations");
-  if (nots && !nots.firstElementChild) nots.remove();
 }
 
 /** A grace note of a pitch, before a note: slashed (acciaccatura) or not (appoggiatura). */
@@ -385,4 +391,111 @@ export function makeGrace(doc: Document, pitch: Pitch, voice: string, staff: num
   add(note, "type", "eighth");
   if (staff) add(note, "staff", staff);
   return note;
+}
+
+// ---- Spans between two notes: glissandos, slides, trill lines, two-note tremolos.
+
+/** Where a span's ends live: the tag, and the <notations> group holding it (none: notations itself). */
+export const SPANS: Record<string, { tag: string; group: string | null }> = {
+  glissando: { tag: "glissando", group: null },
+  slide: { tag: "slide", group: null },
+  "trill line": { tag: "wavy-line", group: "ornaments" },
+  tremolo: { tag: "tremolo", group: "ornaments" },
+};
+
+export interface SpanEnd {
+  kind: string;
+  type: "start" | "stop";
+  number: number;
+  /** Tremolo strokes, glissando line type. */
+  value?: string;
+}
+
+/** The span ends on a note (a single-note tremolo is not one: see tremoloOf). */
+export function spansOf(note: Element): SpanEnd[] {
+  const out: SpanEnd[] = [];
+  for (const nots of kids(note, "notations"))
+    for (const [kind, { tag, group }] of Object.entries(SPANS))
+      for (const holder of group ? kids(nots, group) : [nots])
+        for (const e of kids(holder, tag)) {
+          const type = e.getAttribute("type");
+          if (type !== "start" && type !== "stop") continue;
+          out.push({ kind, type, number: Number(e.getAttribute("number")) || 1, value: kind === "tremolo" ? (e.textContent?.trim() || "3") : (e.getAttribute("line-type") ?? undefined) });
+        }
+  return out;
+}
+
+export function addSpan(note: Element, end: SpanEnd): void {
+  const { tag, group } = SPANS[end.kind];
+  const doc = note.ownerDocument;
+  const n = notationsOf(note, true);
+  const holder = group ? (kid(n, group) ?? placeIn(n, doc.createElementNS(null, group), NOTATION_ORDER)) : n;
+  const e = doc.createElementNS(null, tag);
+  e.setAttribute("type", end.type);
+  if (end.kind !== "tremolo") e.setAttribute("number", String(end.number));
+  if (end.kind === "tremolo") e.textContent = end.value ?? "3";
+  if ((end.kind === "glissando" || end.kind === "slide") && end.value && end.type === "start") e.setAttribute("line-type", end.value);
+  if (group) holder.appendChild(e);
+  else placeIn(n, e, NOTATION_ORDER);
+}
+
+export function removeSpan(note: Element, end: SpanEnd): void {
+  const { tag, group } = SPANS[end.kind];
+  for (const nots of kids(note, "notations")) {
+    for (const holder of group ? kids(nots, group) : [nots]) {
+      for (const e of kids(holder, tag)) if (e.getAttribute("type") === end.type && (end.kind === "tremolo" || (Number(e.getAttribute("number")) || 1) === end.number)) e.remove();
+      if (group && !holder.firstElementChild) holder.remove();
+    }
+    if (!nots.firstElementChild) nots.remove();
+  }
+}
+
+/** A single-note tremolo's strokes (0: none). */
+export function tremoloOf(note: Element): number {
+  for (const nots of kids(note, "notations"))
+    for (const orn of kids(nots, "ornaments"))
+      for (const t of kids(orn, "tremolo")) if ((t.getAttribute("type") ?? "single") === "single") return Number(t.textContent) || 3;
+  return 0;
+}
+
+export function setTremolo(note: Element, strokes: number): void {
+  for (const nots of kids(note, "notations")) {
+    for (const orn of kids(nots, "ornaments")) {
+      for (const t of kids(orn, "tremolo")) if ((t.getAttribute("type") ?? "single") === "single") t.remove();
+      if (!orn.firstElementChild) orn.remove();
+    }
+    if (!nots.firstElementChild) nots.remove();
+  }
+  if (strokes <= 0) return;
+  const doc = note.ownerDocument;
+  const n = notationsOf(note, true);
+  const orn = kid(n, "ornaments") ?? placeIn(n, doc.createElementNS(null, "ornaments"), NOTATION_ORDER);
+  const t = doc.createElementNS(null, "tremolo");
+  t.setAttribute("type", "single");
+  t.textContent = String(strokes);
+  orn.appendChild(t);
+}
+
+/** A note's fingering ("" if none). */
+export function fingeringOf(note: Element): string {
+  for (const nots of kids(note, "notations")) for (const t of kids(nots, "technical")) for (const f of kids(t, "fingering")) return f.textContent?.trim() ?? "";
+  return "";
+}
+
+/** Sets (or, empty, removes) a note's fingering. */
+export function setFingering(note: Element, value: string): void {
+  for (const nots of kids(note, "notations")) {
+    for (const t of kids(nots, "technical")) {
+      for (const f of kids(t, "fingering")) f.remove();
+      if (!t.firstElementChild) t.remove();
+    }
+    if (!nots.firstElementChild) nots.remove();
+  }
+  if (!value) return;
+  const doc = note.ownerDocument;
+  const n = notationsOf(note, true);
+  const t = kid(n, "technical") ?? placeIn(n, doc.createElementNS(null, "technical"), NOTATION_ORDER);
+  const f = doc.createElementNS(null, "fingering");
+  f.textContent = value;
+  t.insertBefore(f, t.firstChild);
 }
