@@ -68,6 +68,9 @@ const ICONS = {
   hammerOn: svg('<path d="M4 16c4-6 12-6 16 0"/><text x="12" y="21" text-anchor="middle" font-size="8" font-weight="700" fill="currentColor" stroke="none">H</text>'),
   pullOff: svg('<path d="M4 16c4-6 12-6 16 0"/><text x="12" y="21" text-anchor="middle" font-size="8" font-weight="700" fill="currentColor" stroke="none">P</text>'),
   bend: svg('<path d="M5 20c6 0 9-4 9-13"/><polyline points="11 9 14 5 17 9"/>'),
+  tap: svg('<text x="12" y="17" text-anchor="middle" font-size="14" font-weight="700" fill="currentColor" stroke="none">T</text>'),
+  shake: svg('<path d="M3 13q2-4 4 0t4 0 4 0 4 0"/><line x1="20" x2="20" y1="8" y2="17"/>'),
+  schleifer: svg('<polyline points="4 17 9 9 14 14 20 6"/>'),
   lyrics: svg('<text x="12" y="17" text-anchor="middle" font-size="12" font-weight="700" fill="currentColor" stroke="none">Aa</text>'),
   triplet: svg('<polyline points="4 9 4 5 20 5 20 9"/><text x="12" y="19" text-anchor="middle" font-size="11" font-weight="700" fill="currentColor" stroke="none">3</text>'),
   del: svg('<polyline points="4 7 20 7"/><path d="M6 7l1 13h10l1-13"/><path d="M9 7V4h6v3"/>'),
@@ -274,6 +277,9 @@ export function createEditing(host: EditingHost): Editing {
     ["fermata", ICONS.fermata, "fermata"],
     ["trill-mark", ICONS.trill, "trill"],
     ["mordent", ICONS.mordent, "mordent"],
+    ["shake", ICONS.shake, "shake"],
+    ["schleifer", ICONS.schleifer, "schleifer"],
+    ["tap", ICONS.tap, "tap"],
   ];
   const markBtns = MARKS.map(([m, icon, label]) => button(icon, t(label), () => mark(m)));
   const slurBtn = button(ICONS.slur, t("slur"), () => slur());

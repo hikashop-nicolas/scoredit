@@ -36,7 +36,7 @@ export interface Entry {
 export type Skipped = Record<string, number>;
 
 const NOT_ENTERED: [what: string, test: (n: Element) => boolean][] = [
-  ["other technical marks (taps, fingernails...)", (n) => Array.from(n.getElementsByTagName("technical")).some((t) => kids(t).some((c) => !["string", "fret", "fingering", "hammer-on", "pull-off", "bend", ...TECHNICAL_MARKS].includes(c.tagName)))],
+  ["other technical marks (plucks, holes, arrows...)", (n) => Array.from(n.getElementsByTagName("technical")).some((t) => kids(t).some((c) => !["string", "fret", "fingering", "hammer-on", "pull-off", "bend", ...TECHNICAL_MARKS].includes(c.tagName)))],
   ["other ornaments (schleifers, shakes...)", (n) => Array.from(n.getElementsByTagName("ornaments")).some((o) => kids(o).some((c) => !["trill-mark", "turn", "delayed-turn", "inverted-turn", "delayed-inverted-turn", "vertical-turn", "mordent", "inverted-mordent", "wavy-line", "tremolo", "accidental-mark", "haydn", "shake", "schleifer"].includes(c.tagName)))],
 ];
 

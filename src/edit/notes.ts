@@ -263,7 +263,7 @@ function placeIn(parent: Element, child: Element, order: string[]): Element {
 
 export const ARTICULATIONS = ["accent", "strong-accent", "staccato", "tenuto", "detached-legato", "staccatissimo", "spiccato", "scoop", "plop", "doit", "falloff", "breath-mark", "caesura", "stress", "unstress", "soft-accent"];
 /** Technical marks that are plain signs (bowings, harmonics...): put on and off like accents. */
-export const TECHNICAL_MARKS = ["up-bow", "down-bow", "harmonic", "open-string", "stopped", "snap-pizzicato", "thumb-position"];
+export const TECHNICAL_MARKS = ["up-bow", "down-bow", "harmonic", "open-string", "stopped", "snap-pizzicato", "thumb-position", "tap", "fingernails", "double-tongue", "triple-tongue", "heel", "toe", "brass-bend", "flip", "smear", "open", "half-muted", "golpe"];
 export const ORNAMENTS = ["trill-mark", "turn", "delayed-turn", "inverted-turn", "delayed-inverted-turn", "vertical-turn", "shake", "mordent", "inverted-mordent", "schleifer", "haydn"];
 
 /** The marks on a note: articulation and ornament names, and "fermata". */
@@ -305,6 +305,7 @@ export function setMark(note: Element, mark: string, on?: boolean): boolean {
   const parent = group ? (kid(n, group) ?? placeIn(n, doc.createElementNS(null, group), NOTATION_ORDER)) : n;
   const e = doc.createElementNS(null, mark);
   if (mark === "fermata") e.setAttribute("type", "upright");
+  if (mark === "tap") e.textContent = "T";
   if (group) parent.appendChild(e);
   else placeIn(n, e, NOTATION_ORDER);
   return true;

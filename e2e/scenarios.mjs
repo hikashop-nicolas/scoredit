@@ -686,6 +686,22 @@ export const scenarios = [
     },
   },
   {
+    id: "tap-shake-schleifer",
+    title: "A tap, a shake and a schleifer",
+    device: "desktop",
+    fixture: "melody.musicxml",
+    why: "Three rarer signs from the Marks row: a tap (T, a guitarist hitting the string on the fretboard), a shake (a wide fast wavering, as on a trumpet) and a schleifer (a quick slide of two notes up into the main note).",
+    look: "A T over the first note, a short wavy sign over the second and a small slide sign before the third.",
+    async run(d) {
+      await d.button("Marks");
+      for (const [beat, pitch, label] of [[1, "C4", "Tap"], [2, "D4", "Shake"], [3, "E4", "Schleifer"]]) {
+        await d.tapStaff(1, beat, 1, pitch);
+        await d.button(label);
+      }
+      await d.bars({ 1: "C4 quarter [tap], D4 quarter [shake], E4 quarter [schleifer], F4 quarter" });
+    },
+  },
+  {
     id: "save-and-reopen",
     title: "What you entered is saved and comes back when the file is opened again",
     device: "desktop",
