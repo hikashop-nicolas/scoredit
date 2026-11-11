@@ -140,7 +140,7 @@ async function render(inst: Inst, option: Option): Promise<AudioBuffer> {
     for (const n of notes) p.play(inst.program, n.midi, 0.01 + n.t, n.d, n.v);
   } else {
     if (!sampler) throw new Error("not loaded");
-    await sampler.prepare(notes.map((n) => [inst.program, n.midi]));
+    await sampler.prepare(notes.map((n) => [inst.program, n.midi, n.d]));
     for (const n of notes) {
       const buf = sampler.buffer(inst.program, n.midi);
       if (!buf) continue;

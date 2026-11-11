@@ -9,6 +9,8 @@ export interface NoteEvent {
   midi: number;
   velocity: number;
   channel: number;
+  /** General MIDI instrument (0-127), 128 for the drum kit. */
+  program: number;
   part: number;
   staff: number;
   /** Score measure index, and onset within it in quarter notes. */
@@ -203,20 +205,28 @@ export function playOrder(score: ScoreDoc): number[] {
   return order;
 }
 
+// Each part's instrument; parts playing the same instrument share a MIDI channel (there are
+// only 16, and an orchestra has more parts), the drums channel 10.
 function programsOf(score: ScoreDoc): { channel: number; program: number; drums: boolean }[] {
   const list = kid(score.root, "part-list");
   const sps = list ? kids(list, "score-part") : [];
+  const channels = new Map<number, number>();
   let next = 0;
   return score.parts.map((p) => {
     const sp = sps.find((e) => e.getAttribute("id") === p.id);
     const mi = sp?.getElementsByTagName("midi-instrument")[0];
     const prog = Number(text(mi ? kid(mi, "midi-program") : null)) || 1;
     const ch = Number(text(mi ? kid(mi, "midi-channel") : null));
-    const drums = ch === 10 || !!sp?.getElementsByTagName("unpitched").length;
-    if (drums) return { channel: 9, program: 0, drums };
-    if (next === 9) next++;
-    const channel = Math.min(15, next++);
-    return { channel, program: Math.min(127, Math.max(0, prog - 1)), drums };
+    const drums = ch === 10 || !!sp?.getElementsByTagName("midi-unpitched").length;
+    if (drums) return { channel: 9, program: 128, drums };
+    const program = Math.min(127, Math.max(0, prog - 1));
+    let channel = channels.get(program);
+    if (channel === undefined) {
+      if (next === 9) next++;
+      channel = next > 15 ? 15 : next++;
+      channels.set(program, channel);
+    }
+    return { channel, program, drums };
   });
 }
 
@@ -224,9 +234,15 @@ function programsOf(score: ScoreDoc): { channel: number; program: number; drums:
 export function buildTimeline(score: ScoreDoc, opts: { straight?: boolean } = {}): Timeline {
   // Straight: every measure once, in score order, without repeats or jumps.
   const order = opts.straight ? Array.from({ length: score.measureCount }, (_, m) => m) : playOrder(score);
+  // Drum sounds: the instrument a note names, and the General MIDI drum it plays.
+  const unpitched = new Map<string, number>();
+  for (const mi of Array.from(score.root.getElementsByTagName("midi-instrument"))) {
+    const u = Number(text(mi, "midi-unpitched"));
+    if (u > 0) unpitched.set(mi.getAttribute("id") ?? "", u - 1);
+  }
   const parts = programsOf(score);
   const programs = new Map<number, number>();
-  for (const p of parts) if (!p.drums) programs.set(p.channel, p.program);
+  for (const p of parts) if (!p.drums && !programs.has(p.channel)) programs.set(p.channel, p.program);
 
   // Measure lengths (quarters) and tempo marks, per score measure.
   const lengths = new Map<number, number>();
@@ -329,7 +345,7 @@ export function buildTimeline(score: ScoreDoc, opts: { straight?: boolean } = {}
               if (!gp || kid(c, "chord")) break;
               const gm = (Number(text(gp, "octave")) + 1) * 12 + (STEP[text(gp, "step")] ?? 0) + (Number(text(gp, "alter")) || 0) + shift;
               const at = Math.max(span.start, span.start + quarterToSec(span, pos / div) - GRACE);
-              events.push({ time: at, dur: GRACE, midi: gm, velocity: velocity[p], channel: parts[p].channel, part: p, staff: Number(text(c, "staff")) || 1, measure: m, onset: pos / div, el: c, grace: true });
+              events.push({ time: at, dur: GRACE, midi: gm, velocity: velocity[p], channel: parts[p].channel, program: parts[p].program, part: p, staff: Number(text(c, "staff")) || 1, measure: m, onset: pos / div, el: c, grace: true });
               break;
             }
             const chord = !!kid(c, "chord");
@@ -339,6 +355,13 @@ export function buildTimeline(score: ScoreDoc, opts: { straight?: boolean } = {}
               pos += dur;
             }
             const pitch = kid(c, "pitch");
+            const drum = unpitched.get(kid(c, "instrument")?.getAttribute("id") ?? "");
+            if (!pitch && kid(c, "unpitched") && drum !== undefined && !kid(c, "rest")) {
+              const q = dur / div;
+              const start = span.start + quarterToSec(span, onset);
+              events.push({ time: start, dur: span.start + quarterToSec(span, onset + q) - start, midi: drum, velocity: velocity[p], channel: 9, program: 128, part: p, staff: Number(text(c, "staff")) || 1, measure: m, onset, el: c });
+              break;
+            }
             if (!pitch || kid(c, "rest")) break;
             const midi = (Number(text(pitch, "octave")) + 1) * 12 + (STEP[text(pitch, "step")] ?? 0) + (Number(text(pitch, "alter")) || 0) + shift;
             const q = dur / div;
@@ -355,7 +378,7 @@ export function buildTimeline(score: ScoreDoc, opts: { straight?: boolean } = {}
               if (ties.includes("start")) tied.set(key, prev);
               break;
             }
-            const ev: NoteEvent = { time: start, dur: length, midi, velocity: velocity[p], channel: parts[p].channel, part: p, staff, measure: m, onset, el: c };
+            const ev: NoteEvent = { time: start, dur: length, midi, velocity: velocity[p], channel: parts[p].channel, program: parts[p].program, part: p, staff, measure: m, onset, el: c };
             const tm = c.getElementsByTagName("trill-mark")[0];
             const accMark = c.getElementsByTagName("accidental-mark")[0]?.textContent?.trim();
             const ACC: Record<string, number> = { sharp: 1, natural: 0, flat: -1, "double-sharp": 2, "flat-flat": -2 };

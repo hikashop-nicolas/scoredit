@@ -82,15 +82,22 @@ export class Sampler {
     return this.cache.get(`${program}:${midi}`);
   }
 
-  /** Renders these notes, a few at a time so the page stays responsive. */
-  prepare(notes: Iterable<[number, number]>): Promise<void> {
-    const todo = [...new Set([...notes].map(([p, m]) => `${p}:${m}`))].filter((k) => !this.cache.has(k) && this.has(Number(k.split(":")[0])));
+  /**
+   * Renders these notes ([program, midi, longest length in seconds]) in the order given, in
+   * slices of a few milliseconds so the page and the playback scheduler never wait on it.
+   */
+  prepare(notes: Iterable<[number, number, number?]>): Promise<void> {
+    const want = new Map<string, number>();
+    for (const [p, m, d] of notes) {
+      const k = `${p}:${m}`;
+      if (this.cache.has(k) || !this.has(p)) continue;
+      want.set(k, Math.max(want.get(k) ?? 0, d ?? 0));
+    }
     this.queue = this.queue.then(async () => {
-      for (const k of todo) {
+      for (const [k, longest] of want) {
         if (this.cache.has(k)) continue;
         const [p, m] = k.split(":").map(Number);
-        this.cache.set(k, this.render(p, m));
-        await new Promise((r) => setTimeout(r, 0));
+        this.cache.set(k, await this.render(p, m, longest));
       }
     });
     return this.queue;
@@ -140,11 +147,12 @@ export class Sampler {
   }
 
   // One note held for a few seconds (low notes longer), as the pack plays it.
-  private render(program: number, midi: number): AudioBuffer {
+  private async render(program: number, midi: number, longest: number): Promise<AudioBuffer> {
     const sr = this.ctx.sampleRate;
-    // Struck sounds die away; held ones (strings, winds, organ) last as long as a long note.
+    // Struck sounds die away; held ones (strings, winds, organ) last as long as the piece holds
+    // that note, and no longer.
     const struck = program === DRUMS || program < 16 || (program >= 24 && program < 40) || program === 46 || (program >= 104 && program < 120);
-    const seconds = struck ? Math.min(5, Math.max(2.5, 4.5 - (midi - 40) * 0.03)) : 8;
+    const seconds = struck ? Math.min(5, Math.max(2.5, 4.5 - (midi - 40) * 0.03)) : Math.min(10, Math.max(1, longest + 0.5));
     const n = Math.round(sr * seconds);
     const buf = this.ctx.createBuffer(2, n, sr);
     const left = buf.getChannelData(0);
@@ -154,7 +162,15 @@ export class Sampler {
     syn.stopAll(true);
     if (ch === 0) syn.programChange(0, program);
     syn.noteOn(ch, midi, RENDER_VELOCITY);
-    for (let i = 0; i < n; i += 128) syn.process(left, right, i, Math.min(128, n - i));
+    let slice = performance.now();
+    for (let i = 0; i < n; i += 128) {
+      syn.process(left, right, i, Math.min(128, n - i));
+      // Give the page back every few milliseconds.
+      if (performance.now() - slice > 4) {
+        await new Promise((r) => setTimeout(r, 0));
+        slice = performance.now();
+      }
+    }
     syn.noteOff(ch, midi);
     syn.stopAll(true);
     return buf;

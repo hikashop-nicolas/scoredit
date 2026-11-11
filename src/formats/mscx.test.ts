@@ -59,4 +59,23 @@ describe("MuseScore reader", () => {
     expect(kids(tech).map((e) => e.textContent)).toEqual(["5", "2"]);
     expect(buildTimeline(withTab).events).toHaveLength(1); // drawn twice, sounds once
   });
+
+  it("reads MuseScore 2 lines: the line's element with an id, closed by an endSpanner", () => {
+    const flat = `<?xml version="1.0"?><museScore version="2.06"><Score><Division>480</Division><Part><Staff id="1"><StaffType group="pitched"/></Staff><trackName>Violin</trackName><Instrument><Channel><program value="40"/></Channel></Instrument></Part><Staff id="1"><Measure number="1">${TS}<Ottava id="7"><subtype>8va</subtype></Ottava>${chord("half", [[72, 14]])}<endSpanner id="7"/>${chord("half", [[72, 14]])}</Measure></Staff></Score></museScore>`;
+    const tl = buildTimeline(loadScore(strToU8(flat)).score);
+    expect(tl.events.map((e) => e.midi)).toEqual([84, 72]);
+  });
+
+  it("plays a drum kit by its drum map and draws it on its staff line", () => {
+    const kit = `<Part><Staff id="1"><StaffType group="percussion"><lines>1</lines></StaffType></Staff><trackName>Snare</trackName><Instrument><Drum pitch="38"><head>0</head><line>0</line><name>Acoustic Snare</name></Drum><Drum pitch="37"><head>1</head><line>0</line><name>Side Stick</name></Drum></Instrument></Part>`;
+    const s = loadScore(strToU8(mscx([TS + chord("half", [[38, 16]]) + chord("half", [[37, 21]])], kit))).score;
+    const un = s.doc.getElementsByTagName("unpitched")[0];
+    expect(kids(un).map((e) => e.textContent)).toEqual(["E", "4"]);
+    expect(s.doc.getElementsByTagName("notehead")[0].textContent).toBe("x");
+    const tl = buildTimeline(s);
+    expect(tl.events.map((e) => [e.midi, e.channel, e.program])).toEqual([
+      [38, 9, 128],
+      [37, 9, 128],
+    ]);
+  });
 });

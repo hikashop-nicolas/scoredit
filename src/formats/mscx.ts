@@ -11,6 +11,8 @@ const DIV = 3360;
 const DURATION: Record<string, number> = { long: 16, breve: 8, whole: 4, half: 2, quarter: 1, eighth: 0.5, "16th": 0.25, "32nd": 0.125, "64th": 1 / 16, "128th": 1 / 32, "256th": 1 / 64 };
 const TYPE_NAME: Record<string, string> = { long: "long", breve: "breve", whole: "whole", half: "half", quarter: "quarter", eighth: "eighth", "16th": "16th", "32nd": "32nd", "64th": "64th", "128th": "128th", "256th": "256th" };
 const ATTR_ORDER = ["divisions", "key", "time", "staves", "part-symbol", "instruments", "clef", "staff-details", "transpose"];
+/** MuseScore 2 lines written as their own element with an id. */
+const MS2_LINES = new Set(["HairPin", "Ottava", "Pedal", "Trill", "Volta"]);
 const SEMIS: Record<string, number> = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
 const ACCIDENTAL: Record<string, string> = {
   accidentalSharp: "sharp",
@@ -182,6 +184,10 @@ interface PartDef {
   virtual: number;
   /** Staves read from tab but drawn as notation, with the instrument's own clef. */
   notation: Set<number>;
+  /** The drum map of a percussion part: each sound's staff line and notehead. */
+  drumset: Map<number, { line: number; head: string; name: string }>;
+  /** Lines of each staff (5 unless a percussion or special staff says otherwise). */
+  lines: number[];
   clef: string;
   instrumentId: string;
 }
@@ -247,7 +253,13 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
       name: text(p, "trackName") || text(inst, "longName"),
       abbreviation: text(inst, "shortName"),
       program,
-      drums: types.includes("percussion"),
+      // A drum kit only when it maps its sounds; a percussion staff without a map (a bass drum
+      // on a tuned program, a cannon effect) plays its program like any instrument.
+      drums: types.includes("percussion") && !!inst && kids(inst, "Drum").length > 0,
+      drumset: new Map(
+        (inst ? kids(inst, "Drum") : []).map((d) => [Number(d.getAttribute("pitch")), { line: Number(text(d, "line")) || 0, head: text(d, "head"), name: text(d, "name") }] as const),
+      ),
+      lines: staves.map((st) => Number(text(kid(st, "StaffType"), "lines")) || 5),
       chromatic: Number(text(inst, "transposeChromatic")) || 0,
       diatonic: Number(text(inst, "transposeDiatonic")) || 0,
       tab: types.map((t) => t === "tablature"),
@@ -263,9 +275,18 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
     const sp = el(list, "score-part", null, { id: p.id });
     el(sp, "part-name", p.name);
     if (p.abbreviation) el(sp, "part-abbreviation", p.abbreviation);
+    if (p.drums) {
+      // One instrument per drum sound, each naming the General MIDI drum it plays.
+      for (const [pitch, d] of p.drumset) el(el(sp, "score-instrument", null, { id: `${p.id}-I${pitch + 1}` }), "instrument-name", d.name || p.name || "Drum");
+      for (const pitch of p.drumset.keys()) {
+        const mi = el(sp, "midi-instrument", null, { id: `${p.id}-I${pitch + 1}` });
+        el(mi, "midi-channel", 10);
+        el(mi, "midi-unpitched", pitch + 1);
+      }
+      continue;
+    }
     el(el(sp, "score-instrument", null, { id: `${p.id}-I1` }), "instrument-name", p.name || "Instrument");
     const mi = el(sp, "midi-instrument", null, { id: `${p.id}-I1` });
-    if (p.drums) el(mi, "midi-channel", 10);
     el(mi, "midi-program", p.program + 1);
   }
 
@@ -346,6 +367,9 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
     return 0;
   };
 
+  // MuseScore 2 lines by id, open until their <endSpanner>.
+  const ms2Lines = new Map<string, string>();
+
   // MuseScore 2 tie ids, to tell a tie's end from another spanner's.
   const tieIds = new Set(Array.from(score.getElementsByTagName("Tie")).map((t) => t.getAttribute("id") ?? "").filter(Boolean));
 
@@ -390,6 +414,7 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
         }
         p.staves.forEach((s, k) => {
           const def = text(s, "defaultClef");
+          if (!p.tab[k] && (p.lines[k] ?? 5) !== 5) el(el(attrs, "staff-details", null, p.staves.length > 1 ? { number: k + 1 } : undefined), "staff-lines", p.lines[k]);
           if (p.notation.has(k)) {
             addClef(attrs, p.clef, k + 1, p.staves.length > 1);
           } else if (p.tab[k]) {
@@ -423,7 +448,7 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
         if (!smeas) return;
         const virtual = k === p.virtual;
         // The added tab staff repeats the notes only: no texts, marks or clefs of its own.
-        const SKIP = new Set(["Clef", "Dynamic", "Tempo", "StaffText", "SystemText", "Expression", "RehearsalMark", "Spanner", "Fermata"]);
+        const SKIP = new Set(["Clef", "Dynamic", "Tempo", "StaffText", "SystemText", "Expression", "RehearsalMark", "Spanner", "Fermata", ...MS2_LINES, "endSpanner"]);
         // MuseScore 3 and 4 group a measure's content in <voice>s; MuseScore 2 lists it flat,
         // each chord naming its track (staff * 4 + voice).
         const voiceEls = kids(smeas, "voice");
@@ -446,7 +471,25 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
           const tupletInfo: { actual: number; normal: number; base: string }[] = [];
           for (const c of voiceKids) {
             if (virtual && SKIP.has(c.tagName)) continue;
-            switch (c.tagName) {
+            // Lines (hairpins, octave lines, pedals, trills, voltas): MuseScore 3 and 4 write a
+            // <Spanner type> at each end; MuseScore 2 the line's own element with an id, then
+            // an <endSpanner id> where it stops.
+            let spanType: string | null = null;
+            let spanStarts = false;
+            let spanInner: Element | null = null;
+            if (c.tagName === "Spanner") {
+              spanType = c.getAttribute("type");
+              spanStarts = !!kid(c, "next");
+              spanInner = spanType ? kid(c, spanType) : null;
+            } else if (MS2_LINES.has(c.tagName) && c.getAttribute("id")) {
+              spanType = c.tagName;
+              spanStarts = true;
+              spanInner = c;
+              ms2Lines.set(c.getAttribute("id")!, c.tagName);
+            } else if (c.tagName === "endSpanner") {
+              spanType = ms2Lines.get(c.getAttribute("id") ?? "") ?? null;
+            }
+            switch (spanType ? "__span" : c.tagName) {
               case "location": {
                 pos += frac(text(c, "fractions"));
                 break;
@@ -543,13 +586,13 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
                 if (p.staves.length > 1) el(dir, "staff", k + 1);
                 break;
               }
-              case "Spanner": {
-                const type = c.getAttribute("type");
-                const starts = !!kid(c, "next");
+              case "__span": {
+                const type = spanType;
+                const starts = spanStarts;
                 if (type === "HairPin") {
                   goTo(pos);
                   const dir = el(meas, "direction", null, { placement: "below" });
-                  const hp = kid(c, "HairPin");
+                  const hp = spanInner;
                   const sub = Number(text(hp, "subtype"));
                   el(el(dir, "direction-type"), "wedge", null, { type: starts ? (sub === 1 || sub === 3 ? "diminuendo" : "crescendo") : "stop" });
                   if (p.staves.length > 1) el(dir, "staff", k + 1);
@@ -560,7 +603,7 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
                   const dir = el(meas, "direction", null, { placement: "above" });
                   const dt = el(dir, "direction-type");
                   if (starts) {
-                    const [semis, shiftType, size] = OTTAVA[text(kid(c, "Ottava"), "subtype")] ?? OTTAVA["8va"];
+                    const [semis, shiftType, size] = OTTAVA[text(spanInner, "subtype")] ?? OTTAVA["8va"];
                     list.push([m, pos, Infinity, 0, semis]);
                     el(dt, "octave-shift", null, { type: shiftType, size });
                   } else {
@@ -574,7 +617,7 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
                   if (p.staves.length > 1) el(dir, "staff", k + 1);
                 } else if (type === "Pedal") {
                   goTo(pos);
-                  const pd = kid(c, "Pedal");
+                  const pd = spanInner;
                   const hidden = text(pd, "visible") === "0";
                   const line = text(pd, "lineVisible") !== "0";
                   const dir = el(meas, "direction", null, { placement: "below" });
@@ -588,7 +631,7 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
                     el(orn, "wavy-line", null, { type: "stop" });
                   }
                 } else if (type === "Volta" && pi === 0 && k === 0) {
-                  const vt = kid(c, "Volta");
+                  const vt = spanInner;
                   if (starts) voltaStart.set(m, text(vt, "endings") || "1");
                   else {
                     const at = pos <= 0 && m > 0 ? m - 1 : m;
@@ -624,6 +667,16 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
                   if (ni > 0) el(note, "chord");
                   if (!n) {
                     el(note, "rest", null, dt === "measure" ? { measure: "yes" } : undefined);
+                  } else if (p.drums) {
+                    // A drum: shown on its line of the drum staff (counting half spaces down from
+                    // the top line), played as its General MIDI drum.
+                    const d = p.drumset.get(Number(text(n, "pitch")));
+                    const lines = p.lines[k] ?? 5;
+                    const top = lines === 1 ? 4 * 7 + 2 : 5 * 7 + 3; // E4 for a one-line staff, F5 for five lines
+                    const at = top - (d?.line ?? 0);
+                    const un = el(note, "unpitched");
+                    el(un, "display-step", "CDEFGAB"[((at % 7) + 7) % 7]);
+                    el(un, "display-octave", Math.floor(at / 7));
                   } else {
                     const sounding = Number(text(n, "pitch"));
                     const tpc = Number(text(n, "tpc"));
@@ -642,6 +695,7 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
                   const tieStop = ties.some((s) => kid(s, "prev")) || (!!n && kids(n, "endSpanner").some((e) => tieIds.has(e.getAttribute("id") ?? "")));
                   if (tieStop) el(note, "tie", null, { type: "stop" });
                   if (tieStart) el(note, "tie", null, { type: "start" });
+                  if (n && p.drums) el(note, "instrument", null, { id: `${p.id}-I${Number(text(n, "pitch")) + 1}` });
                   el(note, "voice", k * 4 + v + 1);
                   if (dt !== "measure" && TYPE_NAME[dt]) el(note, "type", TYPE_NAME[dt]);
                   for (let d = 0; d < dots; d++) el(note, "dot");
@@ -656,7 +710,10 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
                   const stem = text(c, "StemDirection");
                   if (stem === "up" || stem === "down") el(note, "stem", stem);
                   // Ghost notes in brackets, dead notes as a cross.
-                  if (n && text(n, "dead") === "1") el(note, "notehead", "x");
+                  const drumHead = n && p.drums ? p.drumset.get(Number(text(n, "pitch")))?.head : undefined;
+                  const HEADS: Record<string, string> = { "1": "x", cross: "x", "2": "diamond", diamond: "diamond", "3": "triangle", "triangle-up": "triangle", slash: "slash", xcircle: "circle-x" };
+                  if (drumHead && HEADS[drumHead]) el(note, "notehead", HEADS[drumHead]);
+                  else if (n && text(n, "dead") === "1") el(note, "notehead", "x");
                   else if (n && text(n, "ghost") === "1") el(note, "notehead", "normal", { parentheses: "yes" });
                   if (p.staves.length > 1) el(note, "staff", k + 1);
                   // Notations: ties, slurs, articulations, ornaments, fermata, tab string/fret.
