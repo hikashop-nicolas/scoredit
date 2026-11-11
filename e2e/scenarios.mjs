@@ -505,6 +505,7 @@ export const scenarios = [
     look: "A drum hit at the start of bar 3, after the beat already in bars 1 and 2.",
     async run(d) {
       await d.button("Note input");
+      d.check("No sharp button or keyboard for drums", !(await d.eval('!!e2e.buttonPoint("Sharp") || !!e2e.buttonPoint("Keyboard")')));
       const bubble = await d.hold(3, 1, 1, "C5", "C5");
       d.check('The bubble named the drum "Snare"', bubble === "Snare", `It showed "${bubble}"`);
       await d.bars({ 3: "Snare quarter, quarter rest, half rest" });
@@ -662,6 +663,8 @@ export const scenarios = [
       for (const k of ["1", " ", "2", " ", "3", " "]) await d.key(k);
       await d.key("Escape");
       await d.tapStaff(1, 4, 1, "F4");
+      // A flute has no bow: its marks leave bowings out until All marks is pressed.
+      await d.button("All marks");
       await d.button("Up-bow");
       await d.bars({ 1: "C4 quarter [finger 1], D4 quarter [finger 2], E4 quarter [finger 3], F4 quarter [up-bow]" });
     },
@@ -694,10 +697,11 @@ export const scenarios = [
     title: "A tap, a shake and a schleifer",
     device: "desktop",
     fixture: "melody.musicxml",
-    why: "Three rarer signs from the Marks row: a tap (T, a guitarist hitting the string on the fretboard), a shake (a wide fast wavering, as on a trumpet) and a schleifer (a quick slide of two notes up into the main note).",
+    why: "Three rarer signs from the Marks row (the tune is for flute, so All marks shows the guitar's tap too): a tap (T, a guitarist hitting the string on the fretboard), a shake (a wide fast wavering, as on a trumpet) and a schleifer (a quick slide of two notes up into the main note).",
     look: "A T over the first note, a short wavy sign over the second and a small slide sign before the third.",
     async run(d) {
       await d.button("Marks");
+      await d.button("All marks");
       for (const [beat, pitch, label] of [[1, "C4", "Tap"], [2, "D4", "Shake"], [3, "E4", "Schleifer"]]) {
         await d.tapStaff(1, beat, 1, pitch);
         await d.button(label);
@@ -714,6 +718,7 @@ export const scenarios = [
     look: "An i over the first note, a half-filled circle over the second, an up arrow over the third.",
     async run(d) {
       await d.button("Marks");
+      await d.button("All marks");
       await d.tapStaff(1, 1, 1, "C4");
       await d.button("Pluck (p i m a)");
       await d.button("Pluck (p i m a)");
@@ -740,6 +745,47 @@ export const scenarios = [
       }
       await d.button("Accidental over the ornament");
       await d.bars({ 1: "C4 quarter [turn], D4 quarter [inverted turn], E4 quarter [inverted mordent], F4 quarter [trill; sharp over it]" });
+    },
+  },
+  {
+    id: "marks-by-instrument",
+    title: "The Marks row shows what suits the instrument",
+    device: "desktop",
+    fixture: "guitar.musicxml",
+    why: "A guitar part gets the guitar's marks (bend, hammer-on, tap...) and not a violin's bowings or a flute's holes; a piano part gets arpeggios but no bends. All marks shows everything.",
+    look: "The Marks row for a guitar: bend, hammer-on and the like, no bowing signs.",
+    async run(d) {
+      const shown = (label) => d.eval(`!!e2e.buttonPoint(${JSON.stringify(label)})`);
+      await d.key("n");
+      await d.key("5");
+      await d.key("c");
+      await d.button("Marks");
+      d.check("For the guitar: Bend is there", await shown("Bend"));
+      d.check("For the guitar: Hammer-on is there", await shown("Hammer-on"));
+      d.check("For the guitar: Up-bow (a violin's) is not", !(await shown("Up-bow")));
+      d.check("For the guitar: Hole (a flute's) is not", !(await shown("Hole")));
+      d.check("For the guitar: Lyrics (a singer's) are not", !(await shown("Lyrics")));
+      await d.button("All marks");
+      d.check("With All marks: Up-bow is there too", await shown("Up-bow"));
+    },
+  },
+  {
+    id: "marks-for-piano",
+    title: "A piano part gets arpeggios and fingerings, not bends",
+    device: "desktop",
+    fixture: "piano.musicxml",
+    why: "The same Marks row, for a piano: arpeggio and fingering are there, the guitar's bend and hammer-on are not.",
+    look: "The Marks row for a piano.",
+    async run(d) {
+      const shown = (label) => d.eval(`!!e2e.buttonPoint(${JSON.stringify(label)})`);
+      await d.key("n");
+      await d.key("5");
+      await d.key("c");
+      await d.button("Marks");
+      d.check("For the piano: Arpeggio is there", await shown("Arpeggio"));
+      d.check("For the piano: Fingering is there", await shown("Fingering"));
+      d.check("For the piano: Bend (a guitar's) is not", !(await shown("Bend")));
+      d.check("For the piano: Hammer-on (a guitar's) is not", !(await shown("Hammer-on")));
     },
   },
   {

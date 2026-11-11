@@ -5,7 +5,7 @@ import type { ScoreDoc } from "../model/score";
 import { kid, kids, text } from "../model/xml";
 import type { PageView, Pick } from "../render/page-view";
 import { t } from "./i18n";
-import { partFamily } from "../model/score";
+import { partFamily, type PartFamily } from "../model/score";
 import { BASS, Fretboard, GUITAR } from "./fretboard";
 import { Keyboard } from "./keyboard";
 
@@ -79,6 +79,7 @@ const ICONS = {
   delayedTurn: svg('<path d="M9 14c0-4 4-4 5-1s2 4 3 4 5-2 5-5-4-3-5-1-3 5-5 5-3-1-3-2z"/><circle cx="4" cy="16" r="2" fill="currentColor"/>'),
   invertedMordent: svg('<polyline points="3 14 7 9 10 14 14 9 17 14 21 9"/>'),
   ornamentAccidental: svg('<text x="12" y="10" text-anchor="middle" font-size="10" fill="currentColor" stroke="none">♯</text><path d="M4 18q2-3 4 0t4 0 4 0 4 0"/>'),
+  more: svg('<circle cx="6" cy="12" r="1.6" fill="currentColor"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/><circle cx="18" cy="12" r="1.6" fill="currentColor"/>'),
   lyrics: svg('<text x="12" y="17" text-anchor="middle" font-size="12" font-weight="700" fill="currentColor" stroke="none">Aa</text>'),
   triplet: svg('<polyline points="4 9 4 5 20 5 20 9"/><text x="12" y="19" text-anchor="middle" font-size="11" font-weight="700" fill="currentColor" stroke="none">3</text>'),
   del: svg('<polyline points="4 7 20 7"/><path d="M6 7l1 13h10l1-13"/><path d="M9 7V4h6v3"/>'),
@@ -328,7 +329,52 @@ export function createEditing(host: EditingHost): Editing {
   const pluckBtn = cycleBtn("pluck", ICONS.pluck, "pluck", ["p", "i", "m", "a"]);
   const holeBtn = cycleBtn("hole", ICONS.hole, "hole", ["yes", "half", "no"]);
   const arrowBtn = cycleBtn("arrow", ICONS.arrow, "arrow", ["up", "down"]);
-  row3.append(...markBtns, slurBtn, graceBtn, lyricsBtn, arpBtn, tremBtn, glissBtn, trillLineBtn, fingerBtn, upBowBtn, downBowBtn, hammerBtn, pullBtn, bendBtn, pluckBtn, holeBtn, arrowBtn, ornAccBtn);
+  // The marks that suit the instrument being edited; "All marks" shows the others too.
+  let allMarks = false;
+  const allBtn = button(ICONS.more, t("allMarks"), () => {
+    allMarks = !allMarks;
+    sync();
+  });
+  row3.append(...markBtns, slurBtn, graceBtn, lyricsBtn, arpBtn, tremBtn, glissBtn, trillLineBtn, fingerBtn, upBowBtn, downBowBtn, hammerBtn, pullBtn, bendBtn, pluckBtn, holeBtn, arrowBtn, ornAccBtn, allBtn);
+  const MELODIC: PartFamily[] = ["keys", "guitar", "bass", "strings", "winds", "brass", "voice", "other"];
+  const ORNATE: PartFamily[] = ["keys", "guitar", "strings", "winds", "brass", "voice", "other"];
+  const FRETTED: PartFamily[] = ["guitar", "bass", "other"];
+  const markFamilies: Record<string, PartFamily[] | "all"> = {
+    accent: "all",
+    staccato: "all",
+    tenuto: MELODIC,
+    "strong-accent": "all",
+    fermata: "all",
+    "trill-mark": ORNATE,
+    mordent: ORNATE,
+    "inverted-mordent": ORNATE,
+    turn: ORNATE,
+    "inverted-turn": ORNATE,
+    "delayed-turn": ORNATE,
+    shake: ["winds", "brass", "voice", "other"],
+    schleifer: ["keys", "strings", "winds", "voice", "other"],
+    tap: FRETTED,
+  };
+  const fits: [HTMLButtonElement, PartFamily[] | "all"][] = [
+    ...MARKS.map(([m], i) => [markBtns[i], markFamilies[m] ?? "all"] as [HTMLButtonElement, PartFamily[] | "all"]),
+    [slurBtn, MELODIC],
+    [graceBtn, "all"],
+    [lyricsBtn, ["voice", "other"]],
+    [arpBtn, ["keys", "guitar", "strings", "other"]],
+    [tremBtn, "all"],
+    [glissBtn, MELODIC],
+    [trillLineBtn, ORNATE],
+    [fingerBtn, ["keys", "guitar", "bass", "strings", "winds", "brass", "other"]],
+    [upBowBtn, ["strings", "other"]],
+    [downBowBtn, ["strings", "other"]],
+    [hammerBtn, FRETTED],
+    [pullBtn, FRETTED],
+    [bendBtn, FRETTED],
+    [pluckBtn, FRETTED],
+    [holeBtn, ["winds", "other"]],
+    [arrowBtn, FRETTED],
+    [ornAccBtn, ORNATE],
+  ];
 
   const toShown = (p: number) => host.shown()?.indexOf(p) ?? p;
   const toFull = (rp: number) => host.shown()?.[rp] ?? rp;
@@ -348,6 +394,12 @@ export function createEditing(host: EditingHost): Editing {
     pressed(insertBtn, insert);
     pressed(keysBtn, !strip.hidden);
     pressed(marksBtn, !row3.hidden);
+    pressed(allBtn, allMarks);
+    const part = (sel?.at ?? caret)?.part ?? toFull(0);
+    const family = partFamily(editor.score.parts[part] ?? { id: "", name: "", abbreviation: "", program: null });
+    for (const [b, families] of fits) b.hidden = !allMarks && families !== "all" && !families.includes(family);
+    // Drums have no sharps or flats, and no keyboard to pick a pitch from.
+    for (const b of [...accBtns, keysBtn]) b.hidden = family === "drums";
     pressed(slurBtn, !!slurFrom);
     pressed(lyricsBtn, !lyricBar.hidden && fieldMode === "lyrics");
     pressed(fingerBtn, !lyricBar.hidden && fieldMode === "fingering");
