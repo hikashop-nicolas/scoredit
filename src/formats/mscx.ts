@@ -639,6 +639,11 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
                     for (const s of kids(c, "Spanner").filter((x) => x.getAttribute("type") === "Slur")) {
                       el(notations(), "slur", null, { type: kid(s, "next") ? "start" : "stop", number: 1 });
                     }
+                    // MuseScore 2 marks a slur's ends on the chords themselves (not yet seen in a real file).
+                    for (const s of kids(c, "Slur")) {
+                      const type = s.getAttribute("type");
+                      if (type === "start" || type === "stop") el(notations(), "slur", null, { type, number: 1 });
+                    }
                     const bows = kids(c, "Articulation").map((a) => TECHNICAL[text(a, "subtype")]).filter(Boolean);
                     if (bows.length) {
                       const tech = kid(notations(), "technical") ?? el(notations(), "technical");
@@ -698,9 +703,15 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
                       const pts = n ? Array.from(n.getElementsByTagName("Bend")[0]?.getElementsByTagName("point") ?? []).map((x) => Number(x.getAttribute("pitch")) || 0) : [];
                       const top = pts.length ? Math.max(...pts) : 0;
                       if (top > 0) {
+                        // OSMD draws each <bend> as one stroke: up (or already up), then the release.
                         const bend = el(tech, "bend");
                         el(bend, "bend-alter", top / 50);
-                        if (pts[pts.length - 1] < top) el(bend, "release");
+                        if (pts[0] >= top) el(bend, "pre-bend");
+                        if (pts[pts.length - 1] < top) {
+                          const back = el(tech, "bend");
+                          el(back, "bend-alter", top / 50);
+                          el(back, "release");
+                        }
                       }
                     }
                   }

@@ -20,6 +20,7 @@ const ICON_PAUSE = svgIcon('<rect x="6" y="4" width="4" height="16" fill="curren
 const ICON_KEYS = svgIcon('<rect x="3" y="13" width="18" height="8" rx="1"/><line x1="8" x2="8" y1="13" y2="21"/><line x1="13" x2="13" y1="13" y2="21"/><line x1="18" x2="18" y1="13" y2="21"/><line x1="6" x2="6" y1="3" y2="9"/><line x1="11" x2="11" y1="5" y2="11"/><line x1="16" x2="16" y1="2" y2="8"/>');
 const ICON_KBD = svgIcon('<rect x="2" y="6" width="20" height="12" rx="1"/><line x1="7" x2="7" y1="6" y2="18"/><line x1="12" x2="12" y1="6" y2="18"/><line x1="17" x2="17" y1="6" y2="18"/><rect x="5.5" y="6" width="3" height="7" fill="currentColor"/><rect x="15.5" y="6" width="3" height="7" fill="currentColor"/>');
 const ICON_TAB = '<span class="sv-tab-label" aria-hidden="true">TAB</span>';
+const ICON_FRETS = svgIcon('<rect x="2" y="7" width="20" height="10" rx="1"/><line x1="8" x2="8" y1="7" y2="17"/><line x1="14" x2="14" y1="7" y2="17"/><line x1="20" x2="20" y1="7" y2="17"/><line x1="2" x2="22" y1="10.5" y2="10.5"/><line x1="2" x2="22" y1="13.5" y2="13.5"/>');
 const ICON_LINE = svgIcon('<line x1="2" x2="22" y1="9" y2="9"/><line x1="2" x2="22" y1="15" y2="15"/><polyline points="17 5 21 12 17 19"/>');
 
 export interface BarOptions {
@@ -32,6 +33,9 @@ export interface BarOptions {
   onLayout(mode: LayoutMode): void;
   /** Shows or hides the keyboard strip under the score. */
   onKeyboard(on: boolean): void;
+  /** A fretboard strip, for scores played on frets (instead of the keyboard). */
+  fretboard?: boolean;
+  onFretboard?(on: boolean): void;
   onPlay(): void;
   /** Playback speed, 1 = as written. */
   onSpeed(speed: number): void;
@@ -119,9 +123,28 @@ export function createBar(o: BarOptions): Bar {
   const kbdBtn = button(ICON_KBD, t("keyboard"), () => {
     kbdOn = !kbdOn;
     kbdBtn.setAttribute("aria-pressed", String(kbdOn));
+    if (kbdOn && fretOn) {
+      fretOn = false;
+      fretBtn.setAttribute("aria-pressed", "false");
+      o.onFretboard?.(false);
+    }
     o.onKeyboard(kbdOn);
   });
   kbdBtn.setAttribute("aria-pressed", "false");
+  // Keyboard and fretboard share the space under the score: one at a time.
+  let fretOn = false;
+  const fretBtn = button(ICON_FRETS, t("fretboard"), () => {
+    fretOn = !fretOn;
+    fretBtn.setAttribute("aria-pressed", String(fretOn));
+    if (fretOn && kbdOn) {
+      kbdOn = false;
+      kbdBtn.setAttribute("aria-pressed", "false");
+      o.onKeyboard(false);
+    }
+    o.onFretboard?.(fretOn);
+  });
+  fretBtn.setAttribute("aria-pressed", "false");
+  fretBtn.hidden = !o.fretboard;
   const grow = document.createElement("span");
   grow.className = "sv-bb-grow";
   const slider = document.createElement("input");
@@ -136,7 +159,7 @@ export function createBar(o: BarOptions): Bar {
   slider.addEventListener("change", () => o.onZoomCommit());
   const label = document.createElement("span");
   label.className = "sv-zoom-label";
-  el.append(playBtn, speedBtn, pop, seg, kbdBtn);
+  el.append(playBtn, speedBtn, pop, seg, kbdBtn, fretBtn);
   if (o.tab) {
     let tabOn = o.tab.on;
     const tabBtn = button(ICON_TAB, t("tablature"), () => {
@@ -165,6 +188,7 @@ export function createBar(o: BarOptions): Bar {
       b.setAttribute("aria-pressed", String(k === m));
     }
     kbdBtn.hidden = m === "keys";
+    fretBtn.hidden = m === "keys" || !o.fretboard;
   };
   const sync = (z: number) => {
     slider.value = String(zoomToSlider(z));

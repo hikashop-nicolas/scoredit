@@ -3,6 +3,7 @@ import type { ScoreDoc } from "../model/score";
 import { clampZoom, createBar, type LayoutMode } from "../ui/bar";
 import { Player } from "../play/player";
 import { buildTimeline, type Timeline } from "../play/timeline";
+import { Fretboard, fretTuning, position } from "../ui/fretboard";
 import { Keyboard, flash } from "../ui/keyboard";
 import { createKeysView, noteColors } from "./keys-view";
 import { createLineView, type LineView } from "./line-view";
@@ -87,6 +88,8 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
     onPlay: () => togglePlay(),
     onSpeed: (v) => setSpeed(v),
     onKeyboard: (on) => showKeyboard(on),
+    fretboard: !!fretTuning(score, []),
+    onFretboard: (on) => showFretboard(on),
     tab: opts.tablature ? { on: opts.tablature.on, toggle: (on) => setScore(opts.tablature!.toggle(on)) } : undefined,
     onFullscreen: opts.onFullscreen,
   });
@@ -95,6 +98,29 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
   let timeline: Timeline | null = null;
   const getTimeline = () => (timeline ??= buildTimeline(score));
   let color = noteColors(score);
+
+  // The fretboard strip under the score, for fretted parts: positions lit as notes sound.
+  let frets: Fretboard | null = null;
+  let tuning: number[] = [];
+  function showFretboard(on: boolean): void {
+    if (on && !frets) {
+      const tl = getTimeline();
+      tuning = fretTuning(score, tl.events) ?? [];
+      if (!tuning.length) return;
+      frets = new Fretboard(tuning);
+      let top = 0;
+      for (const e of tl.events) top = Math.max(top, position(e, tuning)?.fret ?? 0);
+      frets.setFrets(top + 1);
+      const wrap = document.createElement("div");
+      wrap.className = "sv-kbd";
+      wrap.append(frets.canvas);
+      shell.insertBefore(wrap, bar.el);
+      requestAnimationFrame(() => frets?.draw());
+    } else if (!on && frets) {
+      frets.canvas.parentElement?.remove();
+      frets = null;
+    }
+  }
 
   // The keyboard strip under the score (page and line layouts), lit as notes sound.
   let kbd: Keyboard | null = null;
@@ -134,6 +160,13 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
       },
       onNotes: (evs, on) => {
         view.highlight(evs.map((e) => noteKey(e.measure, e.onset)), on);
+        if (frets) {
+          for (const e of evs) {
+            const at = position(e, tuning);
+            if (at) frets.set(`${e.part}:${e.midi}`, on ? { ...at, color: color(e) } : null);
+          }
+          frets.draw();
+        }
         if (kbd) {
           const k = kbd;
           // A key struck again flashes lighter for a moment, then takes its colour.
@@ -191,6 +224,7 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
       view = falls;
     } else view = mode === "page" ? createPageView(score, { ...common, zoom: pageZoom, onSystemRendered: opts.onSystemRendered }) : createLineView(score, { ...common, zoom: pageZoom });
     if (kbd) kbd.canvas.parentElement!.hidden = mode === "keys";
+    if (frets) frets.canvas.parentElement!.hidden = mode === "keys";
     shown = view.zoom;
     shell.prepend(view.root);
     bar.sync(view.zoom);
@@ -211,6 +245,10 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
     if (kbd) {
       showKeyboard(false);
       showKeyboard(true);
+    }
+    if (frets) {
+      showFretboard(false);
+      showFretboard(true);
     }
     mount();
   }

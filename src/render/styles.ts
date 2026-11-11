@@ -32,6 +32,7 @@ const CSS = `
 .sv-seg .sv-bb-btn:last-child{border-radius:0 5px 5px 0}
 .sv-bb-btn.is-on,.sv-bb-btn[aria-pressed="true"]{background:var(--sv-accent,#6e7bff);border-color:var(--sv-accent,#6e7bff);color:#fff}
 .sv-keys{display:block;width:100%;flex:0 0 auto;height:clamp(56px,14vh,110px)}
+.sv-frets{height:clamp(84px,18vh,150px)}
 .sv-keys-big{height:clamp(70px,20%,150px)}
 .sv-kbd{flex:0 0 auto;border-top:1px solid var(--sv-border,#1c1f24)}
 .sv-falls{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;background:#121418}

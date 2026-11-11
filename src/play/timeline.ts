@@ -1,5 +1,6 @@
 import type { ScoreDoc } from "../model/score";
 import { kid, kids, text } from "../model/xml";
+import type { Bend } from "./pluck";
 
 export interface NoteEvent {
   /** Start and length in seconds, in played order (repeats unrolled). */
@@ -24,6 +25,10 @@ export interface NoteEvent {
   mordent?: number;
   /** A turn: the quick notes it plays before settling on the main note. */
   turn?: number[];
+  /** Guitar bend, and where the note is played (string 1 = highest), when the score says. */
+  bend?: Bend;
+  string?: number;
+  fret?: number;
   tremolo?: { type: string; strokes: number; quarters: number };
 }
 
@@ -367,6 +372,21 @@ export function buildTimeline(score: ScoreDoc, opts: { straight?: boolean } = {}
             } else if (c.getElementsByTagName("mordent").length) {
               ev.mordent = lowerNeighbour(text(pitch, "step"), Number(text(pitch, "octave")), fifths, override) + shift;
             }
+            const tech = c.getElementsByTagName("technical")[0];
+            if (tech) {
+              const st = Number(text(tech, "string"));
+              const fr = text(tech, "fret");
+              if (st > 0 && fr !== "") {
+                ev.string = st;
+                ev.fret = Number(fr);
+              }
+              const bends = Array.from(tech.getElementsByTagName("bend"));
+              const up = bends.find((b) => !kid(b, "release"));
+              if (up || bends.length) {
+                const alter = Number(text(up ?? bends[0], "bend-alter")) || 0;
+                ev.bend = { alter: Math.abs(alter), release: bends.some((b) => !!kid(b, "release")), pre: !!(up && kid(up, "pre-bend")) };
+              }
+            }
             const trem = c.getElementsByTagName("tremolo")[0];
             if (trem) ev.tremolo = { type: trem.getAttribute("type") ?? "single", strokes: Number(trem.textContent) || 2, quarters: q };
             events.push(ev);
@@ -431,13 +451,22 @@ function neighbour(step: string, oct: number, fifths: number, alter?: number): n
   return (oct + 1) * 12 + STEP[step] + (alter ?? inKey);
 }
 
-// The same note twice at once in one part (a tab staff linked to the standard staff) sounds once.
+// The same note twice at once in one part (a tab staff linked to the standard staff) sounds
+// once, keeping the string, fret and bend the tab staff gives.
 function dedupe(events: NoteEvent[]): NoteEvent[] {
-  const seen = new Set<string>();
+  const seen = new Map<string, NoteEvent>();
   return events.filter((e) => {
     const k = `${e.part}|${Math.round(e.time * 1000)}|${e.midi}`;
-    if (seen.has(k)) return false;
-    seen.add(k);
+    const first = seen.get(k);
+    if (first) {
+      if (first.string === undefined && e.string !== undefined) {
+        first.string = e.string;
+        first.fret = e.fret;
+      }
+      first.bend ??= e.bend;
+      return false;
+    }
+    seen.set(k, e);
     return true;
   });
 }

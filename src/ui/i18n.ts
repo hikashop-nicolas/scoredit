@@ -4,14 +4,14 @@
 
 export type Dict = Record<string, string>;
 
-const en: Dict = { tablature: "Tablature", keysView: "Falling notes", keyboard: "Keyboard", speed: "Speed", play: "Play", pause: "Pause", pageView: "Page view", lineView: "Line view", zoom: "Zoom", fullscreen: "Fullscreen", exitFullscreen: "Exit fullscreen" };
-const fr: Dict = { tablature: "Tablature", keysView: "Notes qui tombent", keyboard: "Clavier", speed: "Vitesse", play: "Lecture", pause: "Pause", pageView: "Vue page", lineView: "Vue en ligne", zoom: "Zoom", fullscreen: "Plein écran", exitFullscreen: "Quitter le plein écran" };
-const ja: Dict = { tablature: "タブ譜", keysView: "落ちてくる音符", keyboard: "鍵盤", speed: "速度", play: "再生", pause: "一時停止", pageView: "ページ表示", lineView: "横一列表示", zoom: "ズーム", fullscreen: "全画面表示", exitFullscreen: "全画面表示を終了" };
-const es: Dict = { tablature: "Tablatura", keysView: "Notas que caen", keyboard: "Teclado", speed: "Velocidad", play: "Reproducir", pause: "Pausa", pageView: "Vista de página", lineView: "Vista en línea", zoom: "Zoom", fullscreen: "Pantalla completa", exitFullscreen: "Salir de pantalla completa" };
-const de: Dict = { tablature: "Tabulatur", keysView: "Fallende Noten", keyboard: "Klaviatur", speed: "Tempo", play: "Abspielen", pause: "Pause", pageView: "Seitenansicht", lineView: "Zeilenansicht", zoom: "Zoom", fullscreen: "Vollbild", exitFullscreen: "Vollbild beenden" };
-const pt: Dict = { tablature: "Tablatura", keysView: "Notas caindo", keyboard: "Teclado", speed: "Velocidade", play: "Reproduzir", pause: "Pausar", pageView: "Vista de página", lineView: "Vista em linha", zoom: "Zoom", fullscreen: "Tela cheia", exitFullscreen: "Sair da tela cheia" };
-const ru: Dict = { tablature: "Табулатура", keysView: "Падающие ноты", keyboard: "Клавиатура", speed: "Скорость", play: "Воспроизвести", pause: "Пауза", pageView: "Постранично", lineView: "В одну строку", zoom: "Масштаб", fullscreen: "Во весь экран", exitFullscreen: "Выйти из полноэкранного режима" };
-const zh: Dict = { tablature: "六线谱", keysView: "下落音符", keyboard: "键盘", speed: "速度", play: "播放", pause: "暂停", pageView: "页面视图", lineView: "单行视图", zoom: "缩放", fullscreen: "全屏", exitFullscreen: "退出全屏" };
+const en: Dict = { fretboard: "Fretboard", tablature: "Tablature", keysView: "Falling notes", keyboard: "Keyboard", speed: "Speed", play: "Play", pause: "Pause", pageView: "Page view", lineView: "Line view", zoom: "Zoom", fullscreen: "Fullscreen", exitFullscreen: "Exit fullscreen" };
+const fr: Dict = { fretboard: "Manche", tablature: "Tablature", keysView: "Notes qui tombent", keyboard: "Clavier", speed: "Vitesse", play: "Lecture", pause: "Pause", pageView: "Vue page", lineView: "Vue en ligne", zoom: "Zoom", fullscreen: "Plein écran", exitFullscreen: "Quitter le plein écran" };
+const ja: Dict = { fretboard: "指板", tablature: "タブ譜", keysView: "落ちてくる音符", keyboard: "鍵盤", speed: "速度", play: "再生", pause: "一時停止", pageView: "ページ表示", lineView: "横一列表示", zoom: "ズーム", fullscreen: "全画面表示", exitFullscreen: "全画面表示を終了" };
+const es: Dict = { fretboard: "Diapasón", tablature: "Tablatura", keysView: "Notas que caen", keyboard: "Teclado", speed: "Velocidad", play: "Reproducir", pause: "Pausa", pageView: "Vista de página", lineView: "Vista en línea", zoom: "Zoom", fullscreen: "Pantalla completa", exitFullscreen: "Salir de pantalla completa" };
+const de: Dict = { fretboard: "Griffbrett", tablature: "Tabulatur", keysView: "Fallende Noten", keyboard: "Klaviatur", speed: "Tempo", play: "Abspielen", pause: "Pause", pageView: "Seitenansicht", lineView: "Zeilenansicht", zoom: "Zoom", fullscreen: "Vollbild", exitFullscreen: "Vollbild beenden" };
+const pt: Dict = { fretboard: "Braço", tablature: "Tablatura", keysView: "Notas caindo", keyboard: "Teclado", speed: "Velocidade", play: "Reproduzir", pause: "Pausar", pageView: "Vista de página", lineView: "Vista em linha", zoom: "Zoom", fullscreen: "Tela cheia", exitFullscreen: "Sair da tela cheia" };
+const ru: Dict = { fretboard: "Гриф", tablature: "Табулатура", keysView: "Падающие ноты", keyboard: "Клавиатура", speed: "Скорость", play: "Воспроизвести", pause: "Пауза", pageView: "Постранично", lineView: "В одну строку", zoom: "Масштаб", fullscreen: "Во весь экран", exitFullscreen: "Выйти из полноэкранного режима" };
+const zh: Dict = { fretboard: "指板", tablature: "六线谱", keysView: "下落音符", keyboard: "键盘", speed: "速度", play: "播放", pause: "暂停", pageView: "页面视图", lineView: "单行视图", zoom: "缩放", fullscreen: "全屏", exitFullscreen: "退出全屏" };
 
 const LOCALES: Record<string, Dict> = { en, fr, ja, es, de, pt, ru, zh };
 

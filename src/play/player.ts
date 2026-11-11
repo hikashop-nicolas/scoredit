@@ -1,4 +1,5 @@
 import WebAudioTinySynth from "../vendor/tinysynth.js";
+import { PLUCKED, Pluck } from "./pluck";
 import { quarterToSec, type MeasureSpan, type NoteEvent, type Timeline } from "./timeline";
 
 export interface PlayPosition {
@@ -21,6 +22,12 @@ const LOOKAHEAD = 0.25;
 const TICK_MS = 25;
 
 let shared: WebAudioTinySynth | null = null;
+let plucked: Pluck | null = null;
+// Plucked instruments play on their own synth, on the same audio clock.
+function pluck(): Pluck {
+  plucked ??= new Pluck(synth().getAudioContext());
+  return plucked;
+}
 // One synthesizer for the page, created on the first play (a user gesture lets audio start).
 function synth(): WebAudioTinySynth {
   shared ??= new WebAudioTinySynth({ quality: 1, useReverb: 1, voices: 64 });
@@ -117,6 +124,7 @@ export class Player {
       s.send([0xb0 | ch, 64, 0]);
       s.send([0xb0 | ch, 120, 0]);
     }
+    plucked?.stopAll();
     if (this.sounding.length) this.opts.onNotes?.(this.sounding, false);
     this.sounding = [];
     this.opts.onStateChange?.(false);
@@ -163,8 +171,12 @@ export class Player {
       const e = evs[this.next++];
       const on = this.startAt + e.time / this.speed;
       const off = on + Math.max(0.05, e.dur / this.speed - 0.01);
-      s.send([0x90 | e.channel, e.midi, e.velocity], on);
-      s.send([0x80 | e.channel, e.midi, 0], off);
+      const program = this.timeline.programs.get(e.channel);
+      if (program !== undefined && PLUCKED.has(program)) pluck().play(program, e.midi, on, off - on, e.velocity, e.bend);
+      else {
+        s.send([0x90 | e.channel, e.midi, e.velocity], on);
+        s.send([0x80 | e.channel, e.midi, 0], off);
+      }
     }
     const ctl = this.timeline.controls;
     while (this.nextCtl < ctl.length && ctl[this.nextCtl].time <= horizon) {
