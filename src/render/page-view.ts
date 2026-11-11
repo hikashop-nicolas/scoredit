@@ -275,12 +275,31 @@ export function createPageView(score: ScoreDoc, opts: ViewOptions): PageView {
   // Playback: a cursor in the playing system; the page scrolls when it leaves the view.
   const cursor = document.createElement("div");
   cursor.className = "sv-cursor";
+  // Following: scroll to the playing system when it changes or leaves the view, even before it
+  // is drawn (it is drawn once in view). A system taller than the view (a full orchestra on a
+  // phone) is scrolled to once, then left for the reader to move around in.
+  let followed = -1;
   function showPosition(m: number, q: number, quarters: number, follow: boolean): void {
     const i = systemOf(systems, m);
     const s = slots[i];
     if (!s) return;
+    if (follow) {
+      const top = s.el.offsetTop - page.offsetTop;
+      const bottom = top + s.el.offsetHeight;
+      const view = root.clientHeight;
+      const tall = s.el.offsetHeight > view;
+      const outside = top < root.scrollTop - 1 || top > root.scrollTop + view - 40 || (!tall && bottom > root.scrollTop + view);
+      if (i !== followed || (!tall && outside)) {
+        root.scrollTo({ top: Math.max(0, top - 12), behavior: i === followed + 1 ? "smooth" : "auto" });
+        followed = i;
+        schedule();
+      }
+    }
     const x = s.pos ? xAt(s.pos, m, q, quarters) : null;
-    if (x === null) return;
+    if (x === null) {
+      cursor.hidden = true;
+      return;
+    }
     if (cursor.parentElement !== s.el) s.el.append(cursor);
     cursor.hidden = false;
     cursor.style.transform = `translateX(${x}px)`;
@@ -289,11 +308,6 @@ export function createPageView(score: ScoreDoc, opts: ViewOptions): PageView {
       cursor.style.top = `${s.pos.top - pad}px`;
       cursor.style.bottom = "auto";
       cursor.style.height = `${s.pos.bottom - s.pos.top + 2 * pad}px`;
-    }
-    if (follow) {
-      const top = s.el.offsetTop - page.offsetTop;
-      const bottom = top + s.el.offsetHeight;
-      if (top < root.scrollTop || bottom > root.scrollTop + root.clientHeight) root.scrollTo({ top: Math.max(0, top - 12), behavior: "smooth" });
     }
   }
   function highlight(keys: string[], on: boolean): void {
