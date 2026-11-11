@@ -1,7 +1,7 @@
 import type { ScoreDoc } from "../model/score";
 import { kid, kids, text } from "../model/xml";
 import { readMeasure, voiceKey, writeMeasure, type Event, type ReadMeasure } from "./measure";
-import { TYPES, isTied, placeInNote, keyAlter, makeNote, midiOf, pieceOf, readPitch, setPitch, setTie, spellMidi, splitLength, type Pitch, type Written } from "./notes";
+import { TYPES, isTied, placeInNote, writtenFor, keyAlter, makeNote, midiOf, pieceOf, readPitch, setPitch, setTie, spellMidi, splitLength, type Pitch, type Written } from "./notes";
 
 /** Where the next note goes: a beat in one voice of one staff of a part. */
 export interface Caret {
@@ -38,6 +38,15 @@ interface Seg {
   tieIn: boolean;
   tieOut: boolean;
   intact: Element[] | null;
+  /** A tuplet member: its ratio, written value and bracket marks, kept when the slot is filled. */
+  tuplet?: Tuplet;
+}
+
+interface Tuplet {
+  ratio: Element;
+  type: string;
+  dots: number;
+  marks: Element[];
 }
 
 interface Entry {
@@ -110,7 +119,7 @@ export class ScoreEditor {
     return this.transact(() => {
       this.makeFine(caret.part);
       const { perQuarter } = this.info(caret.part, caret.measure);
-      const len = Math.round(input.quarters * perQuarter);
+      let len = Math.round(input.quarters * perQuarter);
       const staves = this.staves(caret.part);
       const doc = this.score.doc;
       const tmpl = input.pitches?.map((p) => makeNote(doc, { pitch: p, divs: 0, written: null, voice: caret.voice, staff: staves > 1 ? caret.staff : undefined })) ?? null;
@@ -125,6 +134,11 @@ export class ScoreEditor {
         const { length } = this.info(caret.part, m);
         const segs = this.segsOf(caret.part, m, key, length);
         const [before, from] = cut(segs, pos);
+        // Written into a tuplet's slot, a note takes the slot's length and ratio.
+        if (m === caret.measure && !opts.insert && from[0]?.tuplet && from[0].intact) {
+          len = from[0].len;
+          incoming = [{ ...incoming[0], len, tuplet: from[0].tuplet }];
+        }
         const room = length - pos;
         let laid: Seg[];
         if (opts.insert) {
@@ -212,6 +226,50 @@ export class ScoreEditor {
       base.after(n);
       const r = readMeasure(this.score.measures[caret.part][caret.measure]);
       writeMeasure(this.score.measures[caret.part][caret.measure], r);
+      return { from: caret.measure, to: caret.measure + 1, appended: 0 };
+    });
+  }
+
+  /**
+   * Makes a tuplet at the caret: `actual` rests in the time of `normal`, together `quarters`
+   * long (a triplet of eighths: quarters 1, actual 3, normal 2). It stays within the bar.
+   */
+  tuplet(caret: Caret, quarters: number, actual = 3, normal = 2): Change {
+    return this.transact(() => {
+      this.makeFine(caret.part);
+      const { perQuarter, length } = this.info(caret.part, caret.measure);
+      const pos = Math.round(caret.pos * perQuarter);
+      const len = Math.round(quarters * perQuarter);
+      const member = len / actual;
+      const w = writtenFor(len / normal, perQuarter);
+      if (!w || !Number.isInteger(member) || pos + len > length) return { from: caret.measure, to: caret.measure, appended: 0 };
+      const key = voiceKey(caret.staff, caret.voice);
+      const segs = this.segsOf(caret.part, caret.measure, key, length);
+      const [before, rest] = cut(segs, pos);
+      const [, after] = cut(rest, len);
+      const doc = this.score.doc;
+      const ratio = doc.createElementNS(null, "time-modification");
+      for (const [tag, v] of [["actual-notes", actual], ["normal-notes", normal]] as const) {
+        const e = doc.createElementNS(null, tag);
+        e.textContent = String(v);
+        ratio.appendChild(e);
+      }
+      const mark = (type: string) => {
+        const e = doc.createElementNS(null, "tuplet");
+        e.setAttribute("type", type);
+        if (type === "start") e.setAttribute("bracket", "yes");
+        return e;
+      };
+      const slots: Seg[] = Array.from({ length: actual }, (_, i) => ({
+        len: member,
+        notes: null,
+        graces: [],
+        tieIn: false,
+        tieOut: false,
+        intact: null,
+        tuplet: { ratio, type: w.type, dots: w.dots, marks: i === 0 ? [mark("start")] : i === actual - 1 ? [mark("stop")] : [] },
+      }));
+      this.writeVoice(caret.part, caret.measure, key, [...before, ...slots, ...after], length);
       return { from: caret.measure, to: caret.measure + 1, appended: 0 };
     });
   }
@@ -398,6 +456,7 @@ export class ScoreEditor {
         tieIn: !ev.rest && isTied(ev.notes[0], "stop"),
         tieOut: !ev.rest && isTied(ev.notes[0], "start"),
         intact: [...ev.graces, ...ev.notes],
+        tuplet: tupletOf(ev.notes[0]),
       });
       at = Math.max(at, ev.pos + ev.dur);
     }
@@ -422,7 +481,7 @@ export class ScoreEditor {
     const merged: Seg[] = [];
     for (const seg of segs) {
       const prev = merged[merged.length - 1];
-      if (prev && !prev.notes && !seg.notes) merged[merged.length - 1] = { ...prev, len: prev.len + seg.len, intact: null };
+      if (prev && !prev.notes && !seg.notes && !prev.tuplet && !seg.tuplet) merged[merged.length - 1] = { ...prev, len: prev.len + seg.len, intact: null };
       else merged.push(seg);
     }
     for (const seg of merged) {
@@ -430,6 +489,20 @@ export class ScoreEditor {
         events.push({ pos, dur: seg.len, graces: seg.intact.filter((e) => kid(e, "grace")), notes: seg.intact.filter((e) => !kid(e, "grace")), rest: !seg.notes });
       } else if (!seg.notes && seg.len === length && pos === 0 && key === first) {
         events.push({ pos, dur: length, graces: [], notes: [makeNote(doc, { pitch: null, divs: length, written: null, voice, staff: staves > 1 ? staff : undefined, measureRest: true })], rest: true });
+      } else if (seg.tuplet) {
+        const tp = seg.tuplet;
+        const w = { type: tp.type, dots: tp.dots, divs: seg.len };
+        const notes = seg.notes
+          ? seg.notes.map((t) => {
+              const c = pieceOf(t, seg.len, w);
+              for (const v of kids(c, "voice")) v.textContent = voice;
+              if (seg.tieIn) setTie(c, "stop", true);
+              if (seg.tieOut) setTie(c, "start", true);
+              return c;
+            })
+          : [makeNote(doc, { pitch: null, divs: seg.len, written: w, voice, staff: staves > 1 ? staff : undefined })];
+        for (const n of notes) markTuplet(n, tp);
+        events.push({ pos, dur: seg.len, graces: seg.graces, notes, rest: !seg.notes });
       } else {
         const pieces = seg.notes ? splitLength(seg.len, perQuarter) : splitRest(pos, seg.len, perQuarter);
         let at = pos;
@@ -530,6 +603,28 @@ export class ScoreEditor {
   }
 }
 
+function tupletOf(note: Element): Tuplet | undefined {
+  const ratio = kid(note, "time-modification");
+  if (!ratio) return undefined;
+  const nots = kid(note, "notations");
+  return {
+    ratio: ratio.cloneNode(true) as Element,
+    type: text(note, "type"),
+    dots: kids(note, "dot").length,
+    marks: nots ? kids(nots, "tuplet").map((t) => t.cloneNode(true) as Element) : [],
+  };
+}
+
+/** Gives a note its tuplet ratio and bracket marks. */
+function markTuplet(note: Element, tp: Tuplet): void {
+  placeInNote(note, tp.ratio.cloneNode(true) as Element);
+  const old = kid(note, "notations");
+  for (const t of old ? kids(old, "tuplet") : []) t.remove();
+  if (!tp.marks.length) return;
+  const nots = old ?? placeInNote(note, note.ownerDocument.createElementNS(null, "notations"));
+  for (const mk of tp.marks) nots.appendChild(mk.cloneNode(true));
+}
+
 /** Rests as MuseScore writes them: plain values, each starting on a multiple of its length. */
 function splitRest(pos: number, len: number, perQuarter: number): Written[] {
   const out: Written[] = [];
@@ -575,7 +670,6 @@ function beam(events: Event[], perQuarter: number, beatLen: number): void {
   const level = (ev: Event) => {
     if (ev.rest) return 0;
     const n = ev.notes[0];
-    if (kid(n, "time-modification")) return -1;
     const t = text(n, "type");
     return { eighth: 1, "16th": 2, "32nd": 3, "64th": 4, "128th": 5 }[t] ?? 0;
   };

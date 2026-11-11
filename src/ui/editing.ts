@@ -46,6 +46,7 @@ const ICONS = {
   rest: svg('<path d="M10 3l4 5-4 4 4 5c-3-1-5 0-4 4"/>'),
   dot: svg('<circle cx="12" cy="12" r="3" fill="currentColor"/>'),
   tie: svg('<path d="M4 11c4 6 12 6 16 0"/>'),
+  triplet: svg('<polyline points="4 9 4 5 20 5 20 9"/><text x="12" y="19" text-anchor="middle" font-size="11" font-weight="700" fill="currentColor" stroke="none">3</text>'),
   del: svg('<polyline points="4 7 20 7"/><path d="M6 7l1 13h10l1-13"/><path d="M9 7V4h6v3"/>'),
   undo: svg('<polyline points="9 14 4 9 9 4"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/>'),
   redo: svg('<polyline points="15 14 20 9 15 4"/><path d="M20 9H10a6 6 0 0 0 0 12h3"/>'),
@@ -143,7 +144,8 @@ export function createEditing(host: EditingHost): Editing {
   const dotBtn = button(ICONS.dot, t("dot"), () => toggleDot());
   const restBtn = button(ICONS.rest, t("rest"), () => rest());
   const tieBtn = button(ICONS.tie, t("tie"), () => tie());
-  row1.append(inputBtn, ...durBtns, dotBtn, restBtn, tieBtn);
+  const tripletBtn = button(ICONS.triplet, t("triplet"), () => triplet());
+  row1.append(inputBtn, ...durBtns, dotBtn, restBtn, tieBtn, tripletBtn);
   const accBtns = ([[1, "♯", "sharp"], [-1, "♭", "flat"], [0, "♮", "natural"]] as const).map(([alter, glyph, label]) => button(`<span class="sv-glyph">${glyph}</span>`, t(label), () => accidental(alter)));
   const voiceBtn = button("", t("voice"), () => {
     voiceN = (voiceN % 4) + 1;
@@ -286,6 +288,15 @@ export function createEditing(host: EditingHost): Editing {
     const r = editor.tie(sel.at);
     if (input) caret = r.caret;
     landed(r.change);
+  }
+
+  /** A triplet the length of the chosen value at the caret; its slots fill as notes come. */
+  function triplet(): void {
+    const at = caret ?? sel?.at;
+    if (!at) return;
+    if (!input) setInput(true);
+    caret = { ...at };
+    landed(editor.tuplet(caret, durQ()));
   }
 
   function remove(): void {
@@ -532,6 +543,7 @@ export function createEditing(host: EditingHost): Editing {
       return true;
     }
     if (mod && (k === "y" || k === "Y")) return redo(), true;
+    if (mod && !e.altKey && e.code === "Digit3") return triplet(), true;
     if (mod && e.altKey && /^[1-4]$/.test(e.code.replace("Digit", ""))) {
       voiceN = Number(e.code.replace("Digit", ""));
       if (caret) caret = { ...caret, voice: editor.voiceId(caret.part, caret.staff, voiceN) };

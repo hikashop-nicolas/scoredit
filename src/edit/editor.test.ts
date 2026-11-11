@@ -131,4 +131,21 @@ describe("Entering notes", () => {
     ed.remove(at(0, 0.5, s));
     expect(show(s, 0)).toBe("C4:0.5 r:0.5 E4:0.5 F4:0.5 r:2");
   });
+
+  it("makes a triplet and fills its slots", () => {
+    const s = score(rest);
+    const ed = new ScoreEditor(s);
+    ed.tuplet(at(0, 0), 1);
+    let c = at(0, 0);
+    for (const step of "CDE") c = ed.enter(c, { pitches: [P(step)], quarters: 0.5 }).caret;
+    expect(c.pos).toBeCloseTo(1, 6);
+    const notes = Array.from(s.measures[0][0].getElementsByTagName("note")).slice(0, 3);
+    expect(notes.map((n) => [text(n, "type"), n.getElementsByTagName("actual-notes")[0]?.textContent])).toEqual([
+      ["eighth", "3"],
+      ["eighth", "3"],
+      ["eighth", "3"],
+    ]);
+    expect(notes.map((n) => n.getElementsByTagName("tuplet")[0]?.getAttribute("type") ?? "")).toEqual(["start", "", "stop"]);
+    expect(buildTimeline(s).events.map((e) => Math.round(e.onset * 300) / 300)).toEqual([0, 1 / 3, 2 / 3].map((x) => Math.round(x * 300) / 300));
+  });
 });
