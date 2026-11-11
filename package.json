@@ -11,12 +11,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    },
-    "./sounds/*": "./sounds/*"
+    }
   },
   "files": [
-    "dist",
-    "sounds"
+    "dist"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",

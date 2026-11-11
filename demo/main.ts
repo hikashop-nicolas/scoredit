@@ -1,4 +1,7 @@
-import { createScoreViewer, loadScore, type ScoreViewerHandle } from "../src/index";
+import { SOUNDS_CDN, createScoreViewer, loadScore, remoteSounds, type ScoreViewerHandle } from "../src/index";
+
+// Recorded sounds: from the local corpus copy of scoredit-sounds, or ?sounds=cdn for jsDelivr.
+const sounds = remoteSounds({ base: new URLSearchParams(location.search).get("sounds") === "cdn" ? SOUNDS_CDN : new URL("corpus/sounds/gm/", location.href).href });
 
 const host = document.getElementById("score")!;
 const stats = document.getElementById("stats")!;
@@ -22,6 +25,7 @@ function open(bytes: Uint8Array, name: string): void {
     viewer = createScoreViewer(host, score, {
       layout: ((l) => (l === "line" || l === "keys" ? l : "page"))(new URLSearchParams(location.search).get("layout")),
       onError: (e) => console.error(e),
+      sounds,
       tablature: loaded.fretted ? { on: loaded.tab, toggle: (on) => loadScore(bytes, { tab: on ? "always" : "never" }).score } : undefined,
       onFullscreen: () => (document.fullscreenElement ? void document.exitFullscreen() : void host.requestFullscreen()),
       onSystemRendered: (i, ms) => {

@@ -24,6 +24,15 @@ viewer.setZoom(1.2);
 viewer.destroy();
 ```
 
+## Sound
+
+Playback starts on a built-in synthesizer (webaudio-tinysynth, Apache-2.0) and a plucked-string
+model, which need no download. With a `sounds` source, the instruments a score uses are
+replaced by recordings as they arrive: `remoteSounds({ base: SOUNDS_CDN, ask })` fetches them
+from [scoredit-sounds](https://github.com/hikashop-nicolas/scoredit-sounds) (MuseScore_General,
+MIT; most instruments are under 0.5 MB, the piano 15 MB), asks the host first through `ask`,
+and keeps them in Cache Storage. scoredit itself never downloads anything.
+
 ## Develop
 
 ```sh

@@ -28,6 +28,7 @@ export class Sampler {
     private ctx: AudioContext,
     private syn: Processor,
     readonly programs: Set<number>,
+    private core: Core,
   ) {
     // Recorded samples sit lower than the FM synth: lift them, and keep full chords from clipping.
     this.out = ctx.createGain();
@@ -41,20 +42,34 @@ export class Sampler {
     this.out.connect(limit).connect(ctx.destination);
   }
 
-  /** Loads a sound pack; null if it cannot be read. */
-  static async create(ctx: AudioContext, bytes: ArrayBuffer): Promise<Sampler | null> {
+  /** An empty sampler; sound files are added with addBank. Null if the synth cannot load. */
+  static async create(ctx: AudioContext, bytes?: ArrayBuffer): Promise<Sampler | null> {
     try {
       const core: Core = await import("spessasynth_core");
       await core.BasicSoundBank.ready;
-      const bank = core.SoundBankLoader.fromArrayBuffer(bytes);
       const syn = new core.SpessaSynthProcessor(ctx.sampleRate, { effectsEnabled: false, eventsEnabled: false });
-      syn.soundBankManager.addSoundBank(bank, "pack");
-      const programs = new Set(bank.presets.filter((p) => !p.isGMGSDrum && p.bankMSB === 0).map((p) => p.program));
-      if (bank.presets.some((p) => p.isGMGSDrum)) programs.add(DRUMS);
-      return new Sampler(ctx, syn, programs);
+      const sampler = new Sampler(ctx, syn, new Set(), core);
+      if (bytes) sampler.addBank(bytes);
+      return sampler;
     } catch (e) {
-      console.warn("scoredit: sound pack not loaded", e);
+      console.warn("scoredit: sampler not loaded", e);
       return null;
+    }
+  }
+
+  private banks = 0;
+
+  /** Adds a SoundFont (SF2/SF3); its instruments take over from the built-in sound. */
+  addBank(bytes: ArrayBuffer): void {
+    try {
+      const bank = this.core.SoundBankLoader.fromArrayBuffer(bytes);
+      this.syn.soundBankManager.addSoundBank(bank, `bank${this.banks++}`);
+      for (const p of bank.presets) {
+        if (p.isGMGSDrum) this.programs.add(DRUMS);
+        else if (p.bankMSB === 0) this.programs.add(p.program);
+      }
+    } catch (e) {
+      console.warn("scoredit: sound file not read", e);
     }
   }
 
@@ -127,7 +142,9 @@ export class Sampler {
   // One note held for a few seconds (low notes longer), as the pack plays it.
   private render(program: number, midi: number): AudioBuffer {
     const sr = this.ctx.sampleRate;
-    const seconds = Math.min(5, Math.max(2.5, 4.5 - (midi - 40) * 0.03));
+    // Struck sounds die away; held ones (strings, winds, organ) last as long as a long note.
+    const struck = program === DRUMS || program < 16 || (program >= 24 && program < 40) || program === 46 || (program >= 104 && program < 120);
+    const seconds = struck ? Math.min(5, Math.max(2.5, 4.5 - (midi - 40) * 0.03)) : 8;
     const n = Math.round(sr * seconds);
     const buf = this.ctx.createBuffer(2, n, sr);
     const left = buf.getChannelData(0);

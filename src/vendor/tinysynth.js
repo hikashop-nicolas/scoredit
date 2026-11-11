@@ -1,7 +1,8 @@
 // webaudio-tinysynth 1.1.3 by g200kg (https://github.com/g200kg/webaudio-tinysynth),
 // Apache License 2.0 (http://www.apache.org/licenses/LICENSE-2.0). Vendored for scoredit as
 // an ES module: the custom-element GUI and the UMD wrapper are removed, the global window is
-// globalThis, and its console logging is silenced. The synthesis code is unchanged.
+// globalThis, its console logging is silenced, and it does not try to resume an offline
+// context (so it can render offline). The synthesis code is unchanged.
 /* eslint-disable */
 "use strict";
 const window = globalThis;
@@ -1217,8 +1218,8 @@ function WebAudioTinySynthCore(target) {
       const cmd=msg[0]&~0xf;
       if(cmd<0x80||cmd>=0x100)
         return;
-      if(this.audioContext.state=="suspended"){
-        this.audioContext.resume();
+      if(this.audioContext.state=="suspended" && typeof this.audioContext.resume=="function" && !(typeof OfflineAudioContext!="undefined" && this.audioContext instanceof OfflineAudioContext)){
+        this.audioContext.resume().catch(()=>{});
       }
       switch(cmd){
       case 0xb0:  /* ctl change */

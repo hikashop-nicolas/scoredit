@@ -1,6 +1,7 @@
 import WebAudioTinySynth from "../vendor/tinysynth.js";
 import { PLUCKED, Pluck } from "./pluck";
-import { Sampler } from "./sampler";
+import { DRUMS, Sampler } from "./sampler";
+import type { SoundDownloads } from "./sounds";
 import { quarterToSec, type MeasureSpan, type NoteEvent, type Timeline } from "./timeline";
 
 export interface PlayPosition {
@@ -11,22 +12,9 @@ export interface PlayPosition {
   quarter: number;
 }
 
-/** Where the recorded plucked instruments come from (an SF2/SF3 pack); null: none. */
-export type SoundPack = () => Promise<ArrayBuffer | null>;
-
-/** The plucked pack scoredit ships, next to the package. */
-export const defaultPluckedPack: SoundPack = async () => {
-  try {
-    const res = await fetch(new URL("../../sounds/plucked.sf3", import.meta.url));
-    return res.ok ? await res.arrayBuffer() : null;
-  } catch {
-    return null;
-  }
-};
-
 export interface PlayerOptions {
-  /** Recorded plucked instruments; without it, they play on the string model. */
-  pluckedPack?: SoundPack | null;
+  /** Recorded instrument sounds; without them, the built-in synth and string model play. */
+  sounds?: SoundDownloads | null;
   /** Every animation frame while playing. */
   onPosition?(pos: PlayPosition): void;
   /** Notes starting (true) and ending (false), at the moment they sound. */
@@ -39,9 +27,10 @@ const TICK_MS = 25;
 
 let shared: WebAudioTinySynth | null = null;
 let plucked: Pluck | null = null;
-// The recorded pack, loaded once for the page.
+// The recorded instruments, one sampler for the page.
 let sampler: Promise<Sampler | null> | null = null;
 let samplerReady: Sampler | null = null;
+const programOf = (tl: Timeline, channel: number) => (channel === 9 ? DRUMS : tl.programs.get(channel));
 // Plucked instruments play on their own synth, on the same audio clock.
 function pluck(): Pluck {
   plucked ??= new Pluck(synth().getAudioContext());
@@ -183,20 +172,25 @@ export class Player {
     this.pause();
   }
 
-  // Loads the recorded pack (once) and renders the plucked notes in the order they come.
+  // Gets the recorded sounds the piece uses (downloads asked for by the host) and renders its
+  // notes in the order they come; until then the built-in sound plays.
   private loadSamples(): void {
-    const pack = this.opts.pluckedPack;
+    const sounds = this.opts.sounds;
+    if (!sounds) return;
     const evs = this.timeline.events;
     const notes: [number, number][] = [];
     for (let i = this.next; i < evs.length; i++) {
-      const program = this.timeline.programs.get(evs[i].channel);
-      if (program !== undefined && PLUCKED.has(program)) notes.push([program, evs[i].midi]);
+      const program = programOf(this.timeline, evs[i].channel);
+      if (program !== undefined) notes.push([program, evs[i].midi]);
     }
-    if (!pack || !notes.length) return;
-    sampler ??= pack().then((bytes) => (bytes ? Sampler.create(synth().getAudioContext(), bytes) : null));
-    void sampler.then((s) => {
+    if (!notes.length) return;
+    sampler ??= Sampler.create(synth().getAudioContext());
+    const programs = [...new Set(notes.map(([p]) => p))];
+    void sampler.then(async (s) => {
+      if (!s) return;
+      for (const bytes of await sounds.fetch(programs.filter((p) => !s.has(p))).catch(() => [])) s.addBank(bytes);
       samplerReady = s;
-      return s?.prepare(notes);
+      return s.prepare(notes);
     });
   }
 
@@ -209,11 +203,10 @@ export class Player {
       const e = evs[this.next++];
       const on = this.startAt + e.time / this.speed;
       const off = on + Math.max(0.05, e.dur / this.speed - 0.01);
-      const program = this.timeline.programs.get(e.channel);
-      if (program !== undefined && PLUCKED.has(program)) {
-        // The recorded instrument once its note is ready, the string model until then.
-        if (!samplerReady?.play(program, e.midi, on, off - on, e.velocity, e.bend)) pluck().play(program, e.midi, on, off - on, e.velocity, e.bend);
-      }
+      const program = programOf(this.timeline, e.channel);
+      // The recorded instrument once its note is ready; the string model or the synth until then.
+      if (program !== undefined && samplerReady?.has(program) && samplerReady.play(program, e.midi, on, off - on, e.velocity, e.bend)) continue;
+      if (program !== undefined && PLUCKED.has(program)) pluck().play(program, e.midi, on, off - on, e.velocity, e.bend);
       else {
         s.send([0x90 | e.channel, e.midi, e.velocity], on);
         s.send([0x80 | e.channel, e.midi, 0], off);
