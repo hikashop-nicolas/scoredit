@@ -119,7 +119,8 @@ export function emptyCopy(score: ScoreDoc): ScoreDoc {
 export function rebuild(score: ScoreDoc): { doc: ScoreDoc; skipped: Skipped; entered: number } {
   const { entries, skipped } = plan(score);
   const doc = emptyCopy(score);
-  const ed = new ScoreEditor(doc, { history: false });
+  const original = new ScoreEditor(score, { history: false });
+  const ed = new ScoreEditor(doc, { history: false, tabCopies: (p) => original.fretted(p)?.notation != null });
   for (const e of entries) {
     if (e.tuplet) ed.tuplet(e.at, e.tuplet.quarters, e.tuplet.actual, e.tuplet.normal);
     if (e.pitches.length) ed.enter(e.at, { pitches: e.pitches, quarters: e.quarters });

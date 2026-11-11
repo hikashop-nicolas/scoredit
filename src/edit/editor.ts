@@ -57,6 +57,8 @@ interface Tuplet {
 }
 
 interface Entry {
+  /** "part:measure" of every measure the edit changed (kept with or without history). */
+  touched: Set<string>;
   before: Map<string, Element>;
   after: Map<string, Element>;
   appended: number;
@@ -76,10 +78,13 @@ export class ScoreEditor {
   private entry: Entry | null = null;
   private fine = new Set<number>();
 
-  /** history: false keeps no undo (for scripted edits of whole scores). */
+  /**
+   * history: false keeps no undo (for scripted edits of whole scores). tabCopies says which
+   * parts' tab staves copy their notation staff, when the score cannot show it (emptied).
+   */
   constructor(
     readonly score: ScoreDoc,
-    private opts: { history?: boolean } = {},
+    private opts: { history?: boolean; tabCopies?: (part: number) => boolean } = {},
   ) {}
 
   get canUndo(): boolean {
@@ -393,10 +398,16 @@ export class ScoreEditor {
   }
 
   private copiesCache = new Map<string, boolean>();
+  private primed = false;
   private copies(part: number, a: number, b: number): boolean {
     const key = `${part}:${a}:${b}`;
     let same = this.copiesCache.get(key);
     if (same !== undefined) return same;
+    if (this.opts.tabCopies) {
+      same = this.opts.tabCopies(part);
+      this.copiesCache.set(key, same);
+      return same;
+    }
     const notes = (r: ReturnType<typeof readMeasure>, staff: number) =>
       [...r.voices]
         .filter(([k]) => k.startsWith(`${staff}|`))
@@ -527,7 +538,12 @@ export class ScoreEditor {
 
   private transact<T>(fn: () => T): T {
     if (this.entry) return fn();
-    this.entry = { before: new Map(), after: new Map(), appended: 0, appendedEls: [] };
+    // Which tab staves copy their notation staff is decided before anything changes.
+    if (!this.primed) {
+      this.primed = true;
+      for (let p = 0; p < this.score.measures.length; p++) this.fretted(p);
+    }
+    this.entry = { touched: new Set(), before: new Map(), after: new Map(), appended: 0, appendedEls: [] };
     try {
       const out = fn();
       this.mirrorTabs();
@@ -547,7 +563,7 @@ export class ScoreEditor {
   private mirrorTabs(): void {
     const e = this.entry;
     if (!e) return;
-    const touched = new Set(e.before.keys());
+    const touched = new Set(e.touched);
     const count = this.score.measureCount;
     for (let m = count - e.appended; m < count; m++) for (let p = 0; p < this.score.measures.length; p++) touched.add(`${p}:${m}`);
     const links = new Map<number, ReturnType<ScoreEditor["fretted"]>>();
@@ -579,8 +595,9 @@ export class ScoreEditor {
 
   /** Keeps a copy of a measure before it first changes in this edit. */
   private touch(part: number, measure: number): void {
-    if (this.opts.history === false) return;
     const key = `${part}:${measure}`;
+    this.entry?.touched.add(key);
+    if (this.opts.history === false) return;
     const e = this.entry;
     if (!e || e.before.has(key) || measure >= this.score.measures[part].length - e.appended) return;
     e.before.set(key, this.score.measures[part][measure].cloneNode(true) as Element);
