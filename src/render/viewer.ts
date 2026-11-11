@@ -1,7 +1,7 @@
 import type { SystemRange } from "../layout/systems";
 import type { ScoreDoc } from "../model/score";
 import { clampZoom, createBar, type LayoutMode } from "../ui/bar";
-import { Player } from "../play/player";
+import { Player, defaultPluckedPack, type SoundPack } from "../play/player";
 import { buildTimeline, type Timeline } from "../play/timeline";
 import { Fretboard, fretTuning, position } from "../ui/fretboard";
 import { Keyboard, flash } from "../ui/keyboard";
@@ -31,6 +31,11 @@ export interface ScoreViewerOptions {
    * read again with (or without) the tab staff, and the viewer shows it.
    */
   tablature?: { on: boolean; toggle(on: boolean): ScoreDoc };
+  /**
+   * Recorded plucked instruments (guitars, basses, harp...): an SF2/SF3 pack. Default: the
+   * pack shipped with scoredit, fetched next to the package; null keeps the string model.
+   */
+  pluckedPack?: SoundPack | null;
 }
 
 export interface ScoreViewerHandle {
@@ -153,6 +158,7 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
     if (player) return player;
     const tl = getTimeline();
     player = new Player(tl, {
+      pluckedPack: opts.pluckedPack === undefined ? defaultPluckedPack : opts.pluckedPack,
       onPosition: (p) => {
         const span = tl.spans[p.span];
         if (falls) falls.showTime(p.time);

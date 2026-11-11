@@ -11,4 +11,5 @@ export { ScoreDoc, type PartInfo } from "./model/score";
 export { breakSystems, systemOf, type SystemRange, type BreakOptions } from "./layout/systems";
 export { createScoreViewer, type LayoutMode, type ScoreViewerHandle, type ScoreViewerOptions } from "./render/viewer";
 export type { LineView } from "./render/line-view";
+export { defaultPluckedPack, type SoundPack } from "./play/player";
 export { setLocale, t } from "./ui/i18n";
