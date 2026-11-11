@@ -65,6 +65,16 @@ export class ScoreDoc {
     return text(c);
   }
 
+  /** Reads the measures again after measures were added, removed or replaced. */
+  refresh(): void {
+    kids(this.root, "part").forEach((p, i) => {
+      const ms = kids(p, "measure");
+      if (this.measures[i]) this.measures[i].splice(0, this.measures[i].length, ...ms);
+      else this.measures[i] = ms;
+    });
+    this.reindex();
+  }
+
   /** Recomputes the carried attributes; call after an edit that touches <attributes>. */
   reindex(): void {
     this.attrsAt = this.measures.map((ms) => {
