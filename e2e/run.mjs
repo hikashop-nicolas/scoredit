@@ -7,7 +7,7 @@
 //
 // Chrome: CHROME_PATH, else the usual install places.
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "vite";
@@ -248,8 +248,9 @@ async function main() {
       await sleep(200);
     }
   }
-  rmSync(out, { recursive: true, force: true });
+  // Only this suite's files go: the rebuild report (rebuild.html) lives here too.
   mkdirSync(out, { recursive: true });
+  for (const f of readdirSync(out)) if (f === "index.html" || f.endsWith(".png")) rmSync(join(out, f));
   const results = [];
   for (const sc of scenarios.filter((s) => (!only || s.id.includes(only)) && (!s.corpus || existsSync(join(root, "corpus", s.corpus))))) {
     const record = { ...sc, steps: [], checks: [], error: null, shot: null };
