@@ -23,6 +23,17 @@ const CSS = `
 .sv-on path,.sv-on rect{fill:var(--sv-play,#1a73e8);stroke:var(--sv-play,#1a73e8)}
 .sv-bb-play{min-width:40px}
 .sv-bar{position:relative}
+.sv-bar [hidden]{display:none}
+.sv-seg{display:inline-flex;flex:0 0 auto}
+.sv-seg .sv-bb-btn{border-radius:0;margin-left:-1px}
+.sv-seg .sv-bb-btn:first-child{border-radius:5px 0 0 5px;margin-left:0}
+.sv-seg .sv-bb-btn:last-child{border-radius:0 5px 5px 0}
+.sv-bb-btn.is-on,.sv-bb-btn[aria-pressed="true"]{background:var(--sv-accent,#6e7bff);border-color:var(--sv-accent,#6e7bff);color:#fff}
+.sv-keys{display:block;width:100%;flex:0 0 auto;height:clamp(56px,14vh,110px)}
+.sv-keys-big{height:clamp(70px,20%,150px)}
+.sv-kbd{flex:0 0 auto;border-top:1px solid var(--sv-border,#1c1f24)}
+.sv-falls{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;background:#121418}
+.sv-fall{flex:1 1 auto;min-height:0;width:100%;display:block}
 .sv-bb-speed{font-variant-numeric:tabular-nums;min-width:52px}
 .sv-pop{position:absolute;bottom:calc(100% + 6px);left:8px;z-index:3;padding:10px 12px;background:var(--sv-chrome,#2b2f36);border:1px solid var(--sv-btn-border,#4a4f57);border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,.3)}
 .sv-pop input{width:180px;accent-color:var(--sv-accent,#6e7bff)}

@@ -19,7 +19,7 @@ function open(bytes: Uint8Array, name: string): void {
     const parsed = performance.now() - t0;
     (window as unknown as { viewer?: unknown }).viewer = null;
     viewer = createScoreViewer(host, score, {
-      layout: new URLSearchParams(location.search).get("layout") === "line" ? "line" : "page",
+      layout: ((l) => (l === "line" || l === "keys" ? l : "page"))(new URLSearchParams(location.search).get("layout")),
       onError: (e) => console.error(e),
       onFullscreen: () => (document.fullscreenElement ? void document.exitFullscreen() : void host.requestFullscreen()),
       onSystemRendered: (i, ms) => {

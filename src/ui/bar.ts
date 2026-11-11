@@ -1,6 +1,6 @@
 import { t } from "./i18n";
 
-export type LayoutMode = "page" | "line";
+export type LayoutMode = "page" | "line" | "keys";
 
 export const ZOOM_MIN = 0.3;
 export const ZOOM_MAX = 3;
@@ -17,6 +17,8 @@ const ICON_FS_EXIT = svgIcon('<polyline points="4 14 10 14 10 20"/><polyline poi
 const ICON_PAGE = svgIcon('<rect x="5" y="3" width="14" height="18" rx="1"/><line x1="8" x2="16" y1="8" y2="8"/><line x1="8" x2="16" y1="12" y2="12"/><line x1="8" x2="16" y1="16" y2="16"/>');
 const ICON_PLAY = svgIcon('<polygon points="7 4 20 12 7 20 7 4" fill="currentColor"/>');
 const ICON_PAUSE = svgIcon('<rect x="6" y="4" width="4" height="16" fill="currentColor"/><rect x="14" y="4" width="4" height="16" fill="currentColor"/>');
+const ICON_KEYS = svgIcon('<rect x="3" y="13" width="18" height="8" rx="1"/><line x1="8" x2="8" y1="13" y2="21"/><line x1="13" x2="13" y1="13" y2="21"/><line x1="18" x2="18" y1="13" y2="21"/><line x1="6" x2="6" y1="3" y2="9"/><line x1="11" x2="11" y1="5" y2="11"/><line x1="16" x2="16" y1="2" y2="8"/>');
+const ICON_KBD = svgIcon('<rect x="2" y="6" width="20" height="12" rx="1"/><line x1="7" x2="7" y1="6" y2="18"/><line x1="12" x2="12" y1="6" y2="18"/><line x1="17" x2="17" y1="6" y2="18"/><rect x="5.5" y="6" width="3" height="7" fill="currentColor"/><rect x="15.5" y="6" width="3" height="7" fill="currentColor"/>');
 const ICON_LINE = svgIcon('<line x1="2" x2="22" y1="9" y2="9"/><line x1="2" x2="22" y1="15" y2="15"/><polyline points="17 5 21 12 17 19"/>');
 
 export interface BarOptions {
@@ -27,6 +29,8 @@ export interface BarOptions {
   /** The slider was released. */
   onZoomCommit(): void;
   onLayout(mode: LayoutMode): void;
+  /** Shows or hides the keyboard strip under the score. */
+  onKeyboard(on: boolean): void;
   onPlay(): void;
   /** Playback speed, 1 = as written. */
   onSpeed(speed: number): void;
@@ -94,7 +98,27 @@ export function createBar(o: BarOptions): Bar {
       speedBtn.setAttribute("aria-expanded", "false");
     }
   });
-  const layoutBtn = button(ICON_LINE, "", () => o.onLayout(mode === "page" ? "line" : "page"));
+  // The three layouts as one segmented control.
+  const seg = document.createElement("span");
+  seg.className = "sv-seg";
+  seg.setAttribute("role", "group");
+  const layoutBtns = new Map<LayoutMode, HTMLButtonElement>();
+  for (const [m, icon, key] of [
+    ["page", ICON_PAGE, "pageView"],
+    ["line", ICON_LINE, "lineView"],
+    ["keys", ICON_KEYS, "keysView"],
+  ] as const) {
+    const b = button(icon, t(key), () => o.onLayout(m));
+    layoutBtns.set(m, b);
+    seg.append(b);
+  }
+  let kbdOn = false;
+  const kbdBtn = button(ICON_KBD, t("keyboard"), () => {
+    kbdOn = !kbdOn;
+    kbdBtn.setAttribute("aria-pressed", String(kbdOn));
+    o.onKeyboard(kbdOn);
+  });
+  kbdBtn.setAttribute("aria-pressed", "false");
   const grow = document.createElement("span");
   grow.className = "sv-bb-grow";
   const slider = document.createElement("input");
@@ -109,7 +133,7 @@ export function createBar(o: BarOptions): Bar {
   slider.addEventListener("change", () => o.onZoomCommit());
   const label = document.createElement("span");
   label.className = "sv-zoom-label";
-  el.append(playBtn, speedBtn, pop, layoutBtn, grow, slider, label);
+  el.append(playBtn, speedBtn, pop, seg, kbdBtn, grow, slider, label);
   let fs: HTMLButtonElement | null = null;
   if (o.onFullscreen) {
     fs = button(ICON_FS, t("fullscreen"), () => o.onFullscreen?.());
@@ -121,11 +145,11 @@ export function createBar(o: BarOptions): Bar {
 
   const setLayout = (m: LayoutMode) => {
     mode = m;
-    // The button offers the other layout.
-    const lbl = t(m === "page" ? "lineView" : "pageView");
-    layoutBtn.innerHTML = m === "page" ? ICON_LINE : ICON_PAGE;
-    layoutBtn.title = lbl;
-    layoutBtn.setAttribute("aria-label", lbl);
+    for (const [k, b] of layoutBtns) {
+      b.classList.toggle("is-on", k === m);
+      b.setAttribute("aria-pressed", String(k === m));
+    }
+    kbdBtn.hidden = m === "keys";
   };
   const sync = (z: number) => {
     slider.value = String(zoomToSlider(z));

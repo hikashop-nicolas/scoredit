@@ -2,7 +2,9 @@ import type { SystemRange } from "../layout/systems";
 import type { ScoreDoc } from "../model/score";
 import { clampZoom, createBar, type LayoutMode } from "../ui/bar";
 import { Player } from "../play/player";
-import { buildTimeline } from "../play/timeline";
+import { buildTimeline, type Timeline } from "../play/timeline";
+import { Keyboard } from "../ui/keyboard";
+import { createKeysView, noteColors } from "./keys-view";
 import { createLineView, type LineView } from "./line-view";
 import { noteKey } from "./positions";
 import { createPageView, type PageView } from "./page-view";
@@ -76,8 +78,37 @@ export function createScoreViewer(container: HTMLElement, score: ScoreDoc, opts:
     },
     onPlay: () => togglePlay(),
     onSpeed: (v) => setSpeed(v),
+    onKeyboard: (on) => showKeyboard(on),
     onFullscreen: opts.onFullscreen,
   });
+
+  // The timeline is built once, when playback or the keyboard first needs it.
+  let timeline: Timeline | null = null;
+  const getTimeline = () => (timeline ??= buildTimeline(score));
+  const color = noteColors(score);
+
+  // The keyboard strip under the score (page and line layouts), lit as notes sound.
+  let kbd: Keyboard | null = null;
+  function showKeyboard(on: boolean): void {
+    if (on && !kbd) {
+      kbd = new Keyboard();
+      const wrap = document.createElement("div");
+      wrap.className = "sv-kbd";
+      wrap.append(kbd.canvas);
+      shell.insertBefore(wrap, bar.el);
+      const tl = getTimeline();
+      let lo = 127;
+      let hi = 0;
+      for (const e of tl.events) {
+        lo = Math.min(lo, e.midi);
+        hi = Math.max(hi, e.midi);
+      }
+      requestAnimationFrame(() => kbd?.setRange(lo, hi));
+    } else if (!on && kbd) {
+      kbd.canvas.parentElement?.remove();
+      kbd = null;
+    }
+  }
 
   // Playback: the timeline is built on the first play; the view shows where it is. Scrolling
   // by hand pauses the view's following for a moment.
@@ -85,13 +116,20 @@ export function createScoreViewer(container: HTMLElement, score: ScoreDoc, opts:
   let followPaused = 0;
   function ensurePlayer(): Player {
     if (player) return player;
-    const tl = buildTimeline(score);
+    const tl = getTimeline();
     player = new Player(tl, {
       onPosition: (p) => {
         const span = tl.spans[p.span];
-        if (span) view.showPosition(span.measure, p.quarter, span.quarters, performance.now() > followPaused);
+        if (falls) falls.showTime(p.time);
+        else if (span) view.showPosition(span.measure, p.quarter, span.quarters, performance.now() > followPaused);
       },
-      onNotes: (evs, on) => view.highlight(evs.map((e) => noteKey(e.measure, e.onset)), on),
+      onNotes: (evs, on) => {
+        view.highlight(evs.map((e) => noteKey(e.measure, e.onset)), on);
+        if (kbd) {
+          for (const e of evs) kbd.setLit(e.midi, on ? color(e) : null);
+          kbd.draw();
+        }
+      },
       onStateChange: (on) => bar.setPlaying(on),
     });
     player.setSpeed(speed);
@@ -127,9 +165,16 @@ export function createScoreViewer(container: HTMLElement, score: ScoreDoc, opts:
     el.addEventListener("touchmove", pause, { passive: true });
   }
 
+  let falls: ReturnType<typeof createKeysView> | null = null;
   function mount(): void {
     const common = { onError: opts.onError, onZoom: (z: number) => ((shown = z), bar.sync(z)) };
-    view = mode === "page" ? createPageView(score, { ...common, zoom: pageZoom, onSystemRendered: opts.onSystemRendered }) : createLineView(score, { ...common, zoom: pageZoom });
+    falls = null;
+    if (mode === "keys") {
+      falls = createKeysView(score, getTimeline, { ...common, zoom: 1 });
+      falls.showTime(player?.time ?? 0);
+      view = falls;
+    } else view = mode === "page" ? createPageView(score, { ...common, zoom: pageZoom, onSystemRendered: opts.onSystemRendered }) : createLineView(score, { ...common, zoom: pageZoom });
+    if (kbd) kbd.canvas.parentElement!.hidden = mode === "keys";
     shown = view.zoom;
     shell.prepend(view.root);
     bar.sync(view.zoom);
@@ -227,6 +272,7 @@ export function createScoreViewer(container: HTMLElement, score: ScoreDoc, opts:
     relayout: () => view.relayout(),
     destroy() {
       player?.dispose();
+      kbd = null;
       clearTimeout(zoomTimer);
       view.destroy();
       shell.remove();
