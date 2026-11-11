@@ -1,5 +1,27 @@
 import { strFromU8, unzipSync } from "fflate";
-import { kid, kids, parseXml, text } from "../model/xml";
+import { kidIndexed as kid, kids, parseXml } from "../model/xml";
+
+// A chord or note's children by tag, read in one pass.
+const NO_GROUPS = new Map<string, Element[]>();
+const groups = (e: Element): Map<string, Element[]> => {
+  const g = new Map<string, Element[]>();
+  for (let c = e.firstElementChild; c; c = c.nextElementSibling) {
+    const l = g.get(c.tagName);
+    if (l) l.push(c);
+    else g.set(c.tagName, [c]);
+  }
+  return g;
+};
+const gone = (g: Map<string, Element[]>, tag: string): Element | null => g.get(tag)?.[0] ?? null;
+const gall = (g: Map<string, Element[]>, tag: string): Element[] => g.get(tag) ?? [];
+const gtext = (g: Map<string, Element[]>, tag: string): string => g.get(tag)?.[0].textContent?.trim() ?? "";
+const GRACES = ["acciaccatura", "appoggiatura", "grace4", "grace8after", "grace16", "grace16after", "grace32", "grace32after"];
+
+// The reader asks the same elements for many children: indexed lookups.
+const text = (el: Element | null | undefined, tag?: string): string => {
+  const e = el && tag ? kid(el, tag) : el;
+  return e?.textContent?.trim() ?? "";
+};
 
 // MuseScore's .mscx (and the .mscz zip around it) read into MusicXML, versions 3 and 4.
 // Learned from MuseScore files and MuseScore's own MusicXML export of the same scores; the
@@ -209,8 +231,8 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
   const root = out.documentElement;
   const el = (parent: Element, tag: string, txt?: string | number | null, attrs?: Record<string, string | number>): Element => {
     const e = out.createElementNS(null, tag);
-    if (attrs) for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, String(v));
-    if (txt !== undefined && txt !== null) e.textContent = String(txt);
+    if (attrs) for (const k in attrs) e.setAttribute(k, String(attrs[k]));
+    if (txt !== undefined && txt !== null) e.appendChild(out.createTextNode(String(txt)));
     parent.appendChild(e);
     return e;
   };
@@ -400,9 +422,9 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
       if (!irregular) number++;
       const meas = el(part, "measure", null, irregular && m === 0 ? { number: 0, implicit: "yes" } : irregular ? { number: `${number}X`, implicit: "yes" } : { number });
       // Left barline: forward repeat, volta start (filled in after the staves are read).
-      const leftBar = el(meas, "barline", null, { location: "left" });
-      if (first && kid(first, "startRepeat")) el(leftBar, "repeat", null, { direction: "forward" });
-      const attrs = el(meas, "attributes");
+      if (first && kid(first, "startRepeat")) el(el(meas, "barline", null, { location: "left" }), "repeat", null, { direction: "forward" });
+      // Only the first measure starts with attributes of its own; later changes come inline.
+      const attrs = m === 0 ? el(meas, "attributes") : (null as unknown as Element);
       if (m === 0) {
         el(attrs, "divisions", DIV);
         if (p.staves.length > 1) el(attrs, "staves", p.staves.length);
@@ -643,24 +665,26 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
               }
               case "Rest":
               case "Chord": {
-                const dt = text(c, "durationType");
-                const graceTag = ["acciaccatura", "appoggiatura", "grace4", "grace8after", "grace16", "grace16after", "grace32", "grace32after"].find((g) => kid(c, g));
-                const ref = tupletDefs.get(text(c, "Tuplet"));
+                const cg = groups(c);
+                const dt = gtext(cg, "durationType");
+                const graceTag = GRACES.find((g) => cg.has(g));
+                const ref = tupletDefs.get(gtext(cg, "Tuplet"));
                 const ratio = tuplets.reduce((a, b) => a * b, 1) * (ref ? ref.normal / ref.actual : 1);
-                const dots = Number(text(c, "dots")) || 0;
+                const dots = Number(gtext(cg, "dots")) || 0;
                 let whole: number;
-                const override = text(c, "duration");
+                const override = gtext(cg, "duration");
                 if (dt === "measure") whole = override ? frac(override) : len;
                 else if (override && c.tagName === "Chord") whole = frac(override);
                 else whole = ((DURATION[dt] ?? 1) / 4) * (2 - 2 ** -dots) * ratio;
                 if (graceTag) whole = 0;
                 goTo(pos);
-                const notes = c.tagName === "Chord" ? kids(c, "Note") : [null];
-                const tremEl = kid(c, "TremoloSingleChord") ?? kid(c, "TremoloTwoChord") ?? kid(c, "Tremolo");
+                const notes = c.tagName === "Chord" ? gall(cg, "Note") : [null];
+                const tremEl = gone(cg, "TremoloSingleChord") ?? gone(cg, "TremoloTwoChord") ?? gone(cg, "Tremolo");
                 const tremSub = text(tremEl, "subtype");
                 const tremolo = tremEl ? { strokes: ({ 8: 1, 16: 2, 32: 3, 64: 4 } as Record<number, number>)[Number(tremSub.replace(/\D/g, ""))] ?? 2, two: tremSub.startsWith("c") } : null;
                 let firstNote: Element | null = null;
                 notes.forEach((n, ni) => {
+                  const ng = n ? groups(n) : NO_GROUPS;
                   const note = el(meas, "note");
                   firstNote ??= note;
                   if (graceTag) el(note, "grace", null, graceTag === "acciaccatura" ? { slash: "yes" } : undefined);
@@ -670,7 +694,7 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
                   } else if (p.drums) {
                     // A drum: shown on its line of the drum staff (counting half spaces down from
                     // the top line), played as its General MIDI drum.
-                    const d = p.drumset.get(Number(text(n, "pitch")));
+                    const d = p.drumset.get(Number(gtext(ng, "pitch")));
                     const lines = p.lines[k] ?? 5;
                     const top = lines === 1 ? 4 * 7 + 2 : 5 * 7 + 3; // E4 for a one-line staff, F5 for five lines
                     const at = top - (d?.line ?? 0);
@@ -678,9 +702,9 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
                     el(un, "display-step", "CDEFGAB"[((at % 7) + 7) % 7]);
                     el(un, "display-octave", Math.floor(at / 7));
                   } else {
-                    const sounding = Number(text(n, "pitch"));
-                    const tpc = Number(text(n, "tpc"));
-                    const tpc2 = text(n, "tpc2");
+                    const sounding = Number(gtext(ng, "pitch"));
+                    const tpc = Number(gtext(ng, "tpc"));
+                    const tpc2 = gtext(ng, "tpc2");
                     const writtenTpc = shift ? (tpc2 ? Number(tpc2) : tpc - (7 * shift - 12 * p.diatonic)) : tpc;
                     const sp = spell(writtenTpc, sounding - shift + ottavaAt(staffIdx, m, pos));
                     const pitch = el(note, "pitch");
@@ -689,17 +713,17 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
                     el(pitch, "octave", sp.octave);
                   }
                   if (!graceTag) el(note, "duration", Math.max(1, Math.round(whole * 4 * DIV)));
-                  const ties = n ? kids(n, "Spanner").filter((s) => s.getAttribute("type") === "Tie") : [];
+                  const ties = n ? gall(ng, "Spanner").filter((s) => s.getAttribute("type") === "Tie") : [];
                   // MuseScore 2: <Tie id> on the first note, <endSpanner id> on the second.
-                  const tieStart = ties.some((s) => kid(s, "next")) || (!!n && !!kid(n, "Tie"));
-                  const tieStop = ties.some((s) => kid(s, "prev")) || (!!n && kids(n, "endSpanner").some((e) => tieIds.has(e.getAttribute("id") ?? "")));
+                  const tieStart = ties.some((s) => kid(s, "next")) || (!!n && !!gone(ng, "Tie"));
+                  const tieStop = ties.some((s) => kid(s, "prev")) || (!!n && gall(ng, "endSpanner").some((e) => tieIds.has(e.getAttribute("id") ?? "")));
                   if (tieStop) el(note, "tie", null, { type: "stop" });
                   if (tieStart) el(note, "tie", null, { type: "start" });
-                  if (n && p.drums) el(note, "instrument", null, { id: `${p.id}-I${Number(text(n, "pitch")) + 1}` });
+                  if (n && p.drums) el(note, "instrument", null, { id: `${p.id}-I${Number(gtext(ng, "pitch")) + 1}` });
                   el(note, "voice", k * 4 + v + 1);
                   if (dt !== "measure" && TYPE_NAME[dt]) el(note, "type", TYPE_NAME[dt]);
                   for (let d = 0; d < dots; d++) el(note, "dot");
-                  const acc = n ? kid(n, "Accidental") : null;
+                  const acc = n ? gone(ng, "Accidental") : null;
                   if (acc && ACCIDENTAL[text(acc, "subtype")]) el(note, "accidental", ACCIDENTAL[text(acc, "subtype")]);
                   if ((tupletInfo.length || ref) && !graceTag) {
                     const ti = ref ?? tupletInfo[tupletInfo.length - 1];
@@ -707,14 +731,14 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
                     el(tm, "actual-notes", ti.actual);
                     el(tm, "normal-notes", ti.normal);
                   }
-                  const stem = text(c, "StemDirection");
+                  const stem = gtext(cg, "StemDirection");
                   if (stem === "up" || stem === "down") el(note, "stem", stem);
                   // Ghost notes in brackets, dead notes as a cross.
-                  const drumHead = n && p.drums ? p.drumset.get(Number(text(n, "pitch")))?.head : undefined;
+                  const drumHead = n && p.drums ? p.drumset.get(Number(gtext(ng, "pitch")))?.head : undefined;
                   const HEADS: Record<string, string> = { "1": "x", cross: "x", "2": "diamond", diamond: "diamond", "3": "triangle", "triangle-up": "triangle", slash: "slash", xcircle: "circle-x" };
                   if (drumHead && HEADS[drumHead]) el(note, "notehead", HEADS[drumHead]);
-                  else if (n && text(n, "dead") === "1") el(note, "notehead", "x");
-                  else if (n && text(n, "ghost") === "1") el(note, "notehead", "normal", { parentheses: "yes" });
+                  else if (n && gtext(ng, "dead") === "1") el(note, "notehead", "x");
+                  else if (n && gtext(ng, "ghost") === "1") el(note, "notehead", "normal", { parentheses: "yes" });
                   if (p.staves.length > 1) el(note, "staff", k + 1);
                   // Notations: ties, slurs, articulations, ornaments, fermata, tab string/fret.
                   const nots: Element[] = [];
@@ -727,25 +751,25 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
                   if (tieStop) el(notations(), "tied", null, { type: "stop" });
                   if (tieStart) el(notations(), "tied", null, { type: "start" });
                   if (ni === 0 && !virtual) {
-                    for (const s of kids(c, "Spanner").filter((x) => x.getAttribute("type") === "Slur")) {
+                    for (const s of gall(cg, "Spanner").filter((x) => x.getAttribute("type") === "Slur")) {
                       el(notations(), "slur", null, { type: kid(s, "next") ? "start" : "stop", number: 1 });
                     }
                     // MuseScore 2 marks a slur's ends on the chords themselves (not yet seen in a real file).
-                    for (const s of kids(c, "Slur")) {
+                    for (const s of gall(cg, "Slur")) {
                       const type = s.getAttribute("type");
                       if (type === "start" || type === "stop") el(notations(), "slur", null, { type, number: 1 });
                     }
-                    const bows = kids(c, "Articulation").map((a) => TECHNICAL[text(a, "subtype")]).filter(Boolean);
+                    const bows = gall(cg, "Articulation").map((a) => TECHNICAL[text(a, "subtype")]).filter(Boolean);
                     if (bows.length) {
                       const tech = kid(notations(), "technical") ?? el(notations(), "technical");
                       for (const b of bows) el(tech, b);
                     }
-                    const arts = kids(c, "Articulation").map((a) => ARTIC[text(a, "subtype")]).filter(Boolean);
+                    const arts = gall(cg, "Articulation").map((a) => ARTIC[text(a, "subtype")]).filter(Boolean);
                     if (arts.length) {
                       const a = el(notations(), "articulations");
                       for (const x of arts) el(a, x);
                     }
-                    const ornEls = [...kids(c, "Ornament"), ...kids(c, "Articulation")].filter((a) => ORNAMENT[text(a, "subtype")]);
+                    const ornEls = [...gall(cg, "Ornament"), ...gall(cg, "Articulation")].filter((a) => ORNAMENT[text(a, "subtype")]);
                     const orns = ornEls.map((a) => ORNAMENT[text(a, "subtype")]);
                     ornEls.forEach((a, i) => {
                       // A MuseScore 4 ornament may name its upper or lower note (with its accidental),
@@ -767,14 +791,14 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
                       el(notations(), "fermata", null, { type: "upright" });
                       pendingFermata = false;
                     }
-                    if (kid(c, "Arpeggio")) el(notations(), "arpeggiate");
+                    if (gone(cg, "Arpeggio")) el(notations(), "arpeggiate");
                   }
                   if (n && p.tab[k]) {
-                    let fret = text(n, "fret");
-                    let str = text(n, "string");
+                    let fret = gtext(ng, "fret");
+                    let str = gtext(ng, "string");
                     if ((fret === "" || str === "") && p.strings.length) {
                       // No position stored: the lowest fret that reaches the note.
-                      const sounding = Number(text(n, "pitch"));
+                      const sounding = Number(gtext(ng, "pitch"));
                       let best = -1;
                       p.strings.forEach((open, i) => {
                         const f = sounding - open;
@@ -807,7 +831,7 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
                     }
                   }
                   if (ni === 0 && !virtual) {
-                    for (const ly of kids(c, "Lyrics")) {
+                    for (const ly of gall(cg, "Lyrics")) {
                       const lyric = el(note, "lyric", null, { number: (Number(text(ly, "no")) || 0) + 1 });
                       el(lyric, "syllabic", text(ly, "syllabic") || "single");
                       el(lyric, "text", plain(kid(ly, "text")));
@@ -833,13 +857,13 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
         });
       });
       // Right barline: end repeat, final or double bar from the first staff.
-      const rightBar = el(meas, "barline", null, { location: "right" });
       const endRep = first ? kid(first, "endRepeat") : null;
       const bl = first ? Array.from(first.getElementsByTagName("BarLine")).pop() : undefined;
       const style = text(bl, "subtype");
-      if (style === "double") el(rightBar, "bar-style", "light-light");
-      else if (style === "end" || endRep) el(rightBar, "bar-style", "light-heavy");
-      if (endRep) el(rightBar, "repeat", null, { direction: "backward", ...(Number(endRep.textContent) > 2 ? { times: Number(endRep.textContent) } : {}) });
+      const rightBar = style === "double" || style === "end" || endRep ? el(meas, "barline", null, { location: "right" }) : null;
+      if (style === "double") el(rightBar!, "bar-style", "light-light");
+      else if (style === "end" || endRep) el(rightBar!, "bar-style", "light-heavy");
+      if (endRep) el(rightBar!, "repeat", null, { direction: "backward", ...(Number(endRep.textContent) > 2 ? { times: Number(endRep.textContent) } : {}) });
       // Jumps and markers, as playback sounds.
       if (first) {
         for (const mk of kids(first, "Marker")) {
@@ -867,9 +891,7 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
         }
       }
       // Drop empty helpers so OSMD and the timeline see only what is there.
-      if (!attrs.firstChild) attrs.remove();
-      if (!leftBar.firstChild) leftBar.remove();
-      if (!rightBar.firstChild) rightBar.remove();
+      if (attrs && !attrs.firstChild) attrs.remove();
     }
   });
 
