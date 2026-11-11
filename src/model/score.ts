@@ -22,11 +22,13 @@ export class ScoreDoc {
   readonly parts: PartInfo[];
   /** measures[p][m]: the <measure> of part p at index m. */
   readonly measures: Element[][];
+  /** First measures of the score's sections (movements); repeats and D.C. stay inside one. */
+  sections: number[] = [0];
   /** Attributes in force at the start of each measure, per part. */
   private attrsAt: Map<string, Element>[][] = [];
 
-  constructor(xml: string) {
-    let doc = parseXml(xml);
+  constructor(xml: string | Document) {
+    let doc = typeof xml === "string" ? parseXml(xml) : xml;
     if (doc.documentElement.tagName === "score-timewise") doc = timewiseToPartwise(doc);
     if (doc.documentElement.tagName !== "score-partwise") throw new Error("Not a MusicXML score");
     this.doc = doc;

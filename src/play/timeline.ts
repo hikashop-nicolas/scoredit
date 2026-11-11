@@ -15,6 +15,8 @@ export interface NoteEvent {
   onset: number;
   /** The <note> element, for highlighting. */
   el: Element;
+  /** A grace note (sounds just before its beat). */
+  grace?: boolean;
 }
 
 /** One measure as played: where it starts and ends in time. */
@@ -104,12 +106,19 @@ export function playOrder(score: ScoreDoc): number[] {
     const stop = endingStop(k);
     return !(stop + 1 < n && ending(ms[stop + 1], "start"));
   };
+  const sectionStarts = score.sections.length ? score.sections : [0];
+  const sectionOf = (i: number) => sectionStarts.filter((s) => s <= i).pop() ?? 0;
   const order: number[] = [];
   let repeatStart = 0;
   let pass = 1;
   let jumped = false;
+  let jumpFrom = -1;
   for (let i = 0, guard = 0; i < n && guard < n * 20; guard++) {
     const m = ms[i];
+    if (sectionStarts.includes(i) && i !== repeatStart && !jumped) {
+      repeatStart = i;
+      pass = 1;
+    }
     if (repeat(m, "forward") && i !== repeatStart) {
       repeatStart = i;
       pass = 1;
@@ -120,7 +129,14 @@ export function playOrder(score: ScoreDoc): number[] {
       continue;
     }
     order.push(i);
-    if (jumped && attr(m, "fine") !== null) break;
+    // Fine ends the way back; playback goes on after the measure that jumped.
+    if (jumped && attr(m, "fine") !== null) {
+      jumped = false;
+      i = jumpFrom + 1;
+      repeatStart = i;
+      pass = 1;
+      continue;
+    }
     if (jumped) {
       const toCoda = attr(m, "tocoda");
       if (toCoda !== null) {
@@ -145,7 +161,8 @@ export function playOrder(score: ScoreDoc): number[] {
     if (!jumped) {
       if (attr(m, "dacapo") !== null) {
         jumped = true;
-        i = 0;
+        jumpFrom = i;
+        i = sectionOf(i);
         continue;
       }
       const ds = attr(m, "dalsegno");
@@ -153,6 +170,7 @@ export function playOrder(score: ScoreDoc): number[] {
         const sg = target("segno", ds);
         if (sg >= 0) {
           jumped = true;
+          jumpFrom = i;
           i = sg;
           continue;
         }
@@ -276,7 +294,7 @@ export function buildTimeline(score: ScoreDoc): Timeline {
               if (!gp || kid(c, "chord")) break;
               const gm = (Number(text(gp, "octave")) + 1) * 12 + (STEP[text(gp, "step")] ?? 0) + (Number(text(gp, "alter")) || 0) + shift;
               const at = Math.max(span.start, span.start + quarterToSec(span, pos / div) - GRACE);
-              events.push({ time: at, dur: GRACE, midi: gm, velocity: velocity[p], channel: parts[p].channel, part: p, staff: Number(text(c, "staff")) || 1, measure: m, onset: pos / div, el: c });
+              events.push({ time: at, dur: GRACE, midi: gm, velocity: velocity[p], channel: parts[p].channel, part: p, staff: Number(text(c, "staff")) || 1, measure: m, onset: pos / div, el: c, grace: true });
               break;
             }
             const chord = !!kid(c, "chord");
