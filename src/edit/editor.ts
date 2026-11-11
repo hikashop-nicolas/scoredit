@@ -1,7 +1,7 @@
 import type { ScoreDoc } from "../model/score";
 import { kid, kids, text } from "../model/xml";
 import { readMeasure, voiceKey, writeMeasure, type Event, type ReadMeasure } from "./measure";
-import { TYPES, addSpan, removeSpan, setFingering, setTremolo, spansOf, addSlur, defaultPosition, isTied, keepMarksFor, makeGrace, marksOf, placeInNote, removeSlur, setLyric, setMark, setPosition, slursOf, writtenFor, keyAlter, makeNote, midiOf, pieceOf, readPitch, setPitch, setTie, spellMidi, splitLength, type Pitch, type Written } from "./notes";
+import { TYPES, setBends, type Bend, addSpan, removeSpan, setFingering, setTremolo, spansOf, addSlur, defaultPosition, isTied, keepMarksFor, makeGrace, marksOf, placeInNote, removeSlur, setLyric, setMark, setPosition, slursOf, writtenFor, keyAlter, makeNote, midiOf, pieceOf, readPitch, setPitch, setTie, spellMidi, splitLength, type Pitch, type Written } from "./notes";
 
 /** Where the next note goes: a beat in one voice of one staff of a part. */
 export interface Caret {
@@ -548,6 +548,17 @@ export class ScoreEditor {
         addSpan(last, { kind, type: "stop", number, value: opts.value });
       }
       return { from: Math.min(a.measure, end.measure), to: Math.max(a.measure, end.measure) + 1, appended: 0 };
+    });
+  }
+
+  /** Sets a note's bends (none takes them off). */
+  bends(note: Element, bends: Bend[]): Change {
+    const at = this.locate(note);
+    if (!at) return { from: 0, to: 0, appended: 0 };
+    return this.transact(() => {
+      this.touch(at.part, at.measure);
+      setBends(note, bends);
+      return { from: at.measure, to: at.measure + 1, appended: 0 };
     });
   }
 

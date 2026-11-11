@@ -54,6 +54,8 @@ export const HELPERS = `(() => {
       for (const g of kidsOf(nots, "technical"))
         for (const t of g.children) {
           if (t.tagName === "fingering") words.push("finger " + t.textContent.trim());
+          else if (t.tagName === "hammer-on" || t.tagName === "pull-off") ends(t, t.tagName);
+          else if (t.tagName === "bend") words.push("bend " + txt(t, "bend-alter") + (kidsOf(t, "release").length ? " release" : "") + (kidsOf(t, "pre-bend").length ? " pre-bent" : ""));
           else if (t.tagName !== "string" && t.tagName !== "fret") words.push(t.tagName);
         }
       if (kidsOf(nots, "fermata").length) words.push("fermata");
@@ -658,6 +660,29 @@ export const scenarios = [
       await d.tapStaff(1, 4, 1, "F4");
       await d.button("Up-bow");
       await d.bars({ 1: "C4 quarter [finger 1], D4 quarter [finger 2], E4 quarter [finger 3], F4 quarter [up-bow]" });
+    },
+  },
+  {
+    id: "hammer-on-bend",
+    title: "Guitar: a hammer-on between two notes, and a bend",
+    device: "desktop",
+    fixture: "guitar.musicxml",
+    why: "A hammer-on (a curve marked H) plays the second note by hammering a finger down, without picking again. A bend pushes the string so the note rises: one press of Bend is a full bend (2 semitones), the next adds a release back down. The tab staff below follows.",
+    look: "A curve with H between the first two notes, and a bend arrow on the third in the tab.",
+    async run(d) {
+      await d.key("n");
+      await d.key("5");
+      await d.keys("abc");
+      await d.button("Marks");
+      await d.button("Bend");
+      await d.button("Bend");
+      await d.key("ArrowLeft");
+      await d.key("ArrowLeft");
+      await d.key("ArrowRight", { shift: true });
+      await d.button("Hammer-on");
+      await d.bars({ 1: "A4 quarter [hammer-on starts], B4 quarter [hammer-on ends], C5 quarter [bend 2; bend 2 release], quarter rest" }, { label: "Notes staff, bar 1" });
+      const tab = await d.eval("e2e.bars(0, 2)[0]");
+      d.check("The tab staff shows the same hammer-on and bends", tab.includes("hammer-on starts") && tab.includes("bend 2 release"), tab);
     },
   },
   {

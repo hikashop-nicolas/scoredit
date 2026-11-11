@@ -368,14 +368,17 @@ export function keepMarksFor(note: Element, first: boolean, last: boolean): void
   if (!first) for (const l of kids(note, "lyric")) l.remove();
   for (const nots of kids(note, "notations")) {
     if (!first) {
-      for (const tag of ["articulations", "fermata", "arpeggiate", "technical"]) for (const e of kids(nots, tag)) e.remove();
+      for (const tag of ["articulations", "fermata", "arpeggiate"]) for (const e of kids(nots, tag)) e.remove();
+      for (const t of kids(nots, "technical")) for (const c of kids(t)) if (!isStop(c) && c.tagName !== "string" && c.tagName !== "fret") c.remove();
       for (const orn of kids(nots, "ornaments")) for (const o of kids(orn)) if (!isStop(o)) o.remove();
       for (const tag of ["slur", "glissando", "slide"]) for (const e of kids(nots, tag)) if (isStart(e)) e.remove();
     }
     if (!last) {
       for (const tag of ["slur", "glissando", "slide"]) for (const e of kids(nots, tag)) if (isStop(e)) e.remove();
       for (const orn of kids(nots, "ornaments")) for (const o of kids(orn)) if (isStop(o)) o.remove();
+      for (const t of kids(nots, "technical")) for (const c of kids(t)) if (isStop(c)) c.remove();
     }
+    for (const t of kids(nots, "technical")) if (!t.firstElementChild) t.remove();
     for (const orn of kids(nots, "ornaments")) if (!orn.firstElementChild) orn.remove();
     if (!nots.firstElementChild) nots.remove();
   }
@@ -401,6 +404,8 @@ export const SPANS: Record<string, { tag: string; group: string | null }> = {
   slide: { tag: "slide", group: null },
   "trill line": { tag: "wavy-line", group: "ornaments" },
   tremolo: { tag: "tremolo", group: "ornaments" },
+  "hammer-on": { tag: "hammer-on", group: "technical" },
+  "pull-off": { tag: "pull-off", group: "technical" },
 };
 
 export interface SpanEnd {
@@ -434,6 +439,7 @@ export function addSpan(note: Element, end: SpanEnd): void {
   e.setAttribute("type", end.type);
   if (end.kind !== "tremolo") e.setAttribute("number", String(end.number));
   if (end.kind === "tremolo") e.textContent = end.value ?? "3";
+  if ((end.kind === "hammer-on" || end.kind === "pull-off") && end.type === "start") e.textContent = end.kind === "hammer-on" ? "H" : "P";
   if ((end.kind === "glissando" || end.kind === "slide") && end.value && end.type === "start") e.setAttribute("line-type", end.value);
   if (group) holder.appendChild(e);
   else placeIn(n, e, NOTATION_ORDER);
@@ -498,4 +504,46 @@ export function setFingering(note: Element, value: string): void {
   const f = doc.createElementNS(null, "fingering");
   f.textContent = value;
   t.insertBefore(f, t.firstChild);
+}
+
+// ---- Bends: how far a string is pushed (in semitones), with a pre-bend or a release.
+
+export interface Bend {
+  alter: number;
+  /** Bent before the note sounds. */
+  pre?: boolean;
+  /** Let back down. */
+  release?: boolean;
+}
+
+export function bendsOf(note: Element): Bend[] {
+  const out: Bend[] = [];
+  for (const nots of kids(note, "notations"))
+    for (const t of kids(nots, "technical"))
+      for (const b of kids(t, "bend")) out.push({ alter: Number(text(b, "bend-alter")) || 0, ...(kid(b, "pre-bend") ? { pre: true } : {}), ...(kid(b, "release") ? { release: true } : {}) });
+  return out;
+}
+
+/** Replaces a note's bends (none: takes them off). */
+export function setBends(note: Element, bends: Bend[]): void {
+  for (const nots of kids(note, "notations")) {
+    for (const t of kids(nots, "technical")) {
+      for (const b of kids(t, "bend")) b.remove();
+      if (!t.firstElementChild) t.remove();
+    }
+    if (!nots.firstElementChild) nots.remove();
+  }
+  if (!bends.length) return;
+  const doc = note.ownerDocument;
+  const n = notationsOf(note, true);
+  const t = kid(n, "technical") ?? placeIn(n, doc.createElementNS(null, "technical"), NOTATION_ORDER);
+  for (const b of bends) {
+    const e = doc.createElementNS(null, "bend");
+    const alter = doc.createElementNS(null, "bend-alter");
+    alter.textContent = String(b.alter);
+    e.appendChild(alter);
+    if (b.pre) e.appendChild(doc.createElementNS(null, "pre-bend"));
+    if (b.release) e.appendChild(doc.createElementNS(null, "release"));
+    t.appendChild(e);
+  }
 }

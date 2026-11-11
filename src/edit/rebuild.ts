@@ -2,7 +2,7 @@ import { ScoreDoc } from "../model/score";
 import { kid, kids, text } from "../model/xml";
 import { ScoreEditor, type Caret } from "./editor";
 import { readMeasure, writeMeasure, type Event } from "./measure";
-import { SPANS, TECHNICAL_MARKS, fingeringOf, lyricsOf, marksOf, midiOf, readPitch, slursOf, spansOf, tremoloOf, type Lyric, type Pitch, type SlurEnd, type SpanEnd } from "./notes";
+import { SPANS, TECHNICAL_MARKS, bendsOf, fingeringOf, type Bend, lyricsOf, marksOf, midiOf, readPitch, slursOf, spansOf, tremoloOf, type Lyric, type Pitch, type SlurEnd, type SpanEnd } from "./notes";
 
 // Rebuilding a score through the editor, as a test of it: an empty copy of the score (bars,
 // signatures, clefs, repeats and text kept, every note a rest) gets each note entered again,
@@ -29,13 +29,14 @@ export interface Entry {
   /** Glissandos, slides, trill lines and two-note tremolos starting or ending here. */
   spans: SpanEnd[];
   fingerings: { midi: number; value: string }[];
+  bends: { midi: number; bends: Bend[] }[];
 }
 
 /** What a rebuild could not enter (the editor does not do these yet), by kind. */
 export type Skipped = Record<string, number>;
 
 const NOT_ENTERED: [what: string, test: (n: Element) => boolean][] = [
-  ["other technical marks (hammer-ons, bends...)", (n) => Array.from(n.getElementsByTagName("technical")).some((t) => kids(t).some((c) => !["string", "fret", "fingering", ...TECHNICAL_MARKS].includes(c.tagName)))],
+  ["other technical marks (taps, fingernails...)", (n) => Array.from(n.getElementsByTagName("technical")).some((t) => kids(t).some((c) => !["string", "fret", "fingering", "hammer-on", "pull-off", "bend", ...TECHNICAL_MARKS].includes(c.tagName)))],
   ["other ornaments (schleifers, shakes...)", (n) => Array.from(n.getElementsByTagName("ornaments")).some((o) => kids(o).some((c) => !["trill-mark", "turn", "delayed-turn", "inverted-turn", "delayed-inverted-turn", "vertical-turn", "mordent", "inverted-mordent", "wavy-line", "tremolo", "accidental-mark", "haydn", "shake", "schleifer"].includes(c.tagName)))],
 ];
 
@@ -87,7 +88,7 @@ export function plan(score: ScoreDoc): { entries: Entry[]; skipped: Skipped } {
           const at0: Caret = { part, measure: m, staff, voice, pos: ev.pos / per };
           // A tuplet that starts with a rest is laid out all the same.
           const marks = [...new Set(ev.notes.flatMap(marksOf))];
-          const none = { graces: [], lyrics: [], slurs: [], tremolo: 0, spans: [], fingerings: [] };
+          const none = { graces: [], lyrics: [], slurs: [], tremolo: 0, spans: [], fingerings: [], bends: [] };
           // A rest opening a tuplet, or carrying a fermata, is written as it is.
           if (ev.rest && (start || marks.length)) entries.push({ at: at0, pitches: [], quarters: ev.dur / per, ties: [], tuplet: start ?? undefined, rest: true, marks, ...none });
           if (ev.rest) return;
@@ -107,6 +108,11 @@ export function plan(score: ScoreDoc): { entries: Entry[]; skipped: Skipped } {
             slurs: ev.notes.flatMap(slursOf),
             tremolo: Math.max(0, ...ev.notes.map(tremoloOf)),
             spans: ev.notes.flatMap(spansOf),
+            bends: ev.notes.flatMap((n) => {
+              const p = readPitch(n);
+              const b = bendsOf(n);
+              return p && b.length ? [{ midi: midiOf(p), bends: b }] : [];
+            }),
             fingerings: ev.notes.flatMap((n) => {
               const p = readPitch(n);
               const v = fingeringOf(n);
@@ -181,10 +187,15 @@ export function rebuild(score: ScoreDoc): { doc: ScoreDoc; skipped: Skipped; ent
     for (const m of e.marks) ed.mark(e.at, m, true);
     for (const l of e.lyrics) ed.lyric(e.at, l.text, l.syllabic, l.number);
     if (e.tremolo) ed.tremolo(e.at, e.tremolo);
-    const ev = e.fingerings.length ? ed.eventAt(e.at) : null;
+    const ev = e.fingerings.length || e.bends.length ? ed.eventAt(e.at) : null;
+    const noteOf = (midi: number) => ev?.notes.find((x) => { const p = readPitch(x); return !!p && midiOf(p) === midi; });
     for (const f of e.fingerings) {
-      const n = ev?.notes.find((x) => { const p = readPitch(x); return !!p && midiOf(p) === f.midi; });
+      const n = noteOf(f.midi);
       if (n) ed.fingering(n, f.value);
+    }
+    for (const b of e.bends) {
+      const n = noteOf(b.midi);
+      if (n) ed.bends(n, b.bends);
     }
   }
   // Glissandos, slides, trill lines, two-note tremolos: paired like slurs, kind by kind.
@@ -265,6 +276,7 @@ export function noteList(score: ScoreDoc): string[] {
             const f = fingeringOf(n);
             const fp = readPitch(n);
             if (f && fp) out.push(`${at}|fingering ${f} on ${midiOf(fp)}`);
+            for (const b of bendsOf(n)) if (fp) out.push(`${at}|bend ${b.alter}${b.pre ? " pre-bend" : ""}${b.release ? " release" : ""} on ${midiOf(fp)}`);
           }
           for (const kind of Object.keys(SPANS)) {
             const c = spanCounts.get(kind);
@@ -318,7 +330,8 @@ export function describeNote(key: string, score: ScoreDoc): string {
   if (kind === "slurs") return `${where}: ${pitch.slice(6)} of slurs`;
   if (kind === "tremolo" && /strokes/.test(pitch)) return `${where}: ${pitch}`;
   if (kind === "fingering") return `${where}: fingering ${pitch.split(" ")[1]} on ${NAMES[Number(pitch.split(" ")[3]) % 12] + (Math.floor(Number(pitch.split(" ")[3]) / 12) - 1)}`;
-  if (["glissando", "slide", "trill", "tremolo"].includes(kind)) return `${where}: ${pitch.replace(/(\d+) start (\d+) end/, "$1 start, $2 end")}`;
+  if (kind === "bend") return `${where}: bend of ${pitch.split(" ")[1]} semitones${pitch.includes("pre-bend") ? ", pre-bent" : ""}${pitch.includes("release") ? ", released" : ""}`;
+  if (["glissando", "slide", "trill", "tremolo", "hammer-on", "pull-off"].includes(kind)) return `${where}: ${pitch.replace(/(\d+) start (\d+) end/, "$1 start, $2 end")}`;
   const [len, tied] = rest.split(" ");
   const name = pitch.startsWith("drum") ? pitch : NAMES[Number(pitch) % 12] + (Math.floor(Number(pitch) / 12) - 1);
   const part = score.parts[Number(p)]?.name || `part ${Number(p) + 1}`;

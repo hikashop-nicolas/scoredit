@@ -1,6 +1,6 @@
 import { ScoreEditor, type Caret, type Change, type Clip } from "../edit/editor";
 import { readMeasure, voiceKey, type Event } from "../edit/measure";
-import { fingeringOf, keyAlter, lyricsOf, marksOf, midiOf, readPitch, spellMidi, tremoloOf, type Pitch } from "../edit/notes";
+import { bendsOf, fingeringOf, type Bend, keyAlter, lyricsOf, marksOf, midiOf, readPitch, spellMidi, tremoloOf, type Pitch } from "../edit/notes";
 import type { ScoreDoc } from "../model/score";
 import { kid, kids, text } from "../model/xml";
 import type { PageView, Pick } from "../render/page-view";
@@ -65,6 +65,9 @@ const ICONS = {
   fingering: svg('<text x="12" y="17" text-anchor="middle" font-size="13" font-weight="700" fill="currentColor" stroke="none">1 3</text>'),
   upBow: svg('<polyline points="6 6 12 18 18 6"/>'),
   downBow: svg('<polyline points="6 18 6 6 18 6 18 18"/>'),
+  hammerOn: svg('<path d="M4 16c4-6 12-6 16 0"/><text x="12" y="21" text-anchor="middle" font-size="8" font-weight="700" fill="currentColor" stroke="none">H</text>'),
+  pullOff: svg('<path d="M4 16c4-6 12-6 16 0"/><text x="12" y="21" text-anchor="middle" font-size="8" font-weight="700" fill="currentColor" stroke="none">P</text>'),
+  bend: svg('<path d="M5 20c6 0 9-4 9-13"/><polyline points="11 9 14 5 17 9"/>'),
   lyrics: svg('<text x="12" y="17" text-anchor="middle" font-size="12" font-weight="700" fill="currentColor" stroke="none">Aa</text>'),
   triplet: svg('<polyline points="4 9 4 5 20 5 20 9"/><text x="12" y="19" text-anchor="middle" font-size="11" font-weight="700" fill="currentColor" stroke="none">3</text>'),
   del: svg('<polyline points="4 7 20 7"/><path d="M6 7l1 13h10l1-13"/><path d="M9 7V4h6v3"/>'),
@@ -283,7 +286,10 @@ export function createEditing(host: EditingHost): Editing {
   const fingerBtn = button(ICONS.fingering, t("fingering"), () => openField("fingering", lyricBar.hidden !== false || fieldMode !== "fingering"));
   const upBowBtn = button(ICONS.upBow, t("upBow"), () => mark("up-bow"));
   const downBowBtn = button(ICONS.downBow, t("downBow"), () => mark("down-bow"));
-  row3.append(...markBtns, slurBtn, graceBtn, lyricsBtn, arpBtn, tremBtn, glissBtn, trillLineBtn, fingerBtn, upBowBtn, downBowBtn);
+  const hammerBtn = button(ICONS.hammerOn, t("hammerOn"), () => span("hammer-on"));
+  const pullBtn = button(ICONS.pullOff, t("pullOff"), () => span("pull-off"));
+  const bendBtn = button(ICONS.bend, t("bend"), () => bend());
+  row3.append(...markBtns, slurBtn, graceBtn, lyricsBtn, arpBtn, tremBtn, glissBtn, trillLineBtn, fingerBtn, upBowBtn, downBowBtn, hammerBtn, pullBtn, bendBtn);
 
   const toShown = (p: number) => host.shown()?.indexOf(p) ?? p;
   const toFull = (rp: number) => host.shown()?.[rp] ?? rp;
@@ -309,6 +315,7 @@ export function createEditing(host: EditingHost): Editing {
     const selMarks = selectedEvents().flatMap(({ ev }) => ev.notes.flatMap(marksOf));
     MARKS.forEach(([m], i) => pressed(markBtns[i], selMarks.includes(m)));
     pressed(arpBtn, selMarks.includes("arpeggiate"));
+    pressed(bendBtn, selectedNotes().some((n) => bendsOf(n).length > 0));
     pressed(upBowBtn, selMarks.includes("up-bow"));
     pressed(downBowBtn, selMarks.includes("down-bow"));
     pressed(dotBtn, dots > 0);
@@ -596,6 +603,16 @@ export function createEditing(host: EditingHost): Editing {
     if (!sel) return;
     const end = sel.end ?? (kind === "trill line" ? sel.at : null);
     landed(editor.span(kind, sel.at, end, { value }));
+  }
+
+  /** A bend on the selected note, one press after another: full, full and released, half, none. */
+  function bend(): void {
+    const n = selectedNotes()[0];
+    if (!n) return;
+    const now = bendsOf(n);
+    const state = !now.length ? 0 : now.some((b) => b.release) ? 2 : now[0].alter >= 2 ? 1 : 3;
+    const next: Bend[][] = [[{ alter: 2 }], [{ alter: 2 }, { alter: 2, release: true }], [{ alter: 1 }], []];
+    landed(editor.bends(n, next[state]));
   }
 
   /** A tremolo: between the two selected notes, else on the selected one (on or off). */

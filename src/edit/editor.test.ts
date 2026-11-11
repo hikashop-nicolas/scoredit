@@ -5,7 +5,7 @@ import { kids, text } from "../model/xml";
 import { buildTimeline } from "../play/timeline";
 import { ScoreEditor, type Caret } from "./editor";
 import { readMeasure, voiceKey } from "./measure";
-import { fingeringOf, lyricsOf, marksOf, readPitch, slursOf, spansOf, tremoloOf, type Pitch } from "./notes";
+import { bendsOf, fingeringOf, lyricsOf, marksOf, readPitch, slursOf, spansOf, tremoloOf, type Pitch } from "./notes";
 
 const note = (step: string, dur: number, type: string, extra = "") => `<note><pitch><step>${step}</step><octave>4</octave></pitch><duration>${dur}</duration><voice>1</voice><type>${type}</type>${extra}</note>`;
 const rest = `<note><rest measure="yes"/><duration>4</duration><voice>1</voice></note>`;
@@ -236,5 +236,19 @@ describe("Entering notes", () => {
     expect(notes().filter((n) => marksOf(n).includes("arpeggiate"))).toHaveLength(2);
     ed.span("glissando", at(0, 1), null);
     expect(spansOf(notes()[2]).filter((x) => x.kind === "glissando")).toHaveLength(0);
+  });
+
+  it("adds hammer-ons, pull-offs and bends, which playback bends", () => {
+    const s = score(note("C", 1, "quarter") + note("D", 1, "quarter") + note("E", 1, "quarter") + note("F", 1, "quarter"));
+    const ed = new ScoreEditor(s);
+    const notes = () => Array.from(s.measures[0][0].getElementsByTagName("note"));
+    ed.span("hammer-on", at(0, 0), null);
+    ed.span("pull-off", at(0, 1), null);
+    ed.bends(notes()[3], [{ alter: 2 }, { alter: 2, release: true }]);
+    expect(notes().map((n) => spansOf(n).map((x) => `${x.kind} ${x.type}`).join())).toEqual(["hammer-on start", "hammer-on stop,pull-off start", "pull-off stop", ""]);
+    expect(bendsOf(notes()[3])).toEqual([{ alter: 2 }, { alter: 2, release: true }]);
+    expect(buildTimeline(s).events[3].bend).toBeTruthy();
+    ed.bends(notes()[3], []);
+    expect(bendsOf(notes()[3])).toEqual([]);
   });
 });
