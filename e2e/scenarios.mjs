@@ -591,6 +591,7 @@ export const scenarios = [
         cur = { k: null, dots: 0 };
         let at = 0;
         let prev = null;
+        let tup = null;
         for (const e of list) {
           // Silence before the note: rests, longest first.
           let gap = e.abs - at;
@@ -603,10 +604,24 @@ export const scenarios = [
           }
           if (gap > 1e-6) problems.push(`a silence of ${gap.toFixed(3)} beat before bar ${e.measure + 1} cannot be typed`);
           if (e.tuplet) {
-            if (e.tuplet.actual === 3 && e.tuplet.normal === 2 && (await setLength(e.tuplet.quarters))) await key("3", { ctrl: true });
-            else problems.push(`bar ${e.measure + 1}: a ${e.tuplet.actual}:${e.tuplet.normal} tuplet cannot be typed`);
-          } else if (written(e.quarters)) await setLength(e.quarters);
-          // (Inside a tuplet the length comes from its slot.)
+            if (e.tuplet.actual === 3 && e.tuplet.normal === 2 && (await setLength(e.tuplet.quarters))) {
+              await key("3", { ctrl: true });
+              // The editor switches to the tuplet's note value.
+              cur = written(e.tuplet.quarters / 2) ?? { k: null, dots: 0 };
+              tup = { ...e.tuplet, end: e.abs + e.tuplet.quarters };
+            } else problems.push(`bar ${e.measure + 1}: a ${e.tuplet.actual}:${e.tuplet.normal} tuplet cannot be typed`);
+          }
+          // Inside a tuplet a note is typed with its written value.
+          const inside = tup && e.abs < tup.end - 1e-6;
+          const wq = inside ? (e.quarters * tup.actual) / tup.normal : e.quarters;
+          if (written(wq)) await setLength(wq);
+          else problems.push(`bar ${e.measure + 1}: a note ${e.quarters.toFixed(3)} beat long cannot be typed`);
+          if (!e.notes.length) {
+            // A tuplet starting with a rest: the rest fills its first slot.
+            await key("0");
+            at = e.abs + e.quarters;
+            continue;
+          }
           const where = `${e.part}, ${e.measure}, ${e.staff}, ${JSON.stringify(e.voice)}, ${e.pos}`;
           const placed = [];
           for (const [i, n] of e.notes.entries()) {

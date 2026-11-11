@@ -65,6 +65,9 @@ export function plan(score: ScoreDoc): { entries: Entry[]; skipped: Skipped } {
           }
           if (ratio) left -= ev.dur / per;
           else left = 0;
+          const at0: Caret = { part, measure: m, staff, voice, pos: ev.pos / per };
+          // A tuplet that starts with a rest is laid out all the same.
+          if (ev.rest && starts) entries.push({ at: at0, pitches: [], quarters: ev.dur / per, ties: [], tuplet: starts });
           if (ev.rest) continue;
           const pitches = ev.notes.map(readPitch).filter((p): p is Pitch => !!p);
           if (!pitches.length) continue;
@@ -119,7 +122,7 @@ export function rebuild(score: ScoreDoc): { doc: ScoreDoc; skipped: Skipped; ent
   const ed = new ScoreEditor(doc, { history: false });
   for (const e of entries) {
     if (e.tuplet) ed.tuplet(e.at, e.tuplet.quarters, e.tuplet.actual, e.tuplet.normal);
-    ed.enter(e.at, { pitches: e.pitches, quarters: e.quarters });
+    if (e.pitches.length) ed.enter(e.at, { pitches: e.pitches, quarters: e.quarters });
   }
   for (const e of entries) if (e.ties.length) ed.tieTo(e.at, e.ties);
   doc.refresh();

@@ -119,9 +119,9 @@ export class ScoreEditor {
     }
     let length = Math.round((beats / beatType) * 4 * perQuarter);
     const used = Math.max(0, ...[...readMeasure(meas).voices.values()].map((evs) => evs.reduce((e, v) => Math.max(e, v.pos + v.dur), 0)));
-    // A pickup, or a bar written shorter than its time signature (as MuseScore allows): its
-    // longest voice sets its length, as MuseScore reads it.
-    if (meas.getAttribute("implicit") === "yes" || !timed || (used > 0 && used < length)) length = used || length;
+    // A bar is as long as its longest voice (as MuseScore reads one): a pickup, a bar written
+    // shorter (or longer) than its time signature. An empty bar takes the time signature.
+    if (meas.getAttribute("implicit") === "yes" || !timed || used > 0) length = used || length;
     // Compound time beams by the dotted quarter.
     const beat = beatType === 8 && beats % 3 === 0 ? perQuarter * 1.5 : perQuarter;
     return { perQuarter, length, fifths, beat };
@@ -149,8 +149,20 @@ export class ScoreEditor {
         const [before, from] = cut(segs, pos);
         // Written into a tuplet's slot, a note takes the slot's length and ratio.
         if (m === caret.measure && !opts.insert && from[0]?.tuplet && from[0].intact) {
-          len = from[0].len;
-          incoming = [{ ...incoming[0], len, tuplet: from[0].tuplet }];
+          const tp = from[0].tuplet;
+          // A note over several slots of the tuplet takes them together (a quarter in an
+          // eighth triplet); one shorter or equal takes the slot.
+          let sum = 0;
+          let k = 0;
+          while (len > from[0].len && k < from.length && from[k].tuplet && sum < len) sum += from[k++].len;
+          const w = k > 1 && sum === len ? writtenFor(Math.round((len * Number(text(tp.ratio, "actual-notes"))) / (Number(text(tp.ratio, "normal-notes")) || 1)), perQuarter) : null;
+          if (w) {
+            const marks = [...tp.marks.filter((x) => x.getAttribute("type") === "start"), ...(from[k - 1].tuplet?.marks ?? []).filter((x) => x.getAttribute("type") === "stop")];
+            incoming = [{ ...incoming[0], len, tuplet: { ratio: tp.ratio, type: w.type, dots: w.dots, marks } }];
+          } else {
+            len = from[0].len;
+            incoming = [{ ...incoming[0], len, tuplet: tp }];
+          }
         }
         const room = length - pos;
         let laid: Seg[];
@@ -374,8 +386,29 @@ export class ScoreEditor {
           .map((t) => midiOf({ step: text(t, "tuning-step"), alter: Number(text(t, "tuning-alter")) || 0, octave: Number(text(t, "tuning-octave")) }));
     }
     if (!tuning.length) return null;
-    const notation = [...staves].find((n) => n !== tab) ?? null;
+    let notation = [...staves].find((n) => n !== tab) ?? null;
+    // Kept in step only when the tab staff holds the same notes as the notation staff.
+    if (tab !== null && notation !== null && !this.copies(part, notation, tab)) notation = null;
     return { tuning, notation: tab !== null ? notation : null, tab };
+  }
+
+  private copiesCache = new Map<string, boolean>();
+  private copies(part: number, a: number, b: number): boolean {
+    const key = `${part}:${a}:${b}`;
+    let same = this.copiesCache.get(key);
+    if (same !== undefined) return same;
+    const notes = (r: ReturnType<typeof readMeasure>, staff: number) =>
+      [...r.voices]
+        .filter(([k]) => k.startsWith(`${staff}|`))
+        .flatMap(([, evs]) => evs.filter((e) => !e.rest).map((e) => `${e.pos}/${e.dur}/${e.notes.map((n) => midiOf(readPitch(n) ?? { step: "C", alter: 0, octave: 0 })).sort().join(",")}`))
+        .sort()
+        .join(" ");
+    same = this.score.measures[part].every((m) => {
+      const r = readMeasure(m);
+      return notes(r, a) === notes(r, b);
+    });
+    this.copiesCache.set(key, same);
+    return same;
   }
 
   /** Whether a part's notes are drums. */

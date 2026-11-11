@@ -293,7 +293,11 @@ export function createEditing(host: EditingHost): Editing {
       return;
     }
     const at = { ...caret };
-    const r = editor.enter(at, { pitches, quarters: durQ() }, { insert: insert || o.insert });
+    // Inside a tuplet the chosen (written) value lasts its share of the tuplet.
+    const ev = editor.eventAt(at);
+    const ratio = ev ? ev.notes[0].getElementsByTagName("time-modification")[0] : undefined;
+    const scale = ratio ? (Number(ratio.getElementsByTagName("normal-notes")[0]?.textContent) || 2) / (Number(ratio.getElementsByTagName("actual-notes")[0]?.textContent) || 3) : 1;
+    const r = editor.enter(at, { pitches, quarters: durQ() * scale }, { insert: insert || o.insert });
     sel = { at, note: null };
     caret = r.caret;
     if (pitches?.length) lastPitch = pitches[0];
@@ -383,7 +387,12 @@ export function createEditing(host: EditingHost): Editing {
     if (!at) return;
     if (!input) setInput(true);
     caret = { ...at };
-    landed(editor.tuplet(caret, durQ()));
+    const total = durQ();
+    landed(editor.tuplet(caret, total));
+    // Then notes of the tuplet's own value, as in MuseScore (eighths in a quarter triplet).
+    quarters = total / 2;
+    dots = 0;
+    sync();
   }
 
   function remove(): void {
