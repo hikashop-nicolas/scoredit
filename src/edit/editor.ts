@@ -119,7 +119,9 @@ export class ScoreEditor {
     }
     let length = Math.round((beats / beatType) * 4 * perQuarter);
     const used = Math.max(0, ...[...readMeasure(meas).voices.values()].map((evs) => evs.reduce((e, v) => Math.max(e, v.pos + v.dur), 0)));
-    if (meas.getAttribute("implicit") === "yes" || !timed) length = used || length;
+    // A pickup, or a bar written shorter than its time signature (as MuseScore allows): its
+    // longest voice sets its length, as MuseScore reads it.
+    if (meas.getAttribute("implicit") === "yes" || !timed || (used > 0 && used < length)) length = used || length;
     // Compound time beams by the dotted quarter.
     const beat = beatType === 8 && beats % 3 === 0 ? perQuarter * 1.5 : perQuarter;
     return { perQuarter, length, fifths, beat };
