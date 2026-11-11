@@ -12,6 +12,9 @@ interface Voice {
   gain: GainNode;
 }
 
+/** The program number scoredit uses for the drum kit (MIDI channel 10). */
+export const DRUMS = 128;
+
 /** Velocity the notes are rendered at; louder or softer notes scale from it. */
 const RENDER_VELOCITY = 100;
 
@@ -47,6 +50,7 @@ export class Sampler {
       const syn = new core.SpessaSynthProcessor(ctx.sampleRate, { effectsEnabled: false, eventsEnabled: false });
       syn.soundBankManager.addSoundBank(bank, "pack");
       const programs = new Set(bank.presets.filter((p) => !p.isGMGSDrum && p.bankMSB === 0).map((p) => p.program));
+      if (bank.presets.some((p) => p.isGMGSDrum)) programs.add(DRUMS);
       return new Sampler(ctx, syn, programs);
     } catch (e) {
       console.warn("scoredit: sound pack not loaded", e);
@@ -129,11 +133,12 @@ export class Sampler {
     const left = buf.getChannelData(0);
     const right = buf.getChannelData(1);
     const syn = this.syn;
+    const ch = program === DRUMS ? 9 : 0;
     syn.stopAll(true);
-    syn.programChange(0, program);
-    syn.noteOn(0, midi, RENDER_VELOCITY);
+    if (ch === 0) syn.programChange(0, program);
+    syn.noteOn(ch, midi, RENDER_VELOCITY);
     for (let i = 0; i < n; i += 128) syn.process(left, right, i, Math.min(128, n - i));
-    syn.noteOff(0, midi);
+    syn.noteOff(ch, midi);
     syn.stopAll(true);
     return buf;
   }

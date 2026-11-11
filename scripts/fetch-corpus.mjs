@@ -77,4 +77,13 @@ for (const f of TAB) {
   }
   console.log(f);
 }
+// The full MuseScore General sound bank (MIT), for the sound check page (demo/sounds.html).
+mkdirSync(join(root, "sounds"), { recursive: true });
+const bankPath = join(root, "sounds", "MuseScore_General.sf3");
+if (!existsSync(bankPath)) {
+  const res = await fetch("https://ftp.osuosl.org/pub/musescore/soundfont/MuseScore_General/MuseScore_General.sf3");
+  if (!res.ok) throw new Error(`${res.status} MuseScore_General.sf3`);
+  writeFileSync(bankPath, Buffer.from(await res.arrayBuffer()));
+  console.log("MuseScore_General.sf3");
+}
 if (!mscore) console.log("mscore not found: only the MuseScore 3 originals were fetched");
