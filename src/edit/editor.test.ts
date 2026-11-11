@@ -5,7 +5,7 @@ import { kids, text } from "../model/xml";
 import { buildTimeline } from "../play/timeline";
 import { ScoreEditor, type Caret } from "./editor";
 import { readMeasure, voiceKey } from "./measure";
-import { bendsOf, fingeringOf, lyricsOf, marksOf, readPitch, slursOf, spansOf, tremoloOf, type Pitch } from "./notes";
+import { bendsOf, otherTechnical, techValue, fingeringOf, lyricsOf, marksOf, readPitch, slursOf, spansOf, tremoloOf, type Pitch } from "./notes";
 
 const note = (step: string, dur: number, type: string, extra = "") => `<note><pitch><step>${step}</step><octave>4</octave></pitch><duration>${dur}</duration><voice>1</voice><type>${type}</type>${extra}</note>`;
 const rest = `<note><rest measure="yes"/><duration>4</duration><voice>1</voice></note>`;
@@ -250,5 +250,19 @@ describe("Entering notes", () => {
     expect(buildTimeline(s).events[3].bend).toBeTruthy();
     ed.bends(notes()[3], []);
     expect(bendsOf(notes()[3])).toEqual([]);
+  });
+
+  it("sets plucks, holes and arrows, and copies any other technical sign", () => {
+    const s = score(note("C", 1, "quarter") + note("D", 1, "quarter") + note("E", 1, "quarter") + note("F", 1, "quarter"));
+    const ed = new ScoreEditor(s);
+    const notes = () => Array.from(s.measures[0][0].getElementsByTagName("note"));
+    ed.techValue(notes()[0], "pluck", "m");
+    ed.techValue(notes()[1], "hole", "half");
+    ed.techValue(notes()[2], "arrow", "down");
+    ed.addTechnical(notes()[3], "<handbell>damp</handbell>");
+    expect([techValue(notes()[0], "pluck"), techValue(notes()[1], "hole"), techValue(notes()[2], "arrow")]).toEqual(["m", "half", "down"]);
+    expect(otherTechnical(notes()[3])).toEqual(["<handbell>damp</handbell>"]);
+    ed.techValue(notes()[0], "pluck", "");
+    expect(techValue(notes()[0], "pluck")).toBe("");
   });
 });

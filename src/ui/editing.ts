@@ -1,6 +1,6 @@
 import { ScoreEditor, type Caret, type Change, type Clip } from "../edit/editor";
 import { readMeasure, voiceKey, type Event } from "../edit/measure";
-import { bendsOf, fingeringOf, type Bend, keyAlter, lyricsOf, marksOf, midiOf, readPitch, spellMidi, tremoloOf, type Pitch } from "../edit/notes";
+import { techValue, bendsOf, fingeringOf, type Bend, keyAlter, lyricsOf, marksOf, midiOf, readPitch, spellMidi, tremoloOf, type Pitch } from "../edit/notes";
 import type { ScoreDoc } from "../model/score";
 import { kid, kids, text } from "../model/xml";
 import type { PageView, Pick } from "../render/page-view";
@@ -71,6 +71,9 @@ const ICONS = {
   tap: svg('<text x="12" y="17" text-anchor="middle" font-size="14" font-weight="700" fill="currentColor" stroke="none">T</text>'),
   shake: svg('<path d="M3 13q2-4 4 0t4 0 4 0 4 0"/><line x1="20" x2="20" y1="8" y2="17"/>'),
   schleifer: svg('<polyline points="4 17 9 9 14 14 20 6"/>'),
+  pluck: svg('<text x="12" y="17" text-anchor="middle" font-size="13" font-style="italic" font-weight="700" fill="currentColor" stroke="none">p i</text>'),
+  hole: svg('<circle cx="12" cy="12" r="7"/><path d="M12 5a7 7 0 0 0 0 14z" fill="currentColor"/>'),
+  arrow: svg('<line x1="12" x2="12" y1="20" y2="5"/><polyline points="7 10 12 5 17 10"/>'),
   lyrics: svg('<text x="12" y="17" text-anchor="middle" font-size="12" font-weight="700" fill="currentColor" stroke="none">Aa</text>'),
   triplet: svg('<polyline points="4 9 4 5 20 5 20 9"/><text x="12" y="19" text-anchor="middle" font-size="11" font-weight="700" fill="currentColor" stroke="none">3</text>'),
   del: svg('<polyline points="4 7 20 7"/><path d="M6 7l1 13h10l1-13"/><path d="M9 7V4h6v3"/>'),
@@ -295,7 +298,19 @@ export function createEditing(host: EditingHost): Editing {
   const hammerBtn = button(ICONS.hammerOn, t("hammerOn"), () => span("hammer-on"));
   const pullBtn = button(ICONS.pullOff, t("pullOff"), () => span("pull-off"));
   const bendBtn = button(ICONS.bend, t("bend"), () => bend());
-  row3.append(...markBtns, slurBtn, graceBtn, lyricsBtn, arpBtn, tremBtn, glissBtn, trillLineBtn, fingerBtn, upBowBtn, downBowBtn, hammerBtn, pullBtn, bendBtn);
+  // Plucks, holes and arrows: each press moves to the next value, then off.
+  const cycleBtn = (tag: "pluck" | "hole" | "arrow", icon: string, label: string, values: string[]) =>
+    button(icon, t(label), () => {
+      const n = selectedNotes()[0];
+      if (!n) return;
+      const now = techValue(n, tag);
+      const next = values[(values.indexOf(now) + 1) % (values.length + 1)] ?? "";
+      landed(editor.techValue(n, tag, next));
+    });
+  const pluckBtn = cycleBtn("pluck", ICONS.pluck, "pluck", ["p", "i", "m", "a"]);
+  const holeBtn = cycleBtn("hole", ICONS.hole, "hole", ["yes", "half", "no"]);
+  const arrowBtn = cycleBtn("arrow", ICONS.arrow, "arrow", ["up", "down"]);
+  row3.append(...markBtns, slurBtn, graceBtn, lyricsBtn, arpBtn, tremBtn, glissBtn, trillLineBtn, fingerBtn, upBowBtn, downBowBtn, hammerBtn, pullBtn, bendBtn, pluckBtn, holeBtn, arrowBtn);
 
   const toShown = (p: number) => host.shown()?.indexOf(p) ?? p;
   const toFull = (rp: number) => host.shown()?.[rp] ?? rp;

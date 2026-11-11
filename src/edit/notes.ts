@@ -548,3 +548,54 @@ export function setBends(note: Element, bends: Bend[]): void {
     t.appendChild(e);
   }
 }
+
+// ---- Technical signs with a value: plucks (p i m a), woodwind holes, arrows; and any other.
+
+const HANDLED_TECH = new Set(["string", "fret", "fingering", "hammer-on", "pull-off", "bend", ...TECHNICAL_MARKS]);
+
+/** A pluck's letter, a hole's covering (yes, half, no) or an arrow's direction ("" if none). */
+export function techValue(note: Element, tag: "pluck" | "hole" | "arrow"): string {
+  for (const nots of kids(note, "notations"))
+    for (const t of kids(nots, "technical"))
+      for (const e of kids(t, tag)) return tag === "pluck" ? (e.textContent?.trim() ?? "") : tag === "hole" ? text(e, "hole-closed") : text(e, "arrow-direction");
+  return "";
+}
+
+/** Sets (or, empty, removes) a pluck, hole or arrow. */
+export function setTechValue(note: Element, tag: "pluck" | "hole" | "arrow", value: string): void {
+  for (const nots of kids(note, "notations")) {
+    for (const t of kids(nots, "technical")) {
+      for (const e of kids(t, tag)) e.remove();
+      if (!t.firstElementChild) t.remove();
+    }
+    if (!nots.firstElementChild) nots.remove();
+  }
+  if (!value) return;
+  const doc = note.ownerDocument;
+  const n = notationsOf(note, true);
+  const t = kid(n, "technical") ?? placeIn(n, doc.createElementNS(null, "technical"), NOTATION_ORDER);
+  const e = doc.createElementNS(null, tag);
+  const inner = tag === "hole" ? "hole-closed" : tag === "arrow" ? "arrow-direction" : null;
+  if (inner) {
+    const c = doc.createElementNS(null, inner);
+    c.textContent = value;
+    e.appendChild(c);
+  } else e.textContent = value;
+  t.appendChild(e);
+}
+
+/** Technical signs no other helper handles, as written (for copying them whole). */
+export function otherTechnical(note: Element): string[] {
+  const ser = new XMLSerializer();
+  return kids(note, "notations").flatMap((nots) => kids(nots, "technical").flatMap((t) => kids(t).filter((c) => !HANDLED_TECH.has(c.tagName)).map((c) => ser.serializeToString(c))));
+}
+
+/** Adds a technical sign written as XML. */
+export function addTechnicalXml(note: Element, xml: string): void {
+  const parsed = new DOMParser().parseFromString(`<x>${xml}</x>`, "application/xml").documentElement.firstElementChild;
+  if (!parsed) return;
+  const doc = note.ownerDocument;
+  const n = notationsOf(note, true);
+  const t = kid(n, "technical") ?? placeIn(n, doc.createElementNS(null, "technical"), NOTATION_ORDER);
+  t.appendChild(doc.importNode(parsed, true));
+}

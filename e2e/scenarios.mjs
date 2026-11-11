@@ -55,6 +55,9 @@ export const HELPERS = `(() => {
         for (const t of g.children) {
           if (t.tagName === "fingering") words.push("finger " + t.textContent.trim());
           else if (t.tagName === "hammer-on" || t.tagName === "pull-off") ends(t, t.tagName);
+          else if (t.tagName === "pluck") words.push("pluck " + t.textContent.trim());
+          else if (t.tagName === "hole") words.push("hole " + ({ yes: "closed", no: "open", half: "half closed" }[txt(t, "hole-closed")] ?? txt(t, "hole-closed")));
+          else if (t.tagName === "arrow") words.push("arrow " + txt(t, "arrow-direction"));
           else if (t.tagName === "bend") words.push("bend " + txt(t, "bend-alter") + (kidsOf(t, "release").length ? " release" : "") + (kidsOf(t, "pre-bend").length ? " pre-bent" : ""));
           else if (t.tagName !== "string" && t.tagName !== "fret") words.push(t.tagName);
         }
@@ -699,6 +702,26 @@ export const scenarios = [
         await d.button(label);
       }
       await d.bars({ 1: "C4 quarter [tap], D4 quarter [shake], E4 quarter [schleifer], F4 quarter" });
+    },
+  },
+  {
+    id: "pluck-hole-arrow",
+    title: "A plucking finger, a woodwind hole and an arrow",
+    device: "desktop",
+    fixture: "melody.musicxml",
+    why: "Plucks name the right-hand finger of a guitarist (p thumb, i index, m middle, a ring): each press of the button moves to the next. A hole (a circle) shows a woodwind hole covered, half covered or open. An arrow points up or down (a strum direction, for instance).",
+    look: "An i over the first note, a half-filled circle over the second, an up arrow over the third.",
+    async run(d) {
+      await d.button("Marks");
+      await d.tapStaff(1, 1, 1, "C4");
+      await d.button("Pluck (p i m a)");
+      await d.button("Pluck (p i m a)");
+      await d.tapStaff(1, 2, 1, "D4");
+      await d.button("Hole");
+      await d.button("Hole");
+      await d.tapStaff(1, 3, 1, "E4");
+      await d.button("Arrow");
+      await d.bars({ 1: "C4 quarter [pluck i], D4 quarter [hole half closed], E4 quarter [arrow up], F4 quarter" });
     },
   },
   {

@@ -1,7 +1,7 @@
 import type { ScoreDoc } from "../model/score";
 import { kid, kids, text } from "../model/xml";
 import { readMeasure, voiceKey, writeMeasure, type Event, type ReadMeasure } from "./measure";
-import { TYPES, setBends, type Bend, addSpan, removeSpan, setFingering, setTremolo, spansOf, addSlur, defaultPosition, isTied, keepMarksFor, makeGrace, marksOf, placeInNote, removeSlur, setLyric, setMark, setPosition, slursOf, writtenFor, keyAlter, makeNote, midiOf, pieceOf, readPitch, setPitch, setTie, spellMidi, splitLength, type Pitch, type Written } from "./notes";
+import { TYPES, addTechnicalXml, setTechValue, setBends, type Bend, addSpan, removeSpan, setFingering, setTremolo, spansOf, addSlur, defaultPosition, isTied, keepMarksFor, makeGrace, marksOf, placeInNote, removeSlur, setLyric, setMark, setPosition, slursOf, writtenFor, keyAlter, makeNote, midiOf, pieceOf, readPitch, setPitch, setTie, spellMidi, splitLength, type Pitch, type Written } from "./notes";
 
 /** Where the next note goes: a beat in one voice of one staff of a part. */
 export interface Caret {
@@ -558,6 +558,28 @@ export class ScoreEditor {
     return this.transact(() => {
       this.touch(at.part, at.measure);
       setBends(note, bends);
+      return { from: at.measure, to: at.measure + 1, appended: 0 };
+    });
+  }
+
+  /** Sets a note's pluck letter, hole covering or arrow direction ("" takes it off). */
+  techValue(note: Element, tag: "pluck" | "hole" | "arrow", value: string): Change {
+    const at = this.locate(note);
+    if (!at) return { from: 0, to: 0, appended: 0 };
+    return this.transact(() => {
+      this.touch(at.part, at.measure);
+      setTechValue(note, tag, value);
+      return { from: at.measure, to: at.measure + 1, appended: 0 };
+    });
+  }
+
+  /** Adds any technical sign written as XML (a rebuild copying one as it is). */
+  addTechnical(note: Element, xml: string): Change {
+    const at = this.locate(note);
+    if (!at) return { from: 0, to: 0, appended: 0 };
+    return this.transact(() => {
+      this.touch(at.part, at.measure);
+      addTechnicalXml(note, xml);
       return { from: at.measure, to: at.measure + 1, appended: 0 };
     });
   }
