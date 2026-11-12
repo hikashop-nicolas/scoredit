@@ -101,8 +101,23 @@ function tempoMarks(score: ScoreDoc, m: number): [number, number][] {
   return [...found.entries()].sort((a, b) => a[0] - b[0]);
 }
 
-/** Measures in the order they are played: repeats and first/second endings unrolled. */
+/** Measures in the order they are played: repeats and first/second endings unrolled, a play order followed. */
 export function playOrder(score: ScoreDoc): number[] {
+  // A play order (an ABC P: line, kept as a "play-order" field) names parts by their rehearsal marks.
+  const misc = kid(score.root, "identification")?.getElementsByTagName("miscellaneous-field") ?? [];
+  const field = Array.from(misc).find((f) => f.getAttribute("name") === "play-order");
+  const letters = field?.textContent?.trim().split(/\s+/).filter((x) => x) ?? [];
+  let cur: string | null = null;
+  const label = (score.measures[0] ?? []).map((m) => (cur = m.getElementsByTagName("rehearsal")[0]?.textContent?.trim() || cur));
+  if (!letters.length || cur === null) return repeatOrder(score, []);
+  // Each part repeats within itself; measures before the first part play first.
+  const order = repeatOrder(score, label.flatMap((l, i) => (l !== null && l !== label[i - 1] ? [i] : [])));
+  const out = order.filter((i) => label[i] === null);
+  for (const l of letters) out.push(...order.filter((i) => label[i] === l));
+  return out;
+}
+
+function repeatOrder(score: ScoreDoc, partStarts: number[]): number[] {
   const ms = score.measures[0] ?? [];
   const n = ms.length;
   const bars = (m: Element) => kids(m, "barline");
@@ -130,7 +145,7 @@ export function playOrder(score: ScoreDoc): number[] {
     const stop = endingStop(k);
     return !(stop + 1 < n && ending(ms[stop + 1], "start"));
   };
-  const sectionStarts = score.sections.length ? score.sections : [0];
+  const sectionStarts = [...new Set([...(score.sections.length ? score.sections : [0]), ...partStarts])].sort((a, b) => a - b);
   const sectionOf = (i: number) => sectionStarts.filter((s) => s <= i).pop() ?? 0;
   const order: number[] = [];
   let repeatStart = 0;
