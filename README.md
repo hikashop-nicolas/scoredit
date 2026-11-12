@@ -24,6 +24,20 @@ viewer.setZoom(1.2);
 viewer.destroy();
 ```
 
+## MIDI
+
+```ts
+import { midiToMusicXml, writeMidi } from "scoredit";
+
+const mid = writeMidi(score); // Standard MIDI File, type 1, 480 ticks a quarter
+const xml = midiToMusicXml(mid); // and back, quantised to written values
+```
+
+The export plays the score the way scoredit plays it: repeats and jumps unfolded, transposing
+instruments at concert pitch, drums on channel 10, velocities from dynamics and accents,
+staccato shortened, grace notes and arpeggios timed. `{ straight: true }` writes each
+measure once instead.
+
 ## Sound
 
 Playback starts on a built-in synthesizer (webaudio-tinysynth, Apache-2.0) and a plucked-string

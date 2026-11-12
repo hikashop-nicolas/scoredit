@@ -65,7 +65,7 @@ export interface Timeline {
 const STEP: Record<string, number> = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
 const DYN: Record<string, number> = { pppp: 20, ppp: 30, pp: 42, p: 55, mp: 68, mf: 80, f: 95, ff: 108, fff: 118, ffff: 125, sf: 105, sfz: 108, fp: 95 };
 const DEFAULT_BPM = 100;
-const GRACE = 0.07;
+const TYPE_Q: Record<string, number> = { whole: 4, half: 2, quarter: 1, eighth: 0.5, "16th": 0.25, "32nd": 0.125, "64th": 0.0625, "128th": 0.03125 };
 
 // Tempo, from <sound tempo> or a metronome mark, keyed by quarter offset in the measure.
 function tempoMarks(score: ScoreDoc, m: number): [number, number][] {
@@ -231,7 +231,7 @@ function programsOf(score: ScoreDoc): { channel: number; program: number; drums:
 }
 
 /** Turns the score into timed notes, in played order. */
-export function buildTimeline(score: ScoreDoc, opts: { straight?: boolean } = {}): Timeline {
+export function buildTimeline(score: ScoreDoc, opts: { straight?: boolean; bpm?: number } = {}): Timeline {
   // Straight: every measure once, in score order, without repeats or jumps.
   const order = opts.straight ? Array.from({ length: score.measureCount }, (_, m) => m) : playOrder(score);
   // Drum sounds: the instrument a note names, and the General MIDI drum it plays.
@@ -268,7 +268,8 @@ export function buildTimeline(score: ScoreDoc, opts: { straight?: boolean } = {}
   }
 
   // Lay the played measures out in time.
-  let secPerQ = 60 / DEFAULT_BPM;
+  // Until the score marks a tempo.
+  let secPerQ = 60 / (opts.bpm ?? DEFAULT_BPM);
   let t = 0;
   const spans: MeasureSpan[] = [];
   for (const m of order) {
@@ -291,6 +292,8 @@ export function buildTimeline(score: ScoreDoc, opts: { straight?: boolean } = {}
   const controls: ControlEvent[] = [];
   // Ties left open at the end of a measure, picked up by the next one played.
   const carry = new Map<string, NoteEvent>();
+  // The last onset of each voice (part, staff, voice), across bar lines.
+  const lastOf = new Map<string, NoteEvent[]>();
   for (const span of spans) {
     const m = span.measure;
     score.measures.forEach((ms, p) => {
@@ -304,6 +307,41 @@ export function buildTimeline(score: ScoreDoc, opts: { straight?: boolean } = {}
       let pos = 0;
       let lastOnset = 0;
       const tied = new Map<string, NoteEvent>();
+      // Grace notes wait, per voice, for the note they lead into.
+      const graces = new Map<string, { el: Element; midi: number; q: number; chord: boolean }[]>();
+      const delayed = new Map<string, [onset: number, by: number]>();
+      const atQ = (q: number) => span.start + (q >= 0 ? quarterToSec(span, q) : q * span.tempo[0][1]);
+      // Before the beat (slashed, or after the last note of a measure) they take time from the
+      // note before; on the beat they take it from the note they lead into.
+      const layGraces = (vk: string, onset: number, mainQ: number): number => {
+        const list = graces.get(vk);
+        if (!list?.length) return 0;
+        graces.delete(vk);
+        const slots: (typeof list)[] = [];
+        for (const g of list) {
+          if (g.chord && slots.length) slots[slots.length - 1].push(g);
+          else slots.push([g]);
+        }
+        const prev = lastOf.get(`${p}|${vk}`) ?? [];
+        const g0 = kid(list[0].el, "grace");
+        const want = slots.reduce((t, sl) => t + sl[0].q, 0);
+        const before = (mainQ <= 0 || g0?.getAttribute("slash") === "yes" || !!g0?.hasAttribute("steal-time-previous")) && atQ(onset - want) >= 0;
+        // Before the beat they sound at their written length; on it, one takes half the main note.
+        const scale = before ? 1 : slots.length === 1 || want > mainQ / 2 ? mainQ / 2 / want : 1;
+        // Before the beat: at most the second half of the note before.
+        const half = prev.length ? Math.max(...prev.map((e) => e.time + e.dur / 2)) : -Infinity;
+        let start = before ? Math.max(atQ(onset - want), half) : atQ(onset);
+        if (before && start >= atQ(onset)) start = atQ(onset - want);
+        const shrink = before ? (atQ(onset) - start) / Math.max(1e-9, atQ(onset) - atQ(onset - want)) : 1;
+        let q = before ? onset - want * shrink : onset;
+        for (const e of prev) if (e.time < start && e.time + e.dur > start) e.dur = start - e.time;
+        for (const sl of slots) {
+          const len = sl[0].q * scale * shrink;
+          for (const g of sl) events.push({ time: atQ(q), dur: Math.max(0.01, atQ(q + len) - atQ(q)), midi: g.midi, velocity: velocity[p], channel: parts[p].channel, program: parts[p].program, part: p, staff: Number(text(g.el, "staff")) || 1, measure: m, onset, el: g.el, grace: true });
+          q += len;
+        }
+        return before ? 0 : want * scale;
+      };
       for (const c of kids(meas)) {
         const dur = Number(text(c, "duration")) || 0;
         switch (c.tagName) {
@@ -339,13 +377,13 @@ export function buildTimeline(score: ScoreDoc, opts: { straight?: boolean } = {}
           }
           case "note": {
             const grace = kid(c, "grace");
+            const vk = `${text(c, "staff") || 1}|${text(c, "voice") || 1}`;
             if (grace) {
-              // A grace note sounds short, just ahead of the beat it leads into.
               const gp = kid(c, "pitch");
-              if (!gp || kid(c, "chord")) break;
+              if (!gp) break;
               const gm = (Number(text(gp, "octave")) + 1) * 12 + (STEP[text(gp, "step")] ?? 0) + (Number(text(gp, "alter")) || 0) + shift;
-              const at = Math.max(span.start, span.start + quarterToSec(span, pos / div) - GRACE);
-              events.push({ time: at, dur: GRACE, midi: gm, velocity: velocity[p], channel: parts[p].channel, program: parts[p].program, part: p, staff: Number(text(c, "staff")) || 1, measure: m, onset: pos / div, el: c, grace: true });
+              const q = (TYPE_Q[text(c, "type")] ?? 0.125) * (2 - 2 ** -kids(c, "dot").length);
+              (graces.get(vk) ?? graces.set(vk, []).get(vk)!).push({ el: c, midi: gm, q: Math.min(q, 0.5), chord: !!kid(c, "chord") });
               break;
             }
             const chord = !!kid(c, "chord");
@@ -353,7 +391,10 @@ export function buildTimeline(score: ScoreDoc, opts: { straight?: boolean } = {}
             if (!chord) {
               lastOnset = onset;
               pos += dur;
+              delayed.set(vk, [onset, kid(c, "rest") ? 0 : layGraces(vk, onset, dur / div)]);
             }
+            const dl = delayed.get(vk);
+            const late = dl && dl[0] === onset ? dl[1] : 0;
             const pitch = kid(c, "pitch");
             const drum = unpitched.get(kid(c, "instrument")?.getAttribute("id") ?? "");
             if (!pitch && kid(c, "unpitched") && drum !== undefined && !kid(c, "rest")) {
@@ -368,7 +409,7 @@ export function buildTimeline(score: ScoreDoc, opts: { straight?: boolean } = {}
             const ties = kids(c, "tie").map((e) => e.getAttribute("type"));
             const staff = Number(text(c, "staff")) || 1;
             const key = `${p}:${staff}:${midi}`;
-            const start = span.start + quarterToSec(span, onset);
+            const start = span.start + quarterToSec(span, onset + late);
             const length = span.start + quarterToSec(span, onset + q) - start;
             const prev = ties.includes("stop") ? tied.get(key) ?? carry.get(key) : undefined;
             if (prev) {
@@ -413,18 +454,23 @@ export function buildTimeline(score: ScoreDoc, opts: { straight?: boolean } = {}
             const trem = c.getElementsByTagName("tremolo")[0];
             if (trem) ev.tremolo = { type: trem.getAttribute("type") ?? "single", strokes: Number(trem.textContent) || 2, quarters: q };
             events.push(ev);
+            const lo = lastOf.get(`${p}|${vk}`);
+            if (lo?.length && lo[0].onset === onset && lo[0].measure === m) lo.push(ev);
+            else lastOf.set(`${p}|${vk}`, [ev]);
             if (ties.includes("start")) tied.set(key, ev);
             break;
           }
         }
       }
+      // Graces left at the end of the measure sound just before its end.
+      for (const vk of [...graces.keys()]) layGraces(vk, span.quarters, 0);
       // Ties that run into the next measure.
       for (const [k, ev] of tied) carry.set(k, ev);
     });
   }
   events.sort((a, b) => a.time - b.time);
   controls.sort((a, b) => a.time - b.time);
-  return { events: expand(dedupe(events)), controls, spans, duration: t, programs };
+  return { events: expand(dedupe(arpeggiate(events))), controls, spans, duration: t, programs };
 }
 
 /** Seconds from the start of a measure to quarter offset q in it. */
@@ -472,6 +518,38 @@ export function lowerNeighbour(step: string, octave: number, fifths: number, alt
 function neighbour(step: string, oct: number, fifths: number, alter?: number): number {
   const inKey = fifths > 0 && SHARPS.indexOf(step) < fifths ? 1 : fifths < 0 && FLATS.indexOf(step) < -fifths ? -1 : 0;
   return (oct + 1) * 12 + STEP[step] + (alter ?? inKey);
+}
+
+// Arpeggiated chords roll from the bottom (or the top), a little apart, within half their length.
+function arpeggiate(events: NoteEvent[]): NoteEvent[] {
+  // The mark may sit on any note of the chord.
+  const arp = new Map<Element, Element | null>();
+  const chords = new Map<string, NoteEvent[]>();
+  for (const e of events) {
+    if (e.grace) continue;
+    let head: Element = e.el;
+    while (kid(head, "chord") && head.previousElementSibling?.tagName === "note") head = head.previousElementSibling;
+    if (!arp.has(head)) {
+      let mark: Element | null = null;
+      for (let n: Element | null = head; n && n.tagName === "note" && (n === head || kid(n, "chord")); n = n.nextElementSibling) mark ??= n.getElementsByTagName("arpeggiate")[0] ?? null;
+      arp.set(head, mark);
+    }
+    const mark = arp.get(head);
+    if (!mark) continue;
+    const k = `${e.part}|${e.staff}|${Math.round(e.time * 1000)}|${mark.getAttribute("direction") === "down" ? "down" : "up"}`;
+    (chords.get(k) ?? chords.set(k, []).get(k)!).push(e);
+  }
+  for (const [k, list] of chords) {
+    if (list.length < 2) continue;
+    const down = k.endsWith("down");
+    list.sort((a, b) => (down ? b.midi - a.midi : a.midi - b.midi));
+    const step = Math.min(0.05, Math.min(...list.map((e) => e.dur)) / 2 / Math.max(1, list.length - 1));
+    list.forEach((e, k) => {
+      e.time += k * step;
+      e.dur -= k * step;
+    });
+  }
+  return chords.size ? events.sort((a, b) => a.time - b.time) : events;
 }
 
 // The same note twice at once in one part (a tab staff linked to the standard staff) sounds

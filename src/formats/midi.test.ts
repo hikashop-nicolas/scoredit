@@ -47,7 +47,7 @@ function smf(tracks: Ev[][], format = 1): Uint8Array {
 const parse = (bytes: Uint8Array) => new DOMParser().parseFromString(midiToMusicXml(bytes), "application/xml");
 const kid = (e: Element, tag: string) => [...e.children].find((c) => c.tagName === tag);
 
-/** A part's bars as text: "C4 q", "r h", "~" before a tied-in note, "+" for a chord note, "/3" in a triplet. */
+/** A part's bars as text: "C4 q", "r h", "~" before a tied-in note, "+" for a chord note, "/3" in a triplet, "/5" in a quintuplet. */
 function bars(doc: Document, part = 0, voice?: number): string[][] {
   const p = doc.getElementsByTagName("part")[part];
   return [...p.getElementsByTagName("measure")].map((m) =>
@@ -59,7 +59,7 @@ function bars(doc: Document, part = 0, voice?: number): string[][] {
         const what = pitch ? `${kid(pitch, "step")!.textContent}${({ "1": "#", "-1": "b" } as Record<string, string>)[kid(pitch, "alter")?.textContent ?? ""] ?? ""}${kid(pitch, "octave")!.textContent}` : un ? `x${kid(un, "display-step")!.textContent}${kid(un, "display-octave")!.textContent}` : "r";
         const type = { whole: "w", half: "h", quarter: "q", eighth: "e", "16th": "s", "32nd": "t" }[kid(n, "type")?.textContent ?? ""] ?? "bar";
         const tie = [...n.getElementsByTagName("tie")].some((t) => t.getAttribute("type") === "stop") ? "~" : "";
-        return `${kid(n, "chord") ? "+" : ""}${tie}${what} ${type}${"." .repeat(n.getElementsByTagName("dot").length)}${kid(n, "time-modification") ? "/3" : ""}`;
+        return `${kid(n, "chord") ? "+" : ""}${tie}${what} ${type}${"." .repeat(n.getElementsByTagName("dot").length)}${kid(n, "time-modification") ? `/${n.getElementsByTagName("actual-notes")[0].textContent}` : ""}`;
       }),
   );
 }
@@ -225,4 +225,70 @@ describe("MIDI reader", () => {
     expect(doc.getElementsByTagName("clef-octave-change")[0].textContent).toBe("-1");
     expect(bars(doc)).toEqual([["E3 w"]]);
   });
+
+  it("writes quintuplets and sextuplets where the timing calls for them", () => {
+    // Five in a beat, played a little loose; then six sixteenths in a beat.
+    const jitter = [0, 0.012, -0.01, 0.008, -0.006];
+    const five = [0, 1, 2, 3, 4].map((i) => [60 + i, i / 5 + jitter[i], 0.19] as [number, number, number]);
+    const six = [0, 1, 2, 3, 4, 5].map((i) => [72 - i, 1 + i / 6, 1 / 6] as [number, number, number]);
+    const doc = parse(smf([[...notes(0, [...five, ...six, [60, 2, 2]])]]));
+    expect(bars(doc)).toEqual([["C4 s/5", "C#4 s/5", "D4 s/5", "D#4 s/5", "E4 s/5", "C5 s/6", "B4 s/6", "A#4 s/6", "A4 s/6", "G#4 s/6", "G4 s/6", "C4 h"]]);
+    const mods = [...doc.getElementsByTagName("time-modification")].map((m) => `${kid(m, "actual-notes")!.textContent}:${kid(m, "normal-notes")!.textContent}`);
+    expect(new Set(mods)).toEqual(new Set(["5:4", "6:4"]));
+    expect([...doc.getElementsByTagName("tuplet")].map((t) => t.getAttribute("type"))).toEqual(["start", "stop", "start", "stop"]);
+    checkFull(doc);
+  });
+
+  it("keeps loosely played straight rhythms straight", () => {
+    // Sixteenths and eighths, each up to 25 ms early or late at 120 bpm.
+    const off = [0.03, -0.04, 0.05, -0.02, 0.04, -0.05, 0.02, -0.03];
+    const list: [number, number, number][] = [];
+    for (let b = 0; b < 4; b++) {
+      const sub = b % 2 ? [0, 0.5] : [0, 0.25, 0.5, 0.75];
+      sub.forEach((x, i) => list.push([60 + i, b + x + off[(b * 4 + i) % 8], b % 2 ? 0.45 : 0.22]));
+    }
+    const doc = parse(smf([[...notes(0, [...list, [60, 4, 4]])]]));
+    expect(doc.getElementsByTagName("time-modification").length).toBe(0);
+    expect(bars(doc)[0].join(" ")).toBe("C4 s C#4 s D4 s D#4 s C4 e C#4 e C4 s C#4 s D4 s D#4 s C4 e C#4 e");
+  });
+
+  it("gives independent lines voices of their own, up to four, and keeps chords together", () => {
+    // In one strings track: a whole note, halves, quarters and eighths against each other.
+    const lines: [number, number, number][] = [
+      [48, 0, 4],
+      [55, 0, 2],
+      [57, 2, 2],
+      ...[0, 1, 2, 3].map((i) => [64 + i, i, 1] as [number, number, number]),
+      ...[0, 1, 2, 3, 4, 5, 6, 7].map((i) => [76 + (i % 3), i / 2 + 0.25, 0.25] as [number, number, number]),
+    ];
+    const doc = parse(smf([[program(0, 48), ...notes(0, lines)]]));
+    const voices = new Set([...doc.getElementsByTagName("voice")].map((v) => v.textContent));
+    expect(voices.size).toBe(4);
+    const all = [1, 2, 3, 4].map((v) => bars(doc, 0, v)[0].filter((x) => !x.startsWith("r")).join(" "));
+    expect(all).toContain("C3 w");
+    expect(all).toContain("G3 h A3 h");
+    expect(all).toContain("E4 q F4 q F#4 q G4 q");
+    checkFull(doc);
+    // A block chord against one line: still two voices, the chord in one.
+    const chordDoc = parse(smf([[program(0, 48), ...notes(0, [[60, 0, 4], [64, 0, 4], [67, 0, 4], [72, 0, 1], [74, 1, 1], [76, 2, 2]])]]));
+    expect(bars(chordDoc, 0, 2)).toEqual([["C4 w", "+E4 w", "+G4 w"]]);
+    expect(bars(chordDoc, 0, 1)).toEqual([["C5 q", "D5 q", "E5 h"]]);
+  });
+
+  it("reads a long file with many tracks and tempo and key changes quickly", () => {
+    const tracks: Ev[][] = [[tempo(0, 100), ...Array.from({ length: 1500 }, (_, i) => tempo(i, 90 + (i % 40))), ...Array.from({ length: 300 }, (_, i) => key(i * 4, (i % 7) - 3))]];
+    for (let tr = 0; tr < 16; tr++) {
+      const list: [number, number, number][] = [];
+      for (let i = 0; i < 3000; i++) list.push([48 + ((i * 7 + tr) % 36), i / 2, 0.5]);
+      tracks.push([program(tr === 9 ? 0 : tr, tr * 5), ...notes(tr === 9 ? 0 : tr, list)]);
+    }
+    const bytes = smf(tracks);
+    const t = performance.now();
+    const xml = midiToMusicXml(bytes);
+    const ms = performance.now() - t;
+    expect(ms).toBeLessThan(4000);
+    const doc = new DOMParser().parseFromString(xml, "application/xml");
+    expect(doc.getElementsByTagName("part").length).toBe(16);
+    expect(doc.getElementsByTagName("part")[0].getElementsByTagName("measure").length).toBe(375);
+  }, 30000);
 });

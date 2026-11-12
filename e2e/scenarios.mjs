@@ -574,7 +574,7 @@ export const scenarios = [
       await d.key("ArrowUp");
       await d.key("ArrowUp");
       await d.bars({ 1: "C5 quarter [slur starts], D5 quarter, E5 quarter [slur ends], F5 quarter [grace note G5]" });
-      await d.sounds(["C5 at bar 1 beat 1 for 1 beat", "D5 at bar 1 beat 2 for 1 beat", "E5 at bar 1 beat 3 for 1 beat", "G5 at bar 1 beat 4, quick (grace note)", "F5 at bar 1 beat 4 for 1 beat"], "Playback (a quick grace note, then the main note)");
+      await d.sounds(["C5 at bar 1 beat 1 for 1 beat", "D5 at bar 1 beat 2 for 1 beat", "E5 at bar 1 beat 3 for ½ beat", "G5 at bar 1 beat 4, quick (grace note)", "F5 at bar 1 beat 4 for 1 beat"], "Playback (the slashed grace note takes the second half of the note before, then the main note on the beat)");
     },
   },
   {

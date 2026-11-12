@@ -150,4 +150,42 @@ describe("ornaments and pedal", () => {
     const tl = buildTimeline(new ScoreDoc(score([two + n("C", 4, "<staff>1</staff>") + `<backup><duration>4</duration></backup>` + n("C", 4, "<staff>2</staff>")])));
     expect(tl.events).toHaveLength(1);
   });
+
+  it("plays a slashed grace before the beat, from the note before, and an appoggiatura on it", () => {
+    const g = (slash: string, step: string) => `<note><grace${slash}/><pitch><step>${step}</step><octave>5</octave></pitch><type>eighth</type></note>`;
+    const tl = buildTimeline(new ScoreDoc(score([Q + n("C", 4) + g(' slash="yes"', "E") + n("D", 4) + g("", "A") + n("G", 8)])));
+    const r = (x: number) => Math.round(x * 1000) / 1000;
+    expect(tl.events.map((e) => [e.midi, r(e.time), r(e.dur), !!e.grace])).toEqual([
+      [60, 0, 0.3, false],
+      [76, 0.3, 0.3, true],
+      [62, 0.6, 0.6, false],
+      [81, 1.2, 0.6, true],
+      [67, 1.8, 0.6, false],
+    ]);
+  });
+
+  it("rolls an arpeggiated chord from the bottom, or from the top", () => {
+    const arp = (d = "") => `<notations><arpeggiate${d}/></notations>`;
+    const chord = (extra: string) => n("C", 4, extra) + n("E", 4, "<chord/>") + n("G", 4, "<chord/>");
+    const tl = buildTimeline(new ScoreDoc(score([Q + chord(arp()) + chord(arp(' direction="down"'))])));
+    const r = (x: number) => Math.round(x * 1000) / 1000;
+    expect(tl.events.map((e) => [e.midi, r(e.time)])).toEqual([
+      [60, 0],
+      [64, 0.05],
+      [67, 0.1],
+      [67, 0.6],
+      [64, 0.65],
+      [60, 0.7],
+    ]);
+  });
+});
+
+describe("movements", () => {
+  it("starts a movement where measure numbers start again, and D.C. goes back to it", () => {
+    const dc = `<direction><direction-type><words>D.C.</words></direction-type><sound dacapo="yes"/></direction>`;
+    const xml = `<score-partwise><part-list><score-part id="P1"><part-name>P</part-name></score-part></part-list><part id="P1">${[1, 2, 1, 2].map((num, i) => `<measure number="${num}">${i === 0 ? ATTR : ""}${n("C", 2)}${i === 3 ? dc : ""}</measure>`).join("")}</part></score-partwise>`;
+    const s = new ScoreDoc(xml);
+    expect(s.sections).toEqual([0, 2]);
+    expect(playOrder(s)).toEqual([0, 1, 2, 3, 2, 3]);
+  });
 });
