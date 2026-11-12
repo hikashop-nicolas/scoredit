@@ -1,4 +1,4 @@
-import { heldUntil, pedalSpans } from "./player";
+import { heldUntil, pedalSpans, positionAt } from "./player";
 
 describe("pedal", () => {
   const spans = pedalSpans([
@@ -14,5 +14,14 @@ describe("pedal", () => {
   });
   it("lets a pedal never released ring a few seconds", () => {
     expect(heldUntil(spans, 1, 6)).toBe(10);
+  });
+});
+
+describe("cursor", () => {
+  it("waits at a pause inside the bar", () => {
+    const spans = [{ measure: 0, start: 0, end: 3, quarters: 4, tempo: [[0, 0.5]] as [number, number][], pauses: [[2, 1]] as [number, number][] }];
+    expect(positionAt(spans, 1).quarter).toBeCloseTo(2);
+    expect(positionAt(spans, 1.5).quarter).toBeCloseTo(2);
+    expect(positionAt(spans, 2.25).quarter).toBeCloseTo(2.5);
   });
 });

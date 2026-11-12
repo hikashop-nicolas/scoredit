@@ -2,7 +2,7 @@ import WebAudioTinySynth from "../vendor/tinysynth.js";
 import { PLUCKED, Pluck } from "./pluck";
 import { Sampler } from "./sampler";
 import type { SoundDownloads } from "./sounds";
-import { quarterToSec, type ControlEvent, type MeasureSpan, type NoteEvent, type Timeline } from "./timeline";
+import { quarterToSec, secToQuarter, type ControlEvent, type MeasureSpan, type NoteEvent, type Timeline } from "./timeline";
 
 export interface PlayPosition {
   /** Seconds into the piece (in played order). */
@@ -318,22 +318,7 @@ export function positionAt(spans: MeasureSpan[], t: number): PlayPosition {
   }
   const span = spans[lo];
   if (!span) return { time: t, span: 0, quarter: 0 };
-  // Linear inside a measure is close enough between tempo changes for a cursor.
-  const frac = span.end > span.start ? Math.min(1, Math.max(0, (t - span.start) / (span.end - span.start))) : 0;
-  let q = frac * span.quarters;
-  if (span.tempo.length > 1) {
-    let s = 0;
-    q = span.quarters;
-    for (let i = 0; i < span.tempo.length; i++) {
-      const [from, spq] = span.tempo[i];
-      const to = i + 1 < span.tempo.length ? span.tempo[i + 1][0] : span.quarters;
-      const seg = (to - from) * spq;
-      if (t - span.start <= s + seg) {
-        q = from + (t - span.start - s) / spq;
-        break;
-      }
-      s += seg;
-    }
-  }
+  // Through the bar's tempo changes and pauses, as the timeline placed its notes.
+  const q = Math.min(span.quarters, Math.max(0, secToQuarter(span, t - span.start)));
   return { time: t, span: lo, quarter: q };
 }
