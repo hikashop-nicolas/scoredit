@@ -741,7 +741,7 @@ function buildStaff(g: GStaff, master: MasterOut[], drop: Drop): void {
     function place(b: GBeat, slot: number): void {
       const tuning = p.tuning;
       if (!tuning) return;
-      const fits = (n: GNote, s: number, f: number) => s >= 0 && s < tuning.length && f >= 0 && f <= 36 && (n.harmonic !== null || tuning[s] + p.capo + f === n.midi);
+      const fits = (n: GNote, s: number, f: number) => s >= 0 && s < tuning.length && f >= 0 && f <= 36 && (n.harmonic !== null || tuning[s] + p.capo + f === n.midi || (n.midi === 127 && tuning[s] + p.capo + f > 127)); // the reader caps pitch at 127
       const taken = new Set<number>();
       const open: GNote[] = [];
       for (const n of b.notes) {

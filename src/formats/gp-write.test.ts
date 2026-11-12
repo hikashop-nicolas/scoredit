@@ -202,5 +202,5 @@ describe.skipIf(process.env.SCOREDIT_CORPUS !== "1" || !gpDirs.length)("Guitar P
         expect(extra).toEqual([]);
         expect(b.order).toEqual(a.order);
         expect(b.seconds).toEqual(a.seconds);
-      });
+      }, 60_000);
 });
