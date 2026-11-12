@@ -17,3 +17,6 @@ export { buildTimeline, type Timeline, type NoteEvent } from "./play/timeline";
 export { remoteSounds, SOUNDS_CDN, type RemoteSoundsOptions, type SoundDownloads, type SoundRequest } from "./play/sounds";
 export { setLocale, t } from "./ui/i18n";
 export { getVolume, setVolume } from "./play/player";
+export { newMuseScore, newMscx, type NewScore } from "./formats/mscx-new";
+export { INSTRUMENTS, instrument, type InstrumentDef } from "./model/instruments";
+export { createNewScoreForm, type NewScoreForm, type NewScoreFormOptions } from "./ui/new-score";

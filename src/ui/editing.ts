@@ -1,6 +1,7 @@
 import { ScoreEditor, type Caret, type Change, type Clip } from "../edit/editor";
 import { tempoOf, type TextKind } from "../edit/directions";
 import { INTERVALS, intervalToKey } from "../edit/transpose";
+import { INSTRUMENTS, instrument } from "../model/instruments";
 import { readMeasure, voiceKey, type Event } from "../edit/measure";
 import { ornamentAccidental, techValue, bendsOf, fingeringOf, type Bend, keyAlter, lyricsOf, marksOf, midiOf, readPitch, spellMidi, tremoloOf, type Pitch } from "../edit/notes";
 import type { ScoreDoc } from "../model/score";
@@ -408,7 +409,45 @@ export function createEditing(host: EditingHost): Editing {
   });
   const sep2 = document.createElement("span");
   sep2.className = "sv-pal-sep";
-  row5.append(modePick, intervalPick, keyPick, dirPick, transposeBtn, sep, keyAtPick, timeAtPick, clefAtPick, sep2, barBefore, barAfter, barEnd, barDelete, scoreNote);
+  // Instruments: one more at the end, the selected note's one changed or taken out.
+  const instrumentPick = (label: string) => {
+    const box = document.createElement("select");
+    box.className = "sv-pick";
+    box.setAttribute("aria-label", label);
+    box.add(new Option(label, ""));
+    for (const fam of ["keys", "strings", "winds", "brass", "guitar", "bass", "voice", "other", "drums"] as const) {
+      const g = document.createElement("optgroup");
+      g.label = t(`fam_${fam}`);
+      for (const d of INSTRUMENTS.filter((x) => x.family === fam)) g.appendChild(new Option(t(`inst_${d.key}`), d.key));
+      if (g.children.length) box.appendChild(g);
+    }
+    return box;
+  };
+  const addInstPick = instrumentPick(t("newAdd"));
+  addInstPick.addEventListener("change", () => {
+    const def = instrument(addInstPick.value);
+    addInstPick.value = "";
+    if (def) landed(editor.addPart(def, t(`inst_${def.key}`)));
+  });
+  const changeInstPick = instrumentPick(t("changeInstrument"));
+  changeInstPick.addEventListener("change", () => {
+    const def = instrument(changeInstPick.value);
+    changeInstPick.value = "";
+    if (!def || !sel) return;
+    const r = editor.changePart(sel.at.part, def, t(`inst_${def.key}`));
+    scoreNote.textContent = r ? "" : t("instrumentRefused");
+    if (r) landed(r);
+  });
+  const removeInstBtn = textBtnOf(t("removeInstrument"), () => {
+    if (!sel) return;
+    const p = sel.at.part;
+    sel = null;
+    caret = null;
+    landed(editor.removePart(p));
+  });
+  const sep3 = document.createElement("span");
+  sep3.className = "sv-pal-sep";
+  row5.append(modePick, intervalPick, keyPick, dirPick, transposeBtn, sep, keyAtPick, timeAtPick, clefAtPick, sep2, barBefore, barAfter, barEnd, barDelete, sep3, addInstPick, changeInstPick, removeInstBtn, scoreNote);
   // Dynamics (the usual ones, "more" for the rest), hairpins, then the kinds of text.
   const dynBtn = (v: string) => button(`<span class="sv-dyn">${v}</span>`, v, () => dynamic(v));
   const DYN_MAIN = ["pp", "p", "mp", "mf", "f", "ff"];
@@ -583,6 +622,8 @@ export function createEditing(host: EditingHost): Editing {
     transposeBtn.title = t(sel?.end ? "transposeSelection" : "transposeScore");
     barBefore.disabled = barAfter.disabled = barDelete.disabled = !sel;
     barDelete.disabled ||= editor.score.measureCount < 2;
+    changeInstPick.disabled = !sel;
+    removeInstBtn.disabled = !sel || editor.score.measures.length < 2;
     pressed(moreDynBtn, moreDyn);
     const dirs = sel ? editor.directions(sel.at) : [];
     for (const [v, b] of dynBtns) {
@@ -1348,7 +1389,7 @@ export function createEditing(host: EditingHost): Editing {
 }
 
 /** A key's name, major and minor: "D major / B minor". */
-function keyName(fifths: number): string {
+export function keyName(fifths: number): string {
   const names = t("noteNames").split(" ");
   const MAJOR = ["C♭", "G♭", "D♭", "A♭", "E♭", "B♭", "F", "C", "G", "D", "A", "E", "B", "F♯", "C♯"];
   const MINOR = ["A♭", "E♭", "B♭", "F", "C", "G", "D", "A", "E", "B", "F♯", "C♯", "G♯", "D♯", "A♯"];
