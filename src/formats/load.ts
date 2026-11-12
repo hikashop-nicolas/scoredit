@@ -4,6 +4,7 @@ import { detectFormat, type ScoreFormat } from "./detect";
 import { readMscx, readMscz, readMsczExcerpts, type MscxOptions } from "./mscx";
 import { readMxl } from "./mxl";
 import { readGuitarPro } from "./gp";
+import { writeGuitarPro } from "./gp-write";
 import { midiToMusicXml } from "./midi";
 import { rememberMeasure, writeMuseScore, type Dropped } from "./mscx-write";
 
@@ -17,6 +18,7 @@ export interface LoadedScore {
   /**
    * MuseScore files: the file with the edits made since it was read, written back into the
    * measures they changed (everything else as it was), and what could not be carried over.
+   * Guitar Pro files (any version): the score written whole as a Guitar Pro 7 .gp file.
    */
   save?: (opts?: { fresh?: boolean }) => { bytes: Uint8Array; dropped: Dropped };
 }
@@ -53,9 +55,10 @@ export function loadScore(bytes: Uint8Array, opts: LoadOptions = {}): LoadedScor
     case "abc":
       return withTab(format, new ScoreDoc(readAbc(new TextDecoder().decode(bytes), { tune: opts.tune })));
     case "guitarpro": {
-      // Read only: no `save`.
       const { doc, fretted, tab } = readGuitarPro(bytes, { tab: opts.tab });
-      return { format, score: new ScoreDoc(doc), fretted, tab };
+      const score = new ScoreDoc(doc);
+      // Saved as Guitar Pro 7 (.gp), whichever version was read.
+      return { format, score, fretted, tab, save: () => writeGuitarPro(score) };
     }
     case "midi":
       // Read-only: no save.
