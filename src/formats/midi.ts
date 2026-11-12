@@ -213,9 +213,15 @@ interface Ev {
   start: number;
   end: number;
   pitches: number[];
+  /** Pitches tied from the chord before in the voice, and into the next. */
+  tieIn?: number[];
+  tieOut?: number[];
 }
 
-/** Notes as chords (same start, about the same end) in up to four voices: a chord goes to the first voice free by then, or one whose last chord it barely overlaps (cut short), else to a new voice. */
+/** Voices a staff has at most, as MusicXML numbers them per staff (and MuseScore keeps). */
+const MAX_VOICES = 4;
+
+/** Notes as chords (same start, about the same end) in up to four voices: a chord goes to the first voice free by then, or one whose last chord it barely overlaps (cut short), else to a new voice; past four, it joins the chords of the voice that fits its rhythm best. */
 function voicesOf(notes: { start: number; end: number; pitch: number }[]): Ev[][] {
   const byStart = new Map<number, { end: number; pitch: number }[]>();
   for (const n of notes) {
@@ -252,17 +258,70 @@ function voicesOf(notes: { start: number; end: number; pitch: number }[]): Ev[][
     for (const x of list) if (!best || (last(x) && Math.abs(mid(last(x)) - mid(ev)) < Math.abs(mid(last(best)) - mid(ev)))) best = x;
     return best;
   };
+  const extra: Ev[] = [];
   for (const ev of evs) {
     let v = voices[0].length ? nearest(voices.filter((x) => last(x).end <= ev.start), ev) ?? nearest(voices.filter((x) => barely(last(x), ev.start)), ev) : voices[0];
     if (!v) {
-      if (voices.length < 4) voices.push((v = []));
-      else v = voices[0];
+      if (voices.length < MAX_VOICES) voices.push((v = []));
+      else {
+        extra.push(ev);
+        continue;
+      }
     }
     if (last(v) && last(v).end > ev.start) last(v).end = ev.start;
     v.push(ev);
   }
   // A chord cut to nothing is dropped.
-  return voices.map((v) => legato(v.filter((e) => e.end > e.start))).filter((v) => v.length);
+  const out = voices.map((v) => legato(v.filter((e) => e.end > e.start))).filter((v) => v.length);
+  for (const ev of extra) overlay(out, ev);
+  return out;
+}
+
+/** A chord no voice is free for joins the voice whose chords fit its rhythm best: split with ties where they do not line up. */
+function overlay(voices: Ev[][], ev: Ev): void {
+  const mid = (p: number[]) => p.reduce((a, b) => a + b, 0) / p.length;
+  let best = voices[0];
+  let bestCost = Infinity;
+  for (const v of voices) {
+    let cost = 0;
+    let at = ev.start;
+    for (const e of v) {
+      if (e.end <= ev.start || e.start >= ev.end) continue;
+      if (e.start > at) cost += 0.5; // a gap: a chord of its own there
+      if (e.start < ev.start) cost++; // a chord split where this one starts
+      if (e.end > ev.end) cost++; // or where it ends
+      if (e.start > ev.start) cost++; // this one tied into it
+      at = e.end;
+    }
+    if (at < ev.end) cost += 0.5;
+    cost += Math.abs(mid(ev.pitches) - mid(v[Math.max(0, v.findIndex((e) => e.end > ev.start))]?.pitches ?? ev.pitches)) / 100;
+    if (cost < bestCost) [best, bestCost] = [v, cost];
+  }
+  // Split the voice's chords at both ends of this one.
+  const add = (list: number[] | undefined, ps: number[]) => [...new Set([...(list ?? []), ...ps])].sort((a, b) => a - b);
+  for (const cut of [ev.start, ev.end]) {
+    const i = best.findIndex((e) => e.start < cut && e.end > cut);
+    if (i < 0) continue;
+    const e = best[i];
+    best.splice(i, 1, { ...e, end: cut, tieOut: add(undefined, e.pitches) }, { ...e, start: cut, tieIn: add(undefined, e.pitches) });
+  }
+  // Join the chords inside it, and fill the gaps with chords of its own, tied through.
+  const pieces: Ev[] = [];
+  let at = ev.start;
+  const inside = best.filter((e) => e.start >= ev.start && e.end <= ev.end);
+  for (const e of inside) {
+    if (e.start > at) pieces.push({ start: at, end: e.start, pitches: ev.pitches });
+    e.pitches = add(e.pitches, ev.pitches);
+    pieces.push(e);
+    at = e.end;
+  }
+  if (at < ev.end) pieces.push({ start: at, end: ev.end, pitches: ev.pitches });
+  for (let i = 0; i + 1 < pieces.length; i++) {
+    pieces[i].tieOut = add(pieces[i].tieOut, ev.pitches);
+    pieces[i + 1].tieIn = add(pieces[i + 1].tieIn, ev.pitches);
+  }
+  for (const p of pieces) if (!best.includes(p)) best.push(p);
+  best.sort((a, b) => a.start - b.start);
 }
 
 /** Notes played detached (most held for at most 3/4 of the time to the next) are written up to the next one; tiny gaps are always closed. */
@@ -470,6 +529,9 @@ interface Seg {
   pitches: number[] | null;
   tieIn: boolean;
   tieOut: boolean;
+  /** Pitches tied in at the start, or out at the end, when not all are. */
+  inP?: number[];
+  outP?: number[];
 }
 
 /** How a beat is written: straight, or as a tuplet of `actual` notes in the time of `normal`. */
@@ -522,7 +584,7 @@ function barVoice(evs: Ev[], bar: { start: number; len: number }, o: { voice: nu
     const en = fix(e.end);
     if (en <= s) continue;
     if (s > at) segs.push({ start: at, len: s - at, pitches: null, tieIn: false, tieOut: false });
-    segs.push({ start: s, len: en - s, pitches: e.pitches, tieIn: e.start < bar.start, tieOut: e.end > barEnd });
+    segs.push({ start: s, len: en - s, pitches: e.pitches, tieIn: e.start < bar.start, tieOut: e.end > barEnd, inP: e.tieIn, outP: e.tieOut });
     at = en;
   }
   if (at < barEnd) segs.push({ start: at, len: barEnd - at, pitches: null, tieIn: false, tieOut: false });
@@ -535,9 +597,9 @@ function barVoice(evs: Ev[], bar: { start: number; len: number }, o: { voice: nu
       if (!inside) continue;
       const needs = kinds.has(b) || kinds.has(b - Q) || (cur.pitches && (cur.start - bar.start) % Q !== 0);
       if (!needs) continue;
-      const head = { ...cur, len: b - cur.start, tieOut: !!cur.pitches };
+      const head = { ...cur, len: b - cur.start, tieOut: !!cur.pitches, outP: undefined };
       cut.push(head);
-      cur = { ...cur, start: b, len: cur.start + cur.len - b, tieIn: !!cur.pitches };
+      cur = { ...cur, start: b, len: cur.start + cur.len - b, tieIn: !!cur.pitches, inP: undefined };
     }
     cut.push(cur);
   }
@@ -557,7 +619,7 @@ function barVoice(evs: Ev[], bar: { start: number; len: number }, o: { voice: nu
     pieces.forEach((w, i) => {
       const dur = tup ? (w.divs * tup.normal) / tup.actual : w.divs;
       const tuplet = tup ? { kind: tup, type: pos === 0 ? "start" : pos + dur >= Q ? "stop" : "in" } : null;
-      items.push({ pitches: s.pitches, at: beatOf(s.start) + pos, duration: dur, type: w.type, dots: w.dots, tieIn: (i > 0 || s.tieIn) && !!s.pitches, tieOut: (i < pieces.length - 1 || s.tieOut) && !!s.pitches, tuplet });
+      items.push({ pitches: s.pitches, at: beatOf(s.start) + pos, duration: dur, type: w.type, dots: w.dots, tieIn: (i > 0 || s.tieIn) && !!s.pitches, tieOut: (i < pieces.length - 1 || s.tieOut) && !!s.pitches, inP: i === 0 ? s.inP : undefined, outP: i === pieces.length - 1 ? s.outP : undefined, tuplet });
       pos += dur;
     });
   }
@@ -582,6 +644,8 @@ interface Item {
   dots: number;
   tieIn: boolean;
   tieOut: boolean;
+  inP?: number[];
+  outP?: number[];
   tuplet: { kind: BeatKind; type: string } | null;
   beam?: string;
 }
@@ -611,10 +675,12 @@ function restPieces(pos: number, len: number, tri: boolean): { type: string; dot
 }
 
 function noteXml(w: Item, o: { voice: number; staff: number; drums: boolean; part: string; fifths: number }): string {
-  const { tieIn, tieOut, tuplet } = w;
+  const { tuplet } = w;
   const list = w.pitches ?? [null];
   return list
     .map((p, i) => {
+      const tieIn = w.tieIn || (p !== null && !!w.inP?.includes(p));
+      const tieOut = w.tieOut || (p !== null && !!w.outP?.includes(p));
       const parts: string[] = ["<note>"];
       if (i > 0) parts.push("<chord/>");
       if (p === null) parts.push(w.type ? "<rest/>" : '<rest measure="yes"/>');

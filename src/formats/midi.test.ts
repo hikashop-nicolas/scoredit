@@ -2,6 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { detectFormat } from "./detect";
 import { loadScore } from "./load";
+import { buildTimeline } from "../play/timeline";
 import { midiToMusicXml } from "./midi";
 
 // A tiny SMF writer: notes in quarters, at 480 ticks a quarter.
@@ -273,6 +274,30 @@ describe("MIDI reader", () => {
     const chordDoc = parse(smf([[program(0, 48), ...notes(0, [[60, 0, 4], [64, 0, 4], [67, 0, 4], [72, 0, 1], [74, 1, 1], [76, 2, 2]])]]));
     expect(bars(chordDoc, 0, 2)).toEqual([["C4 w", "+E4 w", "+G4 w"]]);
     expect(bars(chordDoc, 0, 1)).toEqual([["C5 q", "D5 q", "E5 h"]]);
+  });
+
+  it("past four voices, joins a line to the chords of the voice that fits it, tied, without losing a note", () => {
+    // Six lines in one strings track, all sounding at once.
+    const lines: [number, number, number][] = [
+      [48, 0, 4],
+      [55, 0, 2],
+      [57, 2, 2],
+      [64, 0, 3],
+      [65, 3, 1],
+      ...[0, 1, 2, 3].map((i) => [76 + (i % 3), i + 0.5, 0.5] as [number, number, number]),
+      [72, 1, 2],
+      [83, 0.5, 1.5],
+      [86, 2, 2],
+    ];
+    const bytes = smf([[program(0, 48), ...notes(0, lines)]]);
+    const doc = parse(bytes);
+    const voices = new Set([...doc.getElementsByTagName("voice")].map((v) => v.textContent));
+    expect(voices.size).toBe(4);
+    checkFull(doc);
+    // Every note sounds where and as long as it was played.
+    const tl = buildTimeline(loadScore(bytes).score, { straight: true, bpm: 60 });
+    const sounded = tl.events.map((e) => `${e.midi}@${e.onset}+${Math.round(e.dur * 1000) / 1000}`).sort();
+    expect(sounded).toEqual(lines.map(([p, s, l]) => `${p}@${s}+${l}`).sort());
   });
 
   it("reads a long file with many tracks and tempo and key changes quickly", () => {
