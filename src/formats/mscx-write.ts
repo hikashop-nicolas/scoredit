@@ -461,7 +461,7 @@ function writeMeasure(ctx: Ctx, part: number, k: number, staff: number, m: numbe
   const meas = orig ? (orig.cloneNode(false) as Element) : doc.createElementNS(null, "Measure");
   if (orig) for (const c of kids(orig)) if (c.tagName !== "voice") meas.appendChild(c.cloneNode(true));
   // What the original voices hold besides notes, at its position (whole notes).
-  const kept = new Map<number, { pos: number; el: Element }[]>();
+  const kept = new Map<number, Kept[]>();
   (orig ? kids(orig, "voice") : []).forEach((v, vi) => kept.set(vi, keptItems(v, link.lengths[m] ?? 1)));
   const xml = score.measures[part][m];
   const per = perQuarter(score, part, m);
@@ -568,15 +568,15 @@ function wedgesOf(score: ScoreDoc, part: number): Map<Element, Wedge> {
 }
 
 /** Takes the kept voice items written from the score out, and puts the score's directions in their place. */
-function placeDirections(ctx: Ctx, part: number, k: number, m: number, kept: Map<number, { pos: number; el: Element }[]>): void {
+function placeDirections(ctx: Ctx, part: number, k: number, m: number, kept: Map<number, Kept[]>): void {
   const { score, doc } = ctx;
-  const pool: { vi: number; pos: number; el: Element; d: Direction; used?: boolean }[] = [];
+  const pool: { vi: number; pos: number; el: Element; d: Direction; timeTick?: boolean; used?: boolean }[] = [];
   for (const [vi, list] of kept)
     kept.set(
       vi,
       list.filter((it) => {
         const d = fileDirection(it.el);
-        if (d) pool.push({ vi, pos: it.pos, el: it.el, d });
+        if (d) pool.push({ vi, pos: it.pos, el: it.el, d, timeTick: it.timeTick });
         return !d;
       }),
     );
@@ -607,7 +607,7 @@ function placeDirections(ctx: Ctx, part: number, k: number, m: number, kept: Map
     else el = newDirection(ctx, d);
     const vi = hit?.vi ?? 0;
     const list = kept.get(vi) ?? [];
-    list.push({ pos, el });
+    list.push({ pos, el, timeTick: hit?.timeTick });
     kept.set(vi, list);
   }
   for (const list of kept.values()) list.sort((a, b) => a.pos - b.pos);
@@ -665,9 +665,17 @@ function newDirection(ctx: Ctx, d: Direction): Element {
 const DROP = new Set(["Chord", "Rest", "Tuplet", "endTuplet", "location", "Beam", "Fermata", "Breath", "eid"]);
 
 /** The non-note content of an original voice, at its positions (whole notes). */
-function keptItems(voice: Element, len: number): { pos: number; el: Element }[] {
-  const out: { pos: number; el: Element }[] = [];
+/** An original voice item at its position; timeTick: placed inside a chord's length, as MuseScore marks it. */
+interface Kept {
+  pos: number;
+  el: Element;
+  timeTick?: boolean;
+}
+
+function keptItems(voice: Element, len: number): Kept[] {
+  const out: Kept[] = [];
   let pos = 0;
+  let tick = false;
   const ratios: number[] = [];
   const all = kids(voice);
   // A fermata after the voice's last chord or rest stands on the barline: kept as it is.
@@ -683,6 +691,7 @@ function keptItems(voice: Element, len: number): { pos: number; el: Element }[] 
     switch (c.tagName) {
       case "location":
         pos += frac(text(c, "fractions"));
+        tick = text(c, "timeTick") === "1";
         break;
       case "Tuplet":
         ratios.push((Number(text(c, "normalNotes")) || 2) / (Number(text(c, "actualNotes")) || 3));
@@ -692,6 +701,7 @@ function keptItems(voice: Element, len: number): { pos: number; el: Element }[] 
         break;
       case "Chord":
       case "Rest": {
+        tick = false;
         if (GRACE_TAGS.some((g) => kid(c, g))) break;
         const dt = text(c, "durationType");
         if (dt === "measure") pos += text(c, "duration") ? frac(text(c, "duration")) : len;
@@ -703,7 +713,7 @@ function keptItems(voice: Element, len: number): { pos: number; el: Element }[] 
       default:
         // Slurs at voice level (older files) are written again from the score.
         if (c.tagName === "Spanner" && ["Slur", "Tie"].includes(c.getAttribute("type") ?? "")) break;
-        if (!DROP.has(c.tagName)) out.push({ pos, el: c });
+        if (!DROP.has(c.tagName)) out.push({ pos, el: c, ...(tick ? { timeTick: true } : {}) });
     }
   }
   return out;
@@ -748,19 +758,20 @@ function accidentalsFor(score: ScoreDoc, part: number, m: number, staff: number)
 }
 
 /** Writes one voice: the original's non-note content and the score's events, by position. */
-function writeVoice(ctx: Ctx, v: Element, part: number, k: number, staff: number, m: number, per: number, key: string, evs: Event[], kept: { pos: number; el: Element }[], accidentals: Map<Element, number | null>): void {
+function writeVoice(ctx: Ctx, v: Element, part: number, k: number, staff: number, m: number, per: number, key: string, evs: Event[], kept: Kept[], accidentals: Map<Element, number | null>): void {
   const { doc } = ctx;
   let cur = 0; // whole notes
-  const moveTo = (pos: number) => {
+  const moveTo = (pos: number, timeTick = false) => {
     if (Math.abs(pos - cur) < 1e-9) return;
     const loc = add(v, "location");
     add(loc, "fractions", fraction(Math.round((pos - cur) * 4 * per), per));
+    if (timeTick) add(loc, "timeTick", 1);
     cur = pos;
   };
   let ki = 0;
   const keepUpTo = (pos: number) => {
     while (ki < kept.length && kept[ki].pos <= pos + 1e-9) {
-      moveTo(kept[ki].pos);
+      moveTo(kept[ki].pos, kept[ki].timeTick);
       v.appendChild(kept[ki].el.cloneNode(true));
       ki++;
     }
@@ -841,6 +852,7 @@ function tupletGroups(evs: Event[], per: number): Map<number, Group> {
 function restFor(ctx: Ctx, ev: Event, per: number, part: number, key: string, m: number, pos: number): Element {
   const r = ctx.doc.createElementNS(null, "Rest");
   const n = ev.notes[0];
+  if (n.getAttribute("print-object") === "no") add(r, "visible", 0);
   if (kid(n, "rest")?.getAttribute("measure") === "yes") {
     add(r, "durationType", "measure");
     add(r, "duration", fraction(ev.dur, per));

@@ -805,6 +805,8 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
                   if (graceTag) el(note, "grace", null, graceTag === "acciaccatura" ? { slash: "yes" } : undefined);
                   if (ni > 0) el(note, "chord");
                   if (!n) {
+                    // A rest hidden in MuseScore (filling a voice) is not drawn.
+                    if (gtext(cg, "visible") === "0") note.setAttribute("print-object", "no");
                     el(note, "rest", null, dt === "measure" ? { measure: "yes" } : undefined);
                   } else if (p.drums) {
                     // A drum: shown on its line of the drum staff (counting half spaces down from
