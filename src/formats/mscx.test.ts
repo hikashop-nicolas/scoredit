@@ -79,3 +79,18 @@ describe("MuseScore reader", () => {
     ]);
   });
 });
+
+describe("Sound effects on a percussion staff", () => {
+  it("play the pitch the file stores, on the beat (as in the 1812 Overture's cannon)", () => {
+    // A one-line percussion staff with no drum kit: a General MIDI sound played at a pitch.
+    const part = `<Part><Staff id="1"><StaffType group="percussion"><lines>1</lines></StaffType></Staff><trackName>Canon</trackName><Instrument><instrumentId>effect.thunder</instrumentId><clef>PERC</clef><Channel><program value="127"/></Channel></Instrument></Part>`;
+    const rest = `<Rest><durationType>quarter</durationType></Rest>`;
+    const { score } = loadScore(strToU8(mscx([TS + rest + rest + rest + chord("quarter", [[49, 21]]), chord("whole", [[49, 21]])], part)));
+    const ev = buildTimeline(score).events.map((e) => [e.measure, e.onset, e.midi, e.program]);
+    // MuseScore's own MusicXML export writes these C sharps without their <alter>, a semitone low.
+    expect(ev).toEqual([
+      [0, 3, 49, 127],
+      [1, 0, 49, 127],
+    ]);
+  });
+});
