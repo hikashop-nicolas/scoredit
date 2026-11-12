@@ -849,6 +849,7 @@ export class ScoreEditor {
   /** Keeps a copy of a measure before it first changes in this edit. */
   private touch(part: number, measure: number): void {
     const key = `${part}:${measure}`;
+    this.score.changing(part, measure);
     this.entry?.touched.add(key);
     if (this.opts.history === false) return;
     const e = this.entry;
@@ -886,6 +887,7 @@ export class ScoreEditor {
         meas.setAttribute("number", String((Number(prev?.getAttribute("number")) || ms.length) + 1));
         part.appendChild(meas);
         this.score.refresh();
+        this.score.changing(p, ms.length);
         const { length } = this.info(p, ms.length);
         const staves = this.staves(p);
         for (let s = 1; s <= staves; s++)

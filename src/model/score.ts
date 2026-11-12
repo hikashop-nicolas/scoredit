@@ -26,6 +26,10 @@ export class ScoreDoc {
   readonly measures: Element[][];
   /** First measures of the score's sections (movements); repeats and D.C. stay inside one. */
   sections: number[] = [0];
+  /** "part:measure" of the measures edits changed, for saving only those. */
+  readonly dirty = new Set<string>();
+  /** Called once per measure, just before an edit first changes it. */
+  beforeChange?: (part: number, measure: number) => void;
   /** Attributes in force at the start of each measure, per part. */
   private attrsAt: Map<string, Element>[][] = [];
 
@@ -73,6 +77,14 @@ export class ScoreDoc {
       else this.measures[i] = ms;
     });
     this.reindex();
+  }
+
+  /** Edits call this before changing a measure. */
+  changing(part: number, measure: number): void {
+    const key = `${part}:${measure}`;
+    if (this.dirty.has(key)) return;
+    this.beforeChange?.(part, measure);
+    this.dirty.add(key);
   }
 
   /** Recomputes the carried attributes; call after an edit that touches <attributes>. */

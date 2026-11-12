@@ -27,7 +27,8 @@
     "corpus": "node scripts/fetch-corpus.mjs",
     "prepare": "tsc -p tsconfig.json",
     "test:e2e": "node e2e/run.mjs",
-    "test:rebuild": "node scripts/rebuild-corpus.mjs"
+    "test:rebuild": "node scripts/rebuild-corpus.mjs",
+    "test:save": "node scripts/save-corpus.mjs"
   },
   "dependencies": {
     "fflate": "^0.8.2",

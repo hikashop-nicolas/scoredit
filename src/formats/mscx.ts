@@ -54,6 +54,14 @@ const ARTIC: Record<string, string> = {
   articTenutoBelow: "tenuto",
   articMarcatoAbove: "strong-accent",
   articMarcatoBelow: "strong-accent",
+  articStaccatissimoStrokeAbove: "spiccato",
+  articStaccatissimoStrokeBelow: "spiccato",
+  articStressAbove: "stress",
+  articStressBelow: "stress",
+  articUnstressAbove: "unstress",
+  articUnstressBelow: "unstress",
+  articSoftAccentAbove: "soft-accent",
+  articSoftAccentBelow: "soft-accent",
 };
 const ORNAMENT: Record<string, string> = {
   ornamentTrill: "trill-mark",
@@ -62,9 +70,43 @@ const ORNAMENT: Record<string, string> = {
   ornamentMordent: "mordent",
   ornamentShortTrill: "inverted-mordent",
   ornamentTremblement: "inverted-mordent",
+  ornamentTurnUp: "vertical-turn",
+  ornamentTurnUpS: "inverted-vertical-turn",
+  ornamentTremblementCouperin: "shake",
+  ornamentPrecompSlide: "schleifer",
+  ornamentHaydn: "haydn",
 };
+// Two marks drawn as one.
+const ARTIC_PAIRS: Record<string, string[]> = { articTenutoStaccatoAbove: ["tenuto", "staccato"], articTenutoStaccatoBelow: ["tenuto", "staccato"] };
+/** The MusicXML marks a MuseScore articulation or ornament stands for. */
+export function marksOfSubtype(subtype: string): string[] {
+  return ARTIC_PAIRS[subtype] ?? [ARTIC[subtype] ?? ORNAMENT[subtype] ?? TECHNICAL[subtype]].filter(Boolean);
+}
 // Bowing marks go under <technical>.
-const TECHNICAL: Record<string, string> = { stringsUpBow: "up-bow", stringsDownBow: "down-bow" };
+const TECHNICAL: Record<string, string> = {
+  stringsUpBow: "up-bow",
+  stringsDownBow: "down-bow",
+  stringsHarmonic: "harmonic",
+  brassMuteOpen: "open",
+  brassMuteClosed: "stopped",
+  brassMuteHalfClosed: "half-muted",
+  pluckedSnapPizzicatoAbove: "snap-pizzicato",
+  pluckedSnapPizzicatoBelow: "snap-pizzicato",
+  stringsThumbPosition: "thumb-position",
+  pluckedWithFingernails: "fingernails",
+  doubleTongueAbove: "double-tongue",
+  doubleTongueBelow: "double-tongue",
+  tripleTongueAbove: "triple-tongue",
+  tripleTongueBelow: "triple-tongue",
+  keyboardPedalHeel1: "heel",
+  keyboardPedalToe2: "toe",
+  brassBend: "brass-bend",
+  brassFlip: "flip",
+  brassSmear: "smear",
+  guitarGolpe: "golpe",
+};
+// Jazz falls and scoops: a <ChordLine> by number.
+const CHORD_LINE: Record<string, string> = { 1: "falloff", 2: "doit", 3: "plop", 4: "scoop" };
 // MuseScore clef names: [sign, line, octave change].
 const CLEF: Record<string, [string, number, number]> = {
   G: ["G", 2, 0],
@@ -187,7 +229,8 @@ const plain = (el: Element | null): string => {
   const copy = el.cloneNode(true) as Element;
   for (const br of Array.from(copy.getElementsByTagName("br"))) br.replaceWith(" ");
   for (const sym of Array.from(copy.getElementsByTagName("sym"))) sym.replaceWith(SYM[sym.textContent?.trim() ?? ""] ?? "");
-  return (copy.textContent ?? "").replace(/\s+/g, " ").trim();
+  // Non-breaking spaces stay (MuseScore joins elided syllables with them).
+  return (copy.textContent ?? "").replace(/[ \t\r\n]+/g, " ").replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "");
 };
 
 interface PartDef {
@@ -219,7 +262,32 @@ export function mscxToMusicXml(source: string): Document {
   return readMscx(source).doc;
 }
 
-export function readMscx(source: string, opts: MscxOptions = {}): { doc: Document; sections: number[]; fretted: boolean; tab: boolean } {
+/**
+ * What writing an edited score back into its MuseScore file needs: the file as read, which
+ * MuseScore staff each MusicXML staff came from, and which chord each note came from.
+ */
+export interface MscxLink {
+  /** The .mscx text as read. */
+  source: string;
+  /** The parsed file (the measures, by staff, are measures[staff][m]). */
+  src: Document;
+  version: number;
+  measures: Element[][];
+  /** Per part: the MuseScore staff of each MusicXML staff (staves added by scoredit: -1). */
+  staves: number[][];
+  /** Per part: semitones from written to concert, and the diatonic steps of that move. */
+  transpose: { chromatic: number; diatonic: number }[];
+  /** Per part: its drum kit (MusicXML instrument id to MuseScore pitch), if a drum part. */
+  drums: (Map<string, number> | null)[];
+  /** Semitones an octave line moves the notes of a staff at a measure and position (whole notes). */
+  ottavaAt(staff: number, m: number, pos: number): number;
+  /** Measure lengths in whole notes. */
+  lengths: number[];
+  /** MusicXML note (first of its chord, or a rest) to the MuseScore chord or rest it came from. */
+  chords: WeakMap<Element, Element>;
+}
+
+export function readMscx(source: string, opts: MscxOptions = {}): { doc: Document; sections: number[]; fretted: boolean; tab: boolean; link: MscxLink } {
   const src = parseXml(source);
   const ms = src.documentElement;
   if (ms.tagName !== "museScore") throw new Error("Not a MuseScore file");
@@ -227,6 +295,12 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
   if (!score) throw new Error("The MuseScore file holds no score");
 
   let pendingFermata = false;
+  // Slurs paired by where each end says the other is: open ones by the place they end at,
+  // and ends met before their start (an earlier staff or voice) by their own place.
+  const slurOpen = new Map<string, number[]>();
+  const slurEarly = new Map<string, Element[]>();
+  const placeKey = (track: number, m: number, pos: number, grace: number) => `${track}|${m}|${Math.round(pos * 161280)}|${grace}`;
+  const chordOf = new WeakMap<Element, Element>();
   const out = parseXml(`<score-partwise version="4.0"/>`);
   const root = out.documentElement;
   const el = (parent: Element, tag: string, txt?: string | number | null, attrs?: Record<string, string | number>): Element => {
@@ -488,10 +562,14 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
         }
         voiceLists.forEach((voiceKids, v) => {
           let pos = 0;
+          // A fermata left over at the end of a voice stood on the barline.
+          pendingFermata = false;
           // A trill line or two-chord tremolo starts on the next chord; a trill line ends on the last one.
           let trillNext = false;
           let tremoloStop = 0;
           let lastFirst: Element | null = null;
+          let graceCount = 0;
+          let lastEvent: Element | null = null;
           const tuplets: number[] = [];
           const tupletInfo: { actual: number; normal: number; base: string }[] = [];
           for (const c of voiceKids) {
@@ -690,6 +768,7 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
                   const ng = n ? groups(n) : NO_GROUPS;
                   const note = el(meas, "note");
                   firstNote ??= note;
+                  if (ni === 0 && !virtual) chordOf.set(note, c);
                   if (graceTag) el(note, "grace", null, graceTag === "acciaccatura" ? { slash: "yes" } : undefined);
                   if (ni > 0) el(note, "chord");
                   if (!n) {
@@ -753,9 +832,32 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
                   else if (tremoloStop) el(ornaments(), "tremolo", tremoloStop, { type: "stop" });
                   if (tieStop) el(notations(), "tied", null, { type: "stop" });
                   if (tieStart) el(notations(), "tied", null, { type: "start" });
+                  // Glissandos, drawn straight (MuseScore exports them as slides).
+                  for (const g of n ? gall(ng, "Spanner").filter((x) => x.getAttribute("type") === "Glissando") : []) {
+                    const start = !!kid(g, "next");
+                    el(notations(), "slide", start ? text(kid(g, "Glissando") ?? g, "text") || null : null, { type: start ? "start" : "stop", number: ni + 1, "line-type": "solid" });
+                  }
                   if (ni === 0 && !virtual) {
+                    const track = staffIdx * 4 + v;
+                    const here = placeKey(track, m, pos, graceTag ? graceCount : -1);
                     for (const s of gall(cg, "Spanner").filter((x) => x.getAttribute("type") === "Slur")) {
-                      el(notations(), "slur", null, { type: kid(s, "next") ? "start" : "stop", number: 1 });
+                      const end = kid(s, "next") ?? kid(s, "prev");
+                      const loc = end ? kid(end, "location") : null;
+                      if (kid(s, "next")) {
+                        const there = placeKey(track + 4 * (Number(text(loc, "staves")) || 0) + (Number(text(loc, "voices")) || 0), m + (Number(text(loc, "measures")) || 0), pos + (loc && text(loc, "fractions") ? frac(text(loc, "fractions")) : 0), loc && text(loc, "grace") ? Number(text(loc, "grace")) : -1);
+                        const used = new Set([...slurOpen.values()].flat());
+                        let number = 1;
+                        while (used.has(number) && number < 16) number++;
+                        const early = slurEarly.get(there)?.shift();
+                        if (early) early.setAttribute("number", String(number));
+                        else slurOpen.set(there, [...(slurOpen.get(there) ?? []), number]);
+                        el(notations(), "slur", null, { type: "start", number });
+                      } else {
+                        const number = slurOpen.get(here)?.shift();
+                        const e = el(notations(), "slur", null, { type: "stop", number: number ?? 1 });
+                        if (number === undefined) slurEarly.set(here, [...(slurEarly.get(here) ?? []), e]);
+                        else if (!slurOpen.get(here)!.length) slurOpen.delete(here);
+                      }
                     }
                     // MuseScore 2 marks a slur's ends on the chords themselves.
                     for (const s of gall(cg, "Slur")) {
@@ -773,11 +875,12 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
                       }
                     }
                     const bows = gall(cg, "Articulation").map((a) => TECHNICAL[text(a, "subtype")]).filter(Boolean);
+                    if (gone(cg, "Tapping")) bows.push("tap");
                     if (bows.length) {
                       const tech = kid(notations(), "technical") ?? el(notations(), "technical");
                       for (const b of bows) el(tech, b);
                     }
-                    const arts = gall(cg, "Articulation").map((a) => ARTIC[text(a, "subtype")]).filter(Boolean);
+                    const arts = [...gall(cg, "Articulation").flatMap((a) => ARTIC_PAIRS[text(a, "subtype")] ?? [ARTIC[text(a, "subtype")]]), ...gall(cg, "ChordLine").map((x) => CHORD_LINE[text(x, "subtype")])].filter(Boolean);
                     if (arts.length) {
                       const a = el(notations(), "articulations");
                       for (const x of arts) el(a, x);
@@ -800,12 +903,15 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
                       if (!orns.includes("trill-mark")) el(ornaments(), "trill-mark");
                       el(ornaments(), "wavy-line", null, { type: "start" });
                     }
-                    if (pendingFermata) {
+                    if (pendingFermata && !graceTag) {
                       el(notations(), "fermata", null, { type: "upright" });
                       pendingFermata = false;
                     }
                     if (gone(cg, "Arpeggio")) el(notations(), "arpeggiate");
                   }
+                  // A fingering written on the note.
+                  const fing = n ? gall(ng, "Fingering").find((x) => text(x, "style") !== "string_number") ?? null : null;
+                  if (fing && plain(kid(fing, "text"))) el(kid(notations(), "technical") ?? el(notations(), "technical"), "fingering", plain(kid(fing, "text")));
                   if (n && p.tab[k]) {
                     let fret = gtext(ng, "fret");
                     let str = gtext(ng, "string");
@@ -823,7 +929,7 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
                       }
                     }
                     if (fret !== "" && str !== "") {
-                      const tech = el(notations(), "technical");
+                      const tech = kid(notations(), "technical") ?? el(notations(), "technical");
                       el(tech, "string", Number(str) + 1);
                       el(tech, "fret", fret);
                       // A bend: its curve's highest point (MuseScore: 100 = a whole tone), and a
@@ -855,13 +961,24 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
                   if (trillNext) trillNext = false;
                   tremoloStop = tremolo?.two ? tremolo.strokes : 0;
                   if (!graceTag) lastFirst = firstNote;
+                  graceCount = graceTag ? graceCount + 1 : 0;
                 }
+                if (!graceTag && !virtual) lastEvent = firstNote;
                 emitted = pos + whole;
                 pos += whole;
                 break;
               }
               case "Fermata": {
                 pendingFermata = true;
+                break;
+              }
+              case "Breath": {
+                // A breath mark or caesura after a chord or rest: a mark of that event.
+                if (lastEvent) {
+                  const nt = kid(lastEvent, "notations") ?? el(lastEvent, "notations");
+                  const arts = kid(nt, "articulations") ?? el(nt, "articulations");
+                  el(arts, /caesura/i.test(text(c, "symbol")) ? "caesura" : "breath-mark");
+                }
                 break;
               }
             }
@@ -927,7 +1044,19 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
     if (kids(m, "LayoutBreak").some((b) => text(b, "subtype") === "section") && i + 1 < nMeasures) sections.push(i + 1);
   });
   const fretted = parts.some((p) => p.strings.length > 0 && !p.drums);
-  return { doc: out, sections, fretted, tab: parts.some((p) => p.tab.includes(true)) };
+  const link: MscxLink = {
+    source,
+    src,
+    version: Number(ms.getAttribute("version")) || 0,
+    measures: measuresOf,
+    staves: parts.map((p, pi) => partStaves[pi].map((s, k) => (k === p.virtual ? -1 : s))),
+    transpose: parts.map((p) => ({ chromatic: p.chromatic, diatonic: p.diatonic })),
+    drums: parts.map((p) => (p.drums ? new Map([...p.drumset.keys()].map((pitch) => [`${p.id}-I${pitch + 1}`, pitch])) : null)),
+    ottavaAt,
+    lengths,
+    chords: chordOf,
+  };
+  return { doc: out, sections, fretted, tab: parts.some((p) => p.tab.includes(true)), link };
 
   function addClef(at: Element, name: string, number: number, numbered: boolean): void {
     const [sign, line, octave] = CLEF[name] ?? CLEF.G;
