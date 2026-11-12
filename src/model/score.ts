@@ -46,6 +46,7 @@ export class ScoreDoc {
     this.parts = [];
     this.measures = [];
     this.rescanParts();
+    this.sections = numberingRestarts(this.measures[0] ?? []);
   }
 
   /** Reads the parts (names, sounds) and their measures again, after parts were added, removed or changed. */
@@ -371,4 +372,18 @@ export function partFamily(p: PartInfo): PartFamily {
   if (g <= 63) return "brass";
   if (g <= 79) return "winds";
   return "other";
+}
+
+// Movements in a MusicXML file: where measure numbers start again from 0 or 1.
+function numberingRestarts(ms: Element[]): number[] {
+  const out = [0];
+  let prev = 0;
+  ms.forEach((m, i) => {
+    const raw = m.getAttribute("number") ?? "";
+    if (!/^\d+$/.test(raw)) return;
+    const n = Number(raw);
+    if (i > 0 && n <= 1 && prev > 1) out.push(i);
+    prev = n;
+  });
+  return out;
 }
