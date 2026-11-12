@@ -252,7 +252,8 @@ export function createPageView(initial: ScoreDoc, opts: ViewOptions): PageView {
       if (swap) host.style.cssText += ";position:absolute;left:0;top:0;visibility:hidden";
       else slot.el.textContent = "";
       slot.el.append(host);
-      await osmd.load(score.slice(range.start, range.end, { header: first, abbreviate: !first }));
+      // No title of its own: none drawn (OSMD would write "Untitled Score").
+      await osmd.load(score.slice(range.start, range.end, { header: first, abbreviate: !first }), "");
       if (gen !== generation) return;
       // load() resets OSMD's zoom to 1.
       osmd.zoom = zoom;

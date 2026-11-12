@@ -457,12 +457,12 @@ export function createEditing(host: EditingHost): Editing {
   ];
   let scoreGroup = 0;
   const switcher = document.createElement("div");
-  switcher.className = "sv-seg";
+  switcher.className = "sv-groups";
   switcher.setAttribute("role", "tablist");
   const segBtns = scoreGroups.map(([label], i) => {
     const b = document.createElement("button");
     b.type = "button";
-    b.className = "sv-seg-btn";
+    b.className = "sv-groups-btn";
     b.textContent = t(label);
     b.setAttribute("role", "tab");
     b.addEventListener("click", () => {
@@ -900,6 +900,7 @@ export function createEditing(host: EditingHost): Editing {
   function openField(mode: FieldMode, open: boolean): void {
     if (!open) {
       lyricBar.hidden = true;
+      rows.hidden = false;
       sync();
       el.closest<HTMLElement>(".sv-shell")?.focus({ preventScroll: true });
       return;
@@ -911,6 +912,8 @@ export function createEditing(host: EditingHost): Editing {
     lyricInput.setAttribute("aria-label", t(HINT[mode][1]));
     lyricInput.inputMode = mode === "fingering" ? "numeric" : "text";
     lyricBar.hidden = false;
+    // On a phone the keyboard takes half the screen: while text is typed, the field alone.
+    rows.hidden = matchMedia("(pointer:coarse)").matches;
     hyphenBefore = false;
     fingerIndex = 0;
     showField();
@@ -1425,6 +1428,7 @@ export function createEditing(host: EditingHost): Editing {
       input = false;
       slurFrom = null;
       lyricBar.hidden = true;
+      rows.hidden = false;
       view?.root.classList.remove("sv-inputting");
       bubble.remove();
       floatBar.remove();

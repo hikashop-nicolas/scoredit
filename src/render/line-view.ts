@@ -184,7 +184,8 @@ export function createLineView(score: ScoreDoc, opts: ViewOptions & { fit?: bool
       // Fixed gaps between staves, the same in every chunk.
       r.MinSkyBottomDistBetweenStaves = -100;
       r.MinimumStaffLineDistance = gap - 4;
-      await osmd.load(score.slice(range.start, range.end));
+      // No title of its own: none drawn (OSMD would write "Untitled Score").
+      await osmd.load(score.slice(range.start, range.end), "");
       if (gen !== generation) return;
       // load() resets OSMD's zoom to 1.
       osmd.zoom = zoom;
