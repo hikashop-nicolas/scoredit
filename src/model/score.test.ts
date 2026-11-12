@@ -168,3 +168,17 @@ describe("Showing some parts", () => {
     expect(again.measureCount).toBe(4);
   });
 });
+
+describe("Long text in a rendered system", () => {
+  it("is drawn in lines, short text and the score itself left as they are", () => {
+    const long = "The bells should be big; their intonation neutral; they should be struck so as to simulate festive ringing.";
+    const xml = `<?xml version="1.0"?><score-partwise version="4.0"><part-list><score-part id="P1"><part-name>Bells</part-name></score-part></part-list><part id="P1"><measure number="1"><attributes><divisions>1</divisions></attributes><direction><direction-type><words>${long}</words></direction-type></direction><direction><direction-type><words>pizz.</words></direction-type></direction><note><rest measure="yes"/><duration>4</duration><voice>1</voice></note></measure></part></score-partwise>`;
+    const s = new ScoreDoc(xml);
+    const out = new DOMParser().parseFromString(s.slice(0, 1), "application/xml");
+    const words = Array.from(out.getElementsByTagName("words")).map((w) => w.textContent ?? "");
+    expect(words[0].split("\n").every((line) => line.length <= 40)).toBe(true);
+    expect(words[0].replace(/\n/g, " ")).toBe(long);
+    expect(words[1]).toBe("pizz.");
+    expect(s.root.getElementsByTagName("words")[0].textContent).toBe(long);
+  });
+});

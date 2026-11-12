@@ -175,6 +175,7 @@ export class ScoreDoc {
       ms.forEach((m, i) => {
         const nm = out.importNode(m, true) as Element;
         stripBreaks(nm);
+        wrapWords(nm);
         if (i === 0) carryAttributes(out, nm, this.attributesAt(p, a));
         np.appendChild(nm);
       });
@@ -264,6 +265,24 @@ function copySystemText(doc: Document, from: Element[], to: Element[]): void {
 
 // The renderer lays out systems itself: page and system breaks from the source would
 // split a slice into several lines.
+/** Long text (a footnote over a staff) in lines, as OSMD draws one line per text otherwise and runs off the page. */
+export function wrapWords(m: Element, width = 40): void {
+  for (const w of Array.from(m.getElementsByTagName("words"))) {
+    const t = w.textContent ?? "";
+    if (t.length <= width + 8 || t.includes("\n")) continue;
+    const lines: string[] = [];
+    let line = "";
+    for (const word of t.split(/ +/)) {
+      if (line && line.length + 1 + word.length > width) {
+        lines.push(line);
+        line = word;
+      } else line = line ? `${line} ${word}` : word;
+    }
+    if (line) lines.push(line);
+    w.textContent = lines.join("\n");
+  }
+}
+
 function stripBreaks(m: Element): void {
   for (const pr of kids(m, "print")) {
     pr.removeAttribute("new-system");
