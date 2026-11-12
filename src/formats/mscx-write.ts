@@ -4,7 +4,7 @@ import { isAfterGrace, readMeasure, voiceKey, type Event } from "../edit/measure
 import { bendsOf, fingeringOf, lyricsOf, marksOf, midiOf, readPitch, slursOf, spansOf, spellMidi, tremoloOf, type Pitch } from "../edit/notes";
 import type { ScoreDoc } from "../model/score";
 import { kid, kids, text } from "../model/xml";
-import { marksOfSubtype, type MscxLink } from "./mscx";
+import { BREATH, marksOfSubtype, type MscxLink } from "./mscx";
 
 // Writing an edited score back into its MuseScore file. Only the measures an edit touched are
 // written again; everything else in the file stays byte for byte. In a rewritten measure, a
@@ -602,8 +602,12 @@ function writeVoice(ctx: Ctx, v: Element, part: number, k: number, staff: number
     for (const g of graceSlots(ev.graces)) v.appendChild(chordFor(ctx, part, staff, m, pos, per, g.notes, g.index, run, at, accidentals, key, ev.pos));
     v.appendChild(ev.rest ? restFor(ctx, ev, per, part, key, m, pos) : chordFor(ctx, part, staff, m, pos, per, ev.notes, -1, run, at, accidentals, key, ev.pos));
     // A breath mark or caesura stands after its chord or rest.
-    const breath = ev.notes.flatMap(marksOf).find((x) => x === "breath-mark" || x === "caesura");
-    if (breath) add(add(v, "Breath"), "symbol", breath === "caesura" ? "caesura" : "breathMarkComma");
+    const breath = ev.notes.flatMap((n) => [...Array.from(n.getElementsByTagName("breath-mark")), ...Array.from(n.getElementsByTagName("caesura"))])[0];
+    if (breath) {
+      const value = breath.textContent?.trim() || (breath.tagName === "caesura" ? "normal" : "comma");
+      const symbol = Object.keys(BREATH).find((k) => BREATH[k][0] === breath.tagName && BREATH[k][1] === value);
+      add(add(v, "Breath"), "symbol", symbol ?? (breath.tagName === "caesura" ? "caesura" : "breathMarkComma"));
+    }
     cur = pos + ev.dur / per / 4;
     if (g?.end) add(v, "endTuplet");
   });
@@ -912,8 +916,8 @@ function noteFor(ctx: Ctx, part: number, staff: number, m: number, pos: number, 
   }
   if (f && !placed) add(add(note, "Fingering"), "text", f);
   const bends = bendsOf(n);
-  // MuseScore before 4.2 draws a bend as a curve (100 = a whole tone); later ones use GuitarBend.
-  if (bends.length && link.version < 4.2) {
+  // A bend as a curve (100 = a whole tone): MuseScore 4.2+ writes GuitarBend but still reads it.
+  if (bends.length) {
     const top = Math.round(Math.max(...bends.map((b) => b.alter)) * 50);
     const pre = bends.some((b) => b.pre);
     const back = bends.some((b) => b.release);
@@ -925,7 +929,7 @@ function noteFor(ctx: Ctx, part: number, staff: number, m: number, pos: number, 
       pt.setAttribute("pitch", String(pitch));
       pt.setAttribute("vibrato", "0");
     }
-  } else if (bends.length) ctx.dropped.bend = (ctx.dropped.bend ?? 0) + 1;
+  }
   const p = readPitch(n);
   if (p?.unpitched) {
     const drum = link.drums[part]?.get(p.instrument ?? "") ?? midiOf(p);

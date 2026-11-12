@@ -15,6 +15,18 @@ const groups = (e: Element): Map<string, Element[]> => {
 const gone = (g: Map<string, Element[]>, tag: string): Element | null => g.get(tag)?.[0] ?? null;
 const gall = (g: Map<string, Element[]>, tag: string): Element[] => g.get(tag) ?? [];
 const gtext = (g: Map<string, Element[]>, tag: string): string => g.get(tag)?.[0].textContent?.trim() ?? "";
+/** MuseScore's breath and caesura symbols, as MusicXML's mark and its value. */
+export const BREATH: Record<string, [string, string]> = {
+  breathMarkComma: ["breath-mark", "comma"],
+  breathMarkTick: ["breath-mark", "tick"],
+  breathMarkUpbow: ["breath-mark", "upbow"],
+  breathMarkSalzedo: ["breath-mark", "salzedo"],
+  caesura: ["caesura", "normal"],
+  caesuraThick: ["caesura", "thick"],
+  caesuraShort: ["caesura", "short"],
+  caesuraCurved: ["caesura", "curved"],
+  caesuraSingleStroke: ["caesura", "single"],
+};
 const GRACES = ["acciaccatura", "appoggiatura", "grace4", "grace8after", "grace16", "grace16after", "grace32", "grace32after"];
 
 // The reader asks the same elements for many children: indexed lookups.
@@ -989,7 +1001,8 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
                 if (lastEvent) {
                   const nt = kid(lastEvent, "notations") ?? el(lastEvent, "notations");
                   const arts = kid(nt, "articulations") ?? el(nt, "articulations");
-                  el(arts, /caesura/i.test(text(c, "symbol")) ? "caesura" : "breath-mark");
+                  const [tag, value] = BREATH[text(c, "symbol")] ?? (/caesura/i.test(text(c, "symbol")) ? ["caesura", ""] : ["breath-mark", ""]);
+                  el(arts, tag, value || null);
                 }
                 break;
               }

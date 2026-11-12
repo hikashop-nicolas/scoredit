@@ -67,6 +67,25 @@ describe("Saving back into MuseScore files", () => {
     expect(back).toEqual(want);
   });
 
+  it("writes bends as curves in a MuseScore 4.5 file", () => {
+    const loaded = loadScore(strToU8(source));
+    const ed = new ScoreEditor(loaded.score);
+    const note = ed.eventAt({ part: 0, measure: 0, staff: 1, voice: "1", pos: 0 })!.notes[0];
+    ed.bends(note, [{ alter: 1 }, { alter: 1, release: true }]);
+    const { bytes, dropped } = loaded.save!();
+    expect(dropped).toEqual({});
+    expect(strFromU8(bytes)).toContain('<Bend><point time="0" pitch="0" vibrato="0"/><point time="10" pitch="50" vibrato="0"/>');
+  });
+
+  it("keeps each kind of breath mark and caesura", () => {
+    const symbols = ["breathMarkComma", "breathMarkTick", "breathMarkUpbow", "breathMarkSalzedo", "caesura", "caesuraThick", "caesuraShort", "caesuraCurved", "caesuraSingleStroke"];
+    const src = file(symbols.map((sym, i) => (i ? "" : TS) + chord("whole", 72, 14) + `<Breath><symbol>${sym}</symbol></Breath>`));
+    const loaded = loadScore(strToU8(src));
+    loaded.score.measures[0].forEach((_, m) => loaded.score.changing(0, m));
+    const saved = strFromU8(loaded.save!({ fresh: true }).bytes);
+    expect([...saved.matchAll(/<symbol>(\w+)<\/symbol>/g)].map((x) => x[1])).toEqual(symbols);
+  });
+
   it("keeps grace notes after a trill, and a courtesy natural", () => {
     // MuseScore files hold the grace notes after a chord before it, last first.
     const slur = `<Spanner type="Slur"><Slur/><next><location><grace>0</grace></location></next></Spanner>`;
