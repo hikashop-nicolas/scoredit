@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import { kid, kids, text } from "../model/xml";
 import { detectFormat } from "./detect";
 import { loadScore } from "./load";
+import { ScoreDoc } from "../model/score";
+import { playOrder } from "../play/timeline";
 import { abcTunes, readAbc } from "./abc";
 
 const DIV = 10080;
@@ -566,5 +568,114 @@ describe("ABC files as found", () => {
     const m = measures(readAbc(tune("Hc8 & HC8|")))[0];
     expect(inVoice(m, "2")[0].getElementsByTagName("fermata")[0].getAttribute("type")).toBe("inverted");
     expect(inVoice(m, "1")[0].getElementsByTagName("fermata")[0].getAttribute("type")).toBe("upright");
+  });
+});
+
+describe("ABC middle= and stafflines=", () => {
+  const clefOf = (m: Element) => {
+    const c = m.getElementsByTagName("clef")[0];
+    return c ? `${text(c, "sign")}${text(c, "line")}` : "";
+  };
+  it("moves the notes by octaves so the middle= pitch sits on the middle line", () => {
+    const doc = readAbc(tune("d c B,|", "M:3/4\nL:1/4\nV:1 clef=bass middle=d\nK:C"));
+    const m = measures(doc)[0];
+    expect(clefOf(m)).toBe("F4");
+    expect(pitches(m)).toEqual(["D3", "C3", "B1"]);
+  });
+  it("moves the clef line when middle= is not whole octaves from the clef's own", () => {
+    const m = measures(readAbc(tune("d B|", "M:2/4\nL:1/4\nK:C middle=d")))[0];
+    expect(clefOf(m)).toBe("G1");
+    expect(pitches(m)).toEqual(["D5", "B4"]);
+    // The default middle changes nothing.
+    expect(clefOf(measures(readAbc(tune("B|", "M:1/4\nL:1/4\nV:1 clef=treble middle=B\nK:C")))[0])).toBe("G2");
+  });
+  it("changes middle= in the body, a later clef= without it resetting the shift", () => {
+    const doc = readAbc(tune("c|[K:bass middle=d]d|[K:clef=bass]D,|", "M:1/4\nL:1/4\nK:C"));
+    const ms = measures(doc);
+    expect(ms.map(pitches)).toEqual([["C5"], ["D3"], ["D3"]]);
+    expect(ms.map(clefOf)).toEqual(["G2", "F4", ""]);
+  });
+  it("writes stafflines= as staff-lines, at the start and where it changes", () => {
+    const doc = readAbc(`X:1\nT:Drums\nM:2/4\nL:1/4\nV:1 clef=perc stafflines=1\nV:2\nK:C\nV:1\nB B|B B|\nV:2\nc d|[V:2 stafflines=3]e f|\n`);
+    const lines = (p: number, m: number) => [...measures(doc, p)[m].getElementsByTagName("staff-lines")].map((e) => e.textContent);
+    expect(lines(0, 0)).toEqual(["1"]);
+    expect(lines(0, 1)).toEqual([]);
+    expect(lines(1, 0)).toEqual([]);
+    expect(lines(1, 1)).toEqual(["3"]);
+    const attrs = measures(doc, 0)[0].getElementsByTagName("attributes")[0];
+    expect(kids(attrs, "staff-details").length).toBe(1);
+    expect(kids(attrs, "clef")[0].nextElementSibling?.tagName).toBe("staff-details");
+  });
+});
+
+describe("ABC %%score later in the tune", () => {
+  const head = "X:1\nT:Regroup\nM:4/4\nL:1/4\nV:1\nV:2\nV:3\nV:4\n";
+  it("adds the voices a later %%score brings onto the staff of a voice they share", () => {
+    const doc = readAbc(`${head}%%score 1 2\nK:C\nV:1\nc4|\nV:2\nC4|\n%%score (1 3) 2\nV:1\nd4|\nV:3\nB4|\nV:2\nD4|\n`);
+    expect(doc.getElementsByTagName("part").length).toBe(2);
+    const m = measures(doc, 0)[1];
+    expect(inVoice(m, "1").map(pitchOf)).toEqual(["D5"]);
+    expect(inVoice(m, "2").map(pitchOf)).toEqual(["B4"]);
+    expect(pitches(measures(doc, 1)[1])).toEqual(["D4"]);
+  });
+  it("gives a voice new to a later %%score its staff, in place, with the group it is in", () => {
+    const doc = readAbc(`${head}%%score 1 2\nK:C\nV:1\nc4|\nV:2\nC4|\n%%score 1 [2 4]\nV:1\nd4|\nV:2\nD4|\nV:4\nE,4|\n`);
+    expect(doc.getElementsByTagName("part").length).toBe(3);
+    expect(pitches(measures(doc, 2)[1])).toEqual(["E3"]);
+    expect(kid(notes(measures(doc, 2)[0])[0], "rest")).toBeTruthy();
+    const list = doc.getElementsByTagName("part-list")[0];
+    expect([...list.children].map((e) => (e.tagName === "part-group" ? `${e.getAttribute("type")}:${text(e, "group-symbol")}` : e.tagName))).toEqual(["score-part", "start:bracket", "score-part", "score-part", "stop:"]);
+  });
+  it("keeps every voice when a later %%score leaves some out", () => {
+    const doc = readAbc(`${head}%%score 1 2 3\nK:C\nV:1\nc4|\nV:2\nC4|\nV:3\nE4|\n%%score 3 1\nV:3\nF4|\nV:1\nd4|\n`);
+    expect(doc.getElementsByTagName("part").length).toBe(3);
+    expect(measures(doc, 1).length).toBe(2);
+  });
+});
+
+describe("ABC s: symbol lines", () => {
+  it("puts decorations, chord symbols and annotations on the notes, as w: places syllables", () => {
+    const doc = readAbc(tune('CDE z|FGAB|\ns:!trill! * "Am"!f! | "^loud" !fermata!', "M:4/4\nL:1/4\nK:C"));
+    const ns = [...doc.getElementsByTagName("note")];
+    expect(ns[0].getElementsByTagName("trill-mark").length).toBe(1);
+    expect(ns[1].getElementsByTagName("notations").length).toBe(0);
+    const [m1, m2] = measures(doc);
+    expect(text(m1.getElementsByTagName("harmony")[0].getElementsByTagName("root")[0], "root-step")).toBe("A");
+    expect(m1.getElementsByTagName("dynamics")[0].firstElementChild?.tagName).toBe("f");
+    // The harmony and the dynamic come just before the third note.
+    expect(m1.getElementsByTagName("direction")[0].nextElementSibling).toBe(notes(m1)[2]);
+    expect(text(m2.getElementsByTagName("direction")[0].getElementsByTagName("direction-type")[0], "words")).toBe("loud");
+    expect(notes(m2)[1].getElementsByTagName("fermata").length).toBe(1);
+  });
+  it("starts each s: line from the first note again and goes on with +:", () => {
+    const doc = readAbc(tune("CDEF|\ns:!accent!\ns:* !staccato!\n+:!tenuto!\nw:a b c d", "M:4/4\nL:1/4\nK:C"));
+    const ns = notes(measures(doc)[0]);
+    expect(ns.map((n) => [...(n.getElementsByTagName("articulations")[0]?.children ?? [])].map((e) => e.tagName).join())).toEqual(["accent", "staccato", "tenuto", ""]);
+    expect(ns.map((n) => text(n.getElementsByTagName("lyric")[0], "text"))).toEqual(["a", "b", "c", "d"]);
+  });
+});
+
+describe("ABC P: parts and play order", () => {
+  const AB = (order: string) => `X:1\nT:Parts\nM:2/4\nL:1/4\n${order}K:C\nP:A\nc c|d d|\nP:B\ne e:|\n[P:C]f f|]\n`;
+  it("marks each part with a rehearsal mark and keeps the score as written", () => {
+    const doc = readAbc(AB("P:ABAC\n"));
+    const ms = measures(doc);
+    expect(ms.length).toBe(4);
+    expect(ms.map((m) => m.getElementsByTagName("rehearsal")[0]?.textContent ?? "")).toEqual(["A", "", "B", "C"]);
+    const field = doc.getElementsByTagName("miscellaneous-field")[0];
+    expect(field.getAttribute("name")).toBe("play-order");
+    expect(field.textContent).toBe("A B A C");
+  });
+  it("plays the parts in the P: order, each with its own repeats", () => {
+    expect(playOrder(new ScoreDoc(readAbc(AB("P:ABAC\n"))))).toEqual([0, 1, 2, 2, 0, 1, 3]);
+    // Repeat counts and groups: (AB)2C.
+    expect(playOrder(new ScoreDoc(readAbc(AB("P:(A.B)2C\n"))))).toEqual([0, 1, 2, 2, 0, 1, 2, 2, 3]);
+  });
+  it("plays as written without a header order, or with a one-letter header P:", () => {
+    for (const order of ["", "P:A\n"]) {
+      const doc = readAbc(AB(order));
+      expect(doc.getElementsByTagName("miscellaneous-field").length).toBe(0);
+      expect(playOrder(new ScoreDoc(doc))).toEqual([0, 1, 2, 0, 1, 2, 3]);
+    }
   });
 });

@@ -4,8 +4,9 @@ import { parseXml } from "../model/xml";
 // ABC notation (abcnotation.com, standard 2.1) read into MusicXML: the header (title,
 // composer, meter, unit length, tempo, key and clef), notes, rests, chords, grace notes,
 // ties, slurs, tuplets, broken rhythm, bar lines, repeats and endings, decorations,
-// chord symbols, annotations, lyrics (verses, bar skips), voices with their V: properties,
-// & voice overlays and the %%score / %%staves layout (shared staves, braces, brackets).
+// chord symbols, annotations, lyrics (verses, bar skips), s: symbol lines, voices with their V:
+// properties (middle=, stafflines=...), & voice overlays, the %%score / %%staves layout (shared
+// staves, braces, brackets; later ones merged in) and P: parts with their play order.
 
 export interface AbcOptions {
   /** The tune to open, by its X: number (the first one otherwise). */
@@ -100,6 +101,8 @@ interface Clef {
   sign: string;
   line: number;
   octave?: number;
+  /** Octaves middle= moves the notes by (not shown). */
+  shift?: number;
 }
 
 const CLEFS: Record<string, Clef> = {
@@ -118,13 +121,35 @@ const CLEFS: Record<string, Clef> = {
 
 function clefOf(spec: string): Clef | undefined {
   const s = spec.replace(/"[^"]*"/g, "");
-  // clef=bass, clef=F3, bass3, alto1, treble-8; bare names only after a space (K:none is a key).
-  const m = /(?:^|\s)clef\s*=\s*(treble|bass|baritone|alto|tenor|perc|percussion|none|[GFC])([1-5])?([+-]8)?[,']*(?=\s|$)/i.exec(s) ?? /(?<=\s)(treble|bass|baritone|alto|tenor|perc|none)([1-5])?([+-]8)?[,']*(?=\s|$)/.exec(s);
+  // clef=bass, clef=F3, bass3, alto1, treble-8; bare none only after a space (K:none is a key).
+  const m = /(?:^|\s)clef\s*=\s*(treble|bass|baritone|alto|tenor|perc|percussion|none|[GFC])([1-5])?([+-]8)?[,']*(?=\s|$)/i.exec(s) ?? /(?:^|(?<=\s))(treble|bass|baritone|alto|tenor|perc)([1-5])?([+-]8)?[,']*(?=\s|$)/.exec(s) ?? /(?<=\s)(none)([1-5])?([+-]8)?[,']*(?=\s|$)/.exec(s);
   if (!m) return undefined;
   const c: Clef = { ...CLEFS[m[1].toLowerCase()] };
   if (m[2]) c.line = Number(m[2]);
   if (m[3]) c.octave = m[3] === "-8" ? -1 : 1;
   return c;
+}
+
+// The pitch each clef sign stands for, as a diatonic index (octave * 7 + step).
+const CLEF_REF: Record<string, number> = { G: 4 * 7 + 4, F: 3 * 7 + 3, C: 4 * 7 };
+
+/** middle=: the clef line that puts that pitch on the middle line, the notes moved by whole octaves. */
+function withMiddle(clef: Clef, middle: number): Clef {
+  const ref = CLEF_REF[clef.sign];
+  if (ref === undefined) return clef;
+  let line = clef.line;
+  for (let l = 1; l <= 5; l++) if ((((middle - ref - 2 * (3 - l)) % 7) + 7) % 7 === 0) line = l;
+  const shift = Math.round((ref + 2 * (3 - line) - middle) / 7);
+  const out: Clef = { ...clef, line };
+  if (shift) out.shift = shift;
+  else delete out.shift;
+  return out;
+}
+
+/** The clef props ask for: clef= and middle= together. */
+function clefFrom(p: Props, now?: Clef): Clef | undefined {
+  if (p.middle === undefined) return p.clef;
+  return withMiddle(p.clef ?? now ?? CLEFS.treble, p.middle);
 }
 
 /** Voice and key properties (ABC 2.1 sections 4.6 and 7.1). */
@@ -137,6 +162,10 @@ interface Props {
   /** Semitones it sounds away from the written notes (transpose=). */
   transpose?: number;
   stem?: "up" | "down";
+  /** The pitch on the middle line (middle=), as a diatonic index. */
+  middle?: number;
+  /** Lines of the staff (stafflines=). */
+  stafflines?: number;
 }
 
 function propsOf(spec: string): Props {
@@ -149,6 +178,8 @@ function propsOf(spec: string): Props {
     return v !== undefined && /^[+-]?\d+$/.test(v) ? Number(v) : undefined;
   };
   const stem = get("stem")?.toLowerCase();
+  const mid = /^[_^=]*([A-Ga-g])([,']*)$/.exec(get("middle") ?? "");
+  const lines = num("stafflines");
   const out: Props = {
     name: decodeText(get("name|nm")?.replace(/\\n/g, " ")),
     subname: decodeText(get("subname|sname|snm")?.replace(/\\n/g, " ")),
@@ -156,6 +187,8 @@ function propsOf(spec: string): Props {
     octave: num("octave"),
     transpose: num("transpose"),
     stem: stem === "up" || stem === "down" ? stem : undefined,
+    middle: mid ? (mid[1] === mid[1].toUpperCase() ? 4 : 5) * 7 + "CDEFGAB".indexOf(mid[1].toUpperCase()) + [...mid[2]].reduce((a, c) => a + (c === "'" ? 7 : -7), 0) : undefined,
+    stafflines: lines !== undefined && lines >= 0 && lines <= 9 ? lines : undefined,
   };
   for (const k of Object.keys(out) as (keyof Props)[]) if (out[k] === undefined) delete out[k];
   return out;
@@ -261,6 +294,74 @@ function parseScore(spec: string, staves: boolean): Layout {
   return out;
 }
 
+/**
+ * A later %%score merged into the layout (MusicXML parts cannot regroup mid-score): its new voices
+ * join the staff of a voice they share one with, or get a staff of their own; its groups are kept when they fit.
+ */
+function mergeLayout(base: Layout, next: Layout): Layout {
+  const staves = base.staves.map((s) => [...s]);
+  const groups = base.groups.map((g) => ({ ...g, firstStaff: staves[g.first], lastStaff: staves[g.last] }));
+  const staffOf = (id: string) => staves.find((s) => s.includes(id));
+  const mapped: string[][] = [];
+  next.staves.forEach((ids, k) => {
+    const home = ids.map(staffOf).find((s) => s);
+    const fresh = [...new Set(ids.filter((id) => !staffOf(id)))];
+    if (home) home.push(...fresh);
+    else {
+      // After the staff of the voice before it in the new directive.
+      const prev = next.staves.slice(0, k).flat().reverse().map(staffOf).find((s) => s);
+      const after = next.staves.slice(k + 1).flat().map(staffOf).find((s) => s);
+      const at = prev ? staves.indexOf(prev) + 1 : after ? staves.indexOf(after) : staves.length;
+      staves.splice(at, 0, fresh);
+    }
+    mapped.push(home ?? staffOf(ids[0])!);
+  });
+  for (const g of next.groups) {
+    const idx = [...new Set(mapped.slice(g.first, g.last + 1))].map((s) => staves.indexOf(s)).sort((a, b) => a - b);
+    const first = idx[0];
+    const last = idx[idx.length - 1];
+    const contiguous = last - first + 1 === idx.length;
+    const crosses = groups.some((o) => {
+      const a = staves.indexOf(o.firstStaff);
+      const b = staves.indexOf(o.lastStaff);
+      return (a === first && b === last) || (a < first && b >= first && b < last) || (a > first && a <= last && b > last);
+    });
+    if (contiguous && !crosses) groups.push({ ...g, firstStaff: staves[first], lastStaff: staves[last] });
+  }
+  return { staves, groups: groups.map(({ firstStaff, lastStaff, ...g }) => ({ ...g, first: staves.indexOf(firstStaff), last: staves.indexOf(lastStaff) })) };
+}
+
+/** A P: play order (ABC 2.1 section 4.8): P:AABA, P:A2B, P:((AB)2C)2, dots ignored; the part letters in order. */
+function playOrderOf(spec: string): string[] {
+  let i = 0;
+  const s = spec.replace(/[\s.]/g, "");
+  const seq = (): string[] => {
+    const out: string[] = [];
+    while (i < s.length && s[i] !== ")") {
+      let item: string[];
+      if (s[i] === "(") {
+        i++;
+        item = seq();
+        i++;
+      } else if (/[A-Za-z]/.test(s[i])) item = [s[i++]];
+      else {
+        i++;
+        continue;
+      }
+      const n = /^\d+/.exec(s.slice(i));
+      if (n) i += n[0].length;
+      for (let k = 0; k < Math.min(n ? Number(n[0]) : 1, 99); k++) out.push(...item);
+    }
+    return out;
+  };
+  const out: string[] = [];
+  while (i < s.length) {
+    out.push(...seq());
+    i++;
+  }
+  return out;
+}
+
 // ---- The music, as events per voice and measure
 
 interface Pitch {
@@ -303,6 +404,7 @@ interface Measure {
   key?: Key;
   meter?: Meter;
   clef?: Clef;
+  stafflines?: number;
   forward?: boolean;
   backward?: boolean;
   style?: string;
@@ -328,6 +430,8 @@ interface Voice {
   props: Props;
   /** The clef in force, for the octave a +8/-8 clef moves the notes by. */
   clefNow?: Clef;
+  /** The staff lines in force (stafflines=). */
+  linesNow: number;
   measures: Measure[];
   cur: Measure;
   barAlters: Map<string, number>;
@@ -339,6 +443,8 @@ interface Voice {
   /** Lyric verse and position for +: continuation lines. */
   verse: number;
   lyricAt: number;
+  /** Position of the s: symbol line being read, for its +: continuation. */
+  symbolAt: number;
   openEnding: string | null;
   overlay: Overlay | null;
   /** Where a (& overlay starts. */
@@ -392,6 +498,23 @@ const NAMED: Record<string, string> = {
 };
 const DYNAMICS = new Set(["pppp", "ppp", "pp", "p", "mp", "mf", "f", "ff", "fff", "ffff", "sfz", "sf", "fp", "rfz"]);
 
+/** A !decoration!: a mark on the note, a direction before it, or the end of a hairpin. */
+function decoration(name: string): { mark?: string; dir?: Before; stop?: boolean } {
+  if (DYNAMICS.has(name)) return { dir: { kind: "dynamic", value: name } };
+  if (/^(crescendo|<)\($/.test(name)) return { dir: { kind: "wedge", type: "crescendo" } };
+  if (/^(diminuendo|>)\($/.test(name)) return { dir: { kind: "wedge", type: "diminuendo" } };
+  if (/^(crescendo|diminuendo|<|>)\)$/.test(name)) return { dir: { kind: "wedge", type: "stop" }, stop: true };
+  return NAMED[name] ? { mark: NAMED[name] } : {};
+}
+
+/** A quoted string: a chord symbol, or an annotation (^_<>@ place it). */
+function quoted(s: string): Before | null {
+  const place = s[0];
+  if (place && "^_<>@".includes(place)) return { kind: "words", text: decodeText(s.slice(1)), below: place === "_" };
+  if (parseChord(s)) return { kind: "chord", text: s };
+  return s.trim() ? { kind: "words", text: decodeText(s), below: false } : null;
+}
+
 // ---- Reading a tune
 
 export function readAbc(text: string, opts: AbcOptions = {}): Document {
@@ -414,6 +537,9 @@ export function readAbc(text: string, opts: AbcOptions = {}): Document {
   let allVoices: Props = {};
   let layout: Layout | null = null;
   const userSymbols = new Map<string, string>();
+  let partOrder: string[] = [];
+  /** P: part letters in the body, by the measure they start. */
+  const partAt = new Map<number, string>();
   let synced = 0;
   let current: Voice | null = null;
   let inBody = false;
@@ -424,7 +550,9 @@ export function readAbc(text: string, opts: AbcOptions = {}): Document {
     let v = voices.get(id);
     if (!v) {
       const props = { ...key.props, ...allVoices, ...voiceDefs.get(id) };
-      v = { id, props, clefNow: props.clef, measures: [], cur: newMeasure(), barAlters: new Map(), key, lineNotes: [], freshLine: true, verse: 0, lyricAt: 0, openEnding: null, overlay: null, overlayStart: null };
+      const clef = clefFrom(props);
+      if (clef) props.clef = clef;
+      v = { id, props, clefNow: clef, linesNow: props.stafflines ?? 5, measures: [], cur: newMeasure(), barAlters: new Map(), key, lineNotes: [], freshLine: true, verse: 0, lyricAt: 0, symbolAt: 0, openEnding: null, overlay: null, overlayStart: null };
       // A voice that starts after a %%score in the body starts there.
       while (v.measures.length < synced) v.measures.push(newMeasure());
       voices.set(id, v);
@@ -432,12 +560,17 @@ export function readAbc(text: string, opts: AbcOptions = {}): Document {
     return v;
   };
 
-  /** A clef or octave= change in the body, for the voice's current bar. */
+  /** A clef, middle=, stafflines= or octave= change in the body, for the voice's current bar. */
   const change = (v: Voice, p: Props) => {
     const same = (a?: Clef, b?: Clef) => !!a && !!b && a.sign === b.sign && a.line === b.line && (a.octave ?? 0) === (b.octave ?? 0);
-    if (p.clef && !same(p.clef, v.clefNow ?? CLEFS.treble)) {
-      v.clefNow = p.clef;
-      v.cur.clef = p.clef;
+    const clef = clefFrom(p, v.clefNow);
+    if (clef) {
+      if (!same(clef, v.clefNow ?? CLEFS.treble)) v.cur.clef = clef;
+      v.clefNow = clef;
+    }
+    if (p.stafflines !== undefined && p.stafflines !== v.linesNow) {
+      v.linesNow = p.stafflines;
+      v.cur.stafflines = p.stafflines;
     }
     if (p.octave !== undefined) v.props.octave = p.octave;
     if (p.stem) v.props.stem = p.stem;
@@ -445,10 +578,10 @@ export function readAbc(text: string, opts: AbcOptions = {}): Document {
 
   const unitLength = () => unit || (meter && meter.quarters < 3 ? 0.0625 : 0.125);
 
-  /** %%score or %%staves: the first sets the layout; later ones only bring voices back in step. */
+  /** %%score or %%staves: the first sets the layout; later ones add their voices and bring all back in step. */
   const directive = (name: string, value: string) => {
-    if (!layout) layout = parseScore(value, name === "staves");
-    else for (const s of parseScore(value, name === "staves").staves) if (!s.some((id) => layout!.staves.flat().includes(id))) layout.staves.push(s);
+    const next = parseScore(value, name === "staves");
+    layout = layout ? mergeLayout(layout, next) : next;
     if (inBody) {
       synced = Math.max(0, ...[...voices.values()].map((v) => v.measures.length + (v.cur.events.length ? 1 : 0)));
       for (const v of voices.values()) {
@@ -528,6 +661,16 @@ export function readAbc(text: string, opts: AbcOptions = {}): Document {
         }
         break;
       }
+      case "P": {
+        const label = value.trim();
+        if (!inBody) partOrder = playOrderOf(label);
+        else {
+          const letter = /^([A-Za-z])\b/.exec(label)?.[1];
+          const v = current;
+          if (letter) partAt.set(v ? v.measures.length + (v.cur.events.length ? 1 : 0) : 0, letter);
+        }
+        break;
+      }
       case "U": {
         const u = /^\s*(\S)\s*=\s*[!+]?([^!+\s]+)[!+]?/.exec(value);
         if (u) userSymbols.set(u[1], u[2]);
@@ -553,9 +696,11 @@ export function readAbc(text: string, opts: AbcOptions = {}): Document {
     if (f && !(inBody && /^[|:[\]]/.test(line))) {
       if (f[1] === "+") {
         if (lastField === "w" && inBody && current) lyrics(current, f[2].replace(/\\$/, ""), true);
+        else if (lastField === "s" && inBody && current) symbols(current, f[2].replace(/\\$/, ""), true);
         continue;
       }
       if (f[1] === "w" && inBody && current) lyrics(current, f[2].replace(/\\$/, ""), false);
+      else if (f[1] === "s" && inBody && current) symbols(current, f[2].replace(/\\$/, ""), false);
       else if (f[1] !== "W") field(f[1], f[2]);
       lastField = f[1];
       continue;
@@ -571,7 +716,9 @@ export function readAbc(text: string, opts: AbcOptions = {}): Document {
   for (const v of voices.values()) closeMeasure(v, true);
   const order = [...new Set([...voiceDefs.keys(), ...voices.keys()])].map((id) => voices.get(id)).filter((v): v is Voice => !!v && v.measures.length > 0);
   if (!order.length) order.push(voiceOf("1"));
-  return build({ title, composer, tempo, key, meter: headerMeter, plan: planParts(order, layout) });
+  // A one-letter header P: is a label, not an order; the order needs parts marked in the body.
+  const play = partOrder.length > 1 && partAt.size ? partOrder : [];
+  return build({ title, composer, tempo, key, meter: headerMeter, plan: planParts(order, layout), parts: partAt, play });
 
   /** One line of music for a voice. */
   function music(v: Voice, line: string, onField: (name: string, value: string) => void): void {
@@ -603,7 +750,7 @@ export function readAbc(text: string, opts: AbcOptions = {}): Document {
         alters.set(where, alter);
       } else alter = alters.get(where) ?? v.key.alters[step] ?? 0;
       // octave= and a +8/-8 clef move the notes (MusicXML pitches are as heard).
-      octave += (v.props.octave ?? 0) + (v.clefNow?.octave ?? 0);
+      octave += (v.props.octave ?? 0) + (v.clefNow?.octave ?? 0) + (v.clefNow?.shift ?? 0);
       return { step, octave, alter, shown };
     };
     const readLength = (): number => {
@@ -723,10 +870,8 @@ export function readAbc(text: string, opts: AbcOptions = {}): Document {
         const end = text.indexOf('"', i + 1);
         const s = text.slice(i + 1, end < 0 ? undefined : end);
         i = end < 0 ? text.length : end + 1;
-        const place = s[0];
-        if ("^_<>@".includes(place)) pendingBefore.push({ kind: "words", text: decodeText(s.slice(1)), below: place === "_" });
-        else if (parseChord(s)) pendingBefore.push({ kind: "chord", text: s });
-        else if (s.trim()) pendingBefore.push({ kind: "words", text: decodeText(s), below: false });
+        const q = quoted(s);
+        if (q) pendingBefore.push(q);
         continue;
       }
       const deco = /^[!+]([^!+\s]+)[!+]/.exec(rest);
@@ -734,12 +879,10 @@ export function readAbc(text: string, opts: AbcOptions = {}): Document {
       const user = !deco && /[H-Wh-w~]/.test(c) ? userSymbols.get(c) : undefined;
       if (deco || user) {
         i += deco ? deco[0].length : 1;
-        const name = deco ? deco[1] : user!;
-        if (DYNAMICS.has(name)) pendingBefore.push({ kind: "dynamic", value: name });
-        else if (/^(crescendo|<)\($/.test(name)) pendingBefore.push({ kind: "wedge", type: "crescendo" });
-        else if (/^(diminuendo|>)\($/.test(name)) pendingBefore.push({ kind: "wedge", type: "diminuendo" });
-        else if (/^(crescendo|diminuendo|<|>)\)$/.test(name)) (lastEvent && !v.overlay ? v.cur.after : pendingBefore).push({ kind: "wedge", type: "stop" });
-        else if (NAMED[name]) pendingDecos.push(NAMED[name]);
+        const d = decoration(deco ? deco[1] : user!);
+        if (d.stop) (lastEvent && !v.overlay ? v.cur.after : pendingBefore).push(d.dir!);
+        else if (d.dir) pendingBefore.push(d.dir);
+        else if (d.mark) pendingDecos.push(d.mark);
         continue;
       }
       if (DECORATION[c]) {
@@ -966,10 +1109,63 @@ export function readAbc(text: string, opts: AbcOptions = {}): Document {
     v.barAlters.clear();
   }
 
+  /** The notes of the music line before a w: or s: line: those tied from the one before take none. */
+  function alignable(v: Voice): Voice["lineNotes"] {
+    return v.lineNotes.filter((_n, k, all) => !(k > 0 && all[k - 1].ev.tie));
+  }
+
+  /** The note after a | in a w: or s: line: the first of the next bar. */
+  function nextBar(notes: Voice["lineNotes"], at: number): number {
+    const bar = notes[at - 1]?.bar;
+    if (bar !== undefined) while (at < notes.length && notes[at].bar === bar) at++;
+    return at;
+  }
+
+  /** An s: symbol line (or its +: continuation): decorations and texts to notes, as w: aligns syllables. */
+  function symbols(v: Voice, line: string, more: boolean): void {
+    const notes = alignable(v);
+    let at = more ? v.symbolAt : 0;
+    let open = false; // the note at "at" has a symbol
+    const done = () => {
+      if (open) at++;
+      open = false;
+    };
+    for (let k = 0; k < line.length; ) {
+      const ch = line[k];
+      const rest = line.slice(k);
+      const deco = /^[!+]([^!+]*)[!+]/.exec(rest);
+      const text = /^"([^"]*)"?/.exec(rest);
+      if (deco || text) {
+        k += (deco ?? text)![0].length;
+        const n = notes[at]?.ev;
+        open = true;
+        if (!n) continue;
+        if (deco) {
+          const d = decoration(deco[1]);
+          if (d.dir) n.before.push(d.dir);
+          else if (d.mark) n.decorations.push(d.mark);
+        } else {
+          const q = quoted(text![1]);
+          if (q) n.before.push(q);
+        }
+        continue;
+      }
+      k++;
+      if (ch === "*") {
+        done();
+        at++;
+      } else if (ch === "|") {
+        done();
+        at = nextBar(notes, at);
+      } else if (ch === " " || ch === "\t") done();
+    }
+    done();
+    v.symbolAt = at;
+  }
+
   /** A w: line (or its +: continuation): syllables to the notes of the music line before it. */
   function lyrics(v: Voice, words: string, more: boolean): void {
-    // Notes tied from the one before take no syllable.
-    const notes = v.lineNotes.filter((_n, k, all) => !(k > 0 && all[k - 1].ev.tie));
+    const notes = alignable(v);
     if (!more) {
       v.verse++;
       v.lyricAt = 0;
@@ -1002,9 +1198,7 @@ export function readAbc(text: string, opts: AbcOptions = {}): Document {
         at++;
       } else if (ch === "|") {
         flush(false);
-        // On to the first note of the next bar.
-        const bar = notes[at - 1]?.bar;
-        if (bar !== undefined) while (at < notes.length && notes[at].bar === bar) at++;
+        at = nextBar(notes, at);
       } else if (ch === "~") cur += " ";
       else cur += ch;
     }
@@ -1072,7 +1266,7 @@ function planParts(order: Voice[], layout: Layout | null): Plan {
 
 // ---- MusicXML
 
-function build(o: { title: string; composer: string; tempo: Tempo | null; key: Key; meter: Meter; plan: Plan }): Document {
+function build(o: { title: string; composer: string; tempo: Tempo | null; key: Key; meter: Meter; plan: Plan; parts: Map<number, string>; play: string[] }): Document {
   const doc = parseXml('<score-partwise version="4.0"/>');
   const root = doc.documentElement;
   const el = (parent: Element, tag: string, value?: string | number | null, attrs?: Record<string, string | number>) => {
@@ -1083,7 +1277,12 @@ function build(o: { title: string; composer: string; tempo: Tempo | null; key: K
     return e;
   };
   if (o.title) el(el(root, "work"), "work-title", o.title);
-  if (o.composer) el(el(root, "identification"), "creator", o.composer, { type: "composer" });
+  if (o.composer || o.play.length) {
+    const id = el(root, "identification");
+    if (o.composer) el(id, "creator", o.composer, { type: "composer" });
+    // The P: play order, read by the player with the rehearsal marks of the parts.
+    if (o.play.length) el(el(id, "miscellaneous"), "miscellaneous-field", o.play.join(" "), { name: "play-order" });
+  }
   const list = el(root, "part-list");
   const all = o.plan.parts.flat(2);
   const count = Math.max(1, ...all.map((v) => v.measures.length));
@@ -1145,7 +1344,11 @@ function build(o: { title: string; composer: string; tempo: Tempo | null; key: K
         const c = vs.map((v) => at(v).clef).find((x) => x);
         return c ?? (m === 0 ? (vs[0].props.clef ?? CLEFS.treble) : undefined);
       });
-      if (m === 0 || newKey || newMeter !== undefined || clefs.some((c) => c)) {
+      const lines = staves.map((vs) => {
+        const n = vs.map((v) => at(v).stafflines).find((x) => x !== undefined);
+        return n ?? (m === 0 && (vs[0].props.stafflines ?? 5) !== 5 ? vs[0].props.stafflines : undefined);
+      });
+      if (m === 0 || newKey || newMeter !== undefined || clefs.some((c) => c) || lines.some((x) => x !== undefined)) {
         const attrs = el(meas, "attributes");
         if (m === 0) el(attrs, "divisions", DIV);
         if (newKey) key = newKey;
@@ -1164,6 +1367,9 @@ function build(o: { title: string; composer: string; tempo: Tempo | null; key: K
           el(c, "line", clef.line);
           if (clef.octave) el(c, "clef-octave-change", clef.octave);
         });
+        lines.forEach((n, s) => {
+          if (n !== undefined) el(el(attrs, "staff-details", null, many ? { number: s + 1 } : undefined), "staff-lines", n);
+        });
         const tr = head.props.transpose;
         if (m === 0 && tr) {
           const t = el(attrs, "transpose");
@@ -1174,6 +1380,8 @@ function build(o: { title: string; composer: string; tempo: Tempo | null; key: K
         }
         if (!attrs.firstChild) attrs.remove();
       }
+      const partLabel = o.parts.get(m);
+      if (n === 0 && partLabel) el(el(el(meas, "direction", null, { placement: "above" }), "direction-type"), "rehearsal", partLabel);
       if (m === 0 && n === 0 && o.tempo) {
         const dir = el(meas, "direction", null, { placement: "above" });
         const dt = el(dir, "direction-type");
