@@ -60,6 +60,8 @@ const ARTIC: Record<string, string> = {
   articStaccatoBelow: "staccato",
   articStaccatissimoAbove: "staccatissimo",
   articStaccatissimoBelow: "staccatissimo",
+  articStaccatissimoWedgeAbove: "staccatissimo",
+  articStaccatissimoWedgeBelow: "staccatissimo",
   articAccentAbove: "accent",
   articAccentBelow: "accent",
   articTenutoAbove: "tenuto",
