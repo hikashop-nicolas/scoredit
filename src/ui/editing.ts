@@ -442,6 +442,18 @@ export function createEditing(host: EditingHost): Editing {
     caret = null;
     landed(editor.removePart(p));
   });
+  // The selected note's instrument one place up or down; the selection goes with it.
+  const moveInst = (by: number) => {
+    if (!sel) return;
+    const to = sel.at.part + by;
+    if (to < 0 || to >= editor.score.measures.length) return;
+    const change = editor.movePart(sel.at.part, to);
+    sel = { ...sel, at: { ...sel.at, part: to }, end: sel.end ? { ...sel.end, part: to } : undefined };
+    caret = null;
+    landed(change);
+  };
+  const moveUpBtn = textBtnOf(t("moveUp"), () => moveInst(-1));
+  const moveDownBtn = textBtnOf(t("moveDown"), () => moveInst(1));
   // One group of the Score row at a time, picked from a switcher.
   const groupOf = (...items: HTMLElement[]) => {
     const g = document.createElement("div");
@@ -453,7 +465,7 @@ export function createEditing(host: EditingHost): Editing {
     ["groupTranspose", groupOf(modePick, intervalPick, keyPick, dirPick, transposeBtn)],
     ["groupKeyTime", groupOf(keyAtPick, timeAtPick, clefAtPick)],
     ["groupBars", groupOf(barBefore, barAfter, barEnd, barDelete)],
-    ["groupInstruments", groupOf(addInstPick, changeInstPick, removeInstBtn)],
+    ["groupInstruments", groupOf(addInstPick, changeInstPick, moveUpBtn, moveDownBtn, removeInstBtn)],
   ];
   let scoreGroup = 0;
   const switcher = document.createElement("div");
@@ -658,6 +670,8 @@ export function createEditing(host: EditingHost): Editing {
     barDelete.disabled ||= editor.score.measureCount < 2;
     changeInstPick.disabled = !sel;
     removeInstBtn.disabled = !sel || editor.score.measures.length < 2;
+    moveUpBtn.disabled = !sel || sel.at.part <= 0;
+    moveDownBtn.disabled = !sel || sel.at.part >= editor.score.measures.length - 1;
     pressed(moreDynBtn, moreDyn);
     const dirs = sel ? editor.directions(sel.at) : [];
     for (const [v, b] of dynBtns) {

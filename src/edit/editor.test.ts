@@ -544,8 +544,10 @@ describe("Instruments", () => {
     expect(s.parts[0].name).toBe("Clarinet");
     expect(part(s, 0, 0)).toBe("D4:1 E4:1 F#4:1 G4:1");
     expect(ed.info(0, 0).fifths).toBe(2);
-    // A piano has two staves: not this way.
-    expect(ed.changePart(0, instrument("piano")!, "Piano")).toBe(null);
+    // A piano has two staves: the second one comes with it.
+    expect(ed.changePart(0, instrument("piano")!, "Piano")).not.toBe(null);
+    // A drum kit is not a pitched instrument: refused.
+    expect(ed.changePart(0, instrument("drumset")!, "Drums")).toBe(null);
   });
 
   it("enters drums on a new drum kit from the kit's places", async () => {

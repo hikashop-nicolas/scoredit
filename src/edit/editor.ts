@@ -1612,14 +1612,132 @@ export class ScoreEditor {
     });
   }
 
+  /** An instrument moved to another place in the score (its staves with it). */
+  movePart(from: number, to: number): Change {
+    const count = this.score.measures.length;
+    if (from < 0 || from >= count || to < 0 || to >= count || from === to) return { from: 0, to: 0, appended: 0 };
+    return this.restructure(() => {
+      const parts = kids(this.score.root, "part");
+      const moved = parts[from];
+      const id = moved.getAttribute("id");
+      // The part-list entries in the same order as the parts.
+      const sps = Array.from(this.score.root.getElementsByTagName("score-part"));
+      const sp = sps.find((x) => x.getAttribute("id") === id);
+      const others = parts.filter((p) => p !== moved);
+      const anchor = others[to] ?? null;
+      if (anchor) moved.parentElement!.insertBefore(moved, anchor);
+      else moved.parentElement!.appendChild(moved);
+      if (sp) {
+        const anchorId = anchor?.getAttribute("id");
+        const anchorSp = sps.find((x) => x.getAttribute("id") === anchorId);
+        if (anchorSp) anchorSp.parentElement!.insertBefore(sp, anchorSp);
+        else {
+          const lastId = others[others.length - 1]?.getAttribute("id");
+          const lastSp = sps.find((x) => x.getAttribute("id") === lastId);
+          lastSp?.parentElement!.insertBefore(sp, lastSp.nextSibling);
+        }
+      }
+      this.score.rescanParts();
+      const order = Array.from({ length: count }, (_, i) => i);
+      order.splice(from, 1);
+      order.splice(to, 0, from);
+      const origins = this.score.partOrigins ?? Array.from({ length: count }, (_, i) => i);
+      this.score.partOrigins = order.map((i) => origins[i]);
+      const dirty = [...this.score.dirty];
+      this.score.dirty.clear();
+      for (const k of dirty) {
+        const [p, m] = k.split(":").map(Number);
+        this.score.dirty.add(`${order.indexOf(p)}:${m}`);
+      }
+      return { from: 0, to: this.score.measureCount, appended: 0 };
+    });
+  }
+
+  /** Whether the staves after the first n of a part hold notes (they would go with fewer staves). */
+  stavesHoldNotes(part: number, n: number): boolean {
+    return this.score.measures[part].some((meas) => kids(meas, "note").some((x) => (Number(text(x, "staff")) || 1) > n && !kid(x, "rest")));
+  }
+
+  /** A part with n staves: new ones hold whole-bar rests, the ones after n go. */
+  private setStaffCount(part: number, n: number, clefs: string[]): void {
+    const old = this.staves(part);
+    if (old === n) return;
+    const doc = this.score.doc;
+    const ms = this.score.measures[part];
+    ms.forEach((meas, m) => {
+      this.touch(part, m);
+      const r = readMeasure(meas);
+      if (n < old) {
+        for (const k of [...r.voices.keys()]) if (Number(k.split("|")[0]) > n) r.voices.delete(k);
+        r.others = r.others.filter((o) => (Number(text(o.el, "staff")) || 1) <= n);
+      } else {
+        const real = Math.max(0, ...[...r.voices.values()].flat().map((e) => e.pos + e.dur));
+        const len = real || this.info(part, m).length;
+        for (let st = old + 1; st <= n; st++) {
+          const voice = String((st - 1) * 4 + 1);
+          r.voices.set(voiceKey(st, voice), [{ pos: 0, dur: len, graces: [], rest: true, notes: [makeNote(doc, { pitch: null, divs: len, written: null, voice, staff: st, measureRest: true })] }]);
+        }
+      }
+      writeMeasure(meas, r);
+      // Clefs, staff lines and staves past n go; one staff left: no staff numbers.
+      for (const a of kids(meas, "attributes")) {
+        for (const e of kids(a)) {
+          const num = Number(e.getAttribute("number")) || 1;
+          if (n < old && e.hasAttribute("number") && num > n) e.remove();
+          else if (n === 1 && e.hasAttribute("number")) e.removeAttribute("number");
+        }
+        for (const st of kids(a, "staves")) st.remove();
+        if (!a.firstElementChild) a.remove();
+      }
+      if (n === 1) for (const x of Array.from(meas.getElementsByTagName("staff"))) x.remove();
+      else if (old === 1)
+        for (const x of kids(meas).filter((c) => (c.tagName === "note" || c.tagName === "direction") && !kid(c, "staff"))) {
+          const st = doc.createElementNS(null, "staff");
+          st.textContent = "1";
+          if (x.tagName === "note") placeInNote(x, st);
+          else x.insertBefore(st, kid(x, "sound"));
+        }
+    });
+    // The first bar names the staves and their clefs.
+    const first = ms[0];
+    let attrs = leadingAttributes(first)[0];
+    if (!attrs) {
+      attrs = doc.createElementNS(null, "attributes");
+      first.insertBefore(attrs, kids(first).find((c) => c.tagName !== "print" && c.tagName !== "barline") ?? null);
+    }
+    if (n > 1) {
+      const st = doc.createElementNS(null, "staves");
+      st.textContent = String(n);
+      placeAttr(attrs, st);
+      if (old === 1) for (const c of kids(attrs, "clef")) c.setAttribute("number", "1");
+      for (let k = old + 1; k <= n; k++) {
+        const cl = CLEFS[clefs[k - 1] ?? "G"] ?? CLEFS.G;
+        const c = doc.createElementNS(null, "clef");
+        c.setAttribute("number", String(k));
+        for (const [tag, v] of [["sign", cl.sign], ["line", cl.line], ...(cl.octave ? [["clef-octave-change", cl.octave]] : [])] as [string, string | number][]) {
+          const e = doc.createElementNS(null, tag);
+          e.textContent = String(v);
+          c.appendChild(e);
+        }
+        placeAttr(attrs, c);
+      }
+    }
+    this.score.refresh();
+  }
+
   /**
-   * Another instrument for a part: its name, sound, clefs and transposition. The music keeps
-   * sounding the same: written notes and keys move by the change of transposition. Refused
-   * (null) for another number of staves, or between a drum kit and a pitched instrument.
+   * Another instrument for a part: its name, sound, clefs, staves and transposition. The music
+   * keeps sounding the same: written notes and keys move by the change of transposition. Fewer
+   * staves drop the last ones. Refused (null) when those hold notes, or between a drum kit and
+   * a pitched instrument.
    */
   changePart(part: number, def: InstrumentDef, name: string): Change | null {
-    if (def.clefs.length !== this.staves(part) || !!def.drums !== this.isDrums(part)) return null;
+    if (!!def.drums !== this.isDrums(part)) return null;
+    if (def.clefs.length < this.staves(part) && this.stavesHoldNotes(part, def.clefs.length)) return null;
     return this.restructure(() => {
+      // Saving into a MuseScore file follows instruments through partOrigins.
+      this.score.partOrigins ??= this.score.parts.map((_, i) => i);
+      this.setStaffCount(part, def.clefs.length, def.clefs);
       const [d0, c0] = this.transposition(part);
       const [d1, c1] = def.transpose ?? [0, 0];
       const n = this.score.measureCount;
