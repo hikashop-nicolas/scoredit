@@ -5,6 +5,7 @@ import { midiOf } from "../edit/notes";
 import { DRUM_KIT } from "../model/instruments";
 import type { ScoreDoc } from "../model/score";
 import { kid, kids, text } from "../model/xml";
+import { harmonicFret } from "./gp";
 import type { Dropped } from "./mscx-write";
 
 // Guitar Pro 7 files (.gp) written from a score's MusicXML: a zip holding Content/score.gpif.
@@ -278,7 +279,7 @@ export function writeGuitarPro(score: ScoreDoc | Document, opts: GuitarProWriteO
     applyLegato(g);
   }
   for (const p of parts) if (p.tuning) checkHopos(p);
-  for (const p of parts) if (p.gp.length && p.transpose % 12) drop("transposition (written at concert pitch)");
+  for (const p of parts) if (p.gp.length && p.tuning && p.transpose % 12) drop("transposition (written at concert pitch)");
   let tempos = master.flatMap((mb, m) => mb.tempos.map((t) => ({ m, ...t })));
   // Guitar Pro needs a tempo at the start: the one scoredit plays a score without one at.
   if (!tempos.some((t) => t.m === 0 && t.tick === 0)) tempos = [{ m: 0, tick: 0, bpm: 100 }, ...tempos];
@@ -802,7 +803,7 @@ function buildStaff(g: GStaff, master: MasterOut[], drop: Drop): void {
         }
         const n = open[i];
         for (let s = tuning.length - 1; s >= 0; s--) {
-          const f = n.midi - tuning[s] - p.capo;
+          const f = played(n) - tuning[s] - p.capo;
           if (taken.has(s) || f < 0 || f > 24) continue;
           taken.add(s);
           choice.push(s);
@@ -820,7 +821,7 @@ function buildStaff(g: GStaff, master: MasterOut[], drop: Drop): void {
         const s = (best as number[] | null)?.[i] ?? -1;
         if (s >= 0) {
           n.string = s;
-          n.fret = n.midi - tuning[s] - p.capo;
+          n.fret = played(n) - tuning[s] - p.capo;
         }
       });
       const kept = b.notes.filter((n) => n.string >= 0);
@@ -830,6 +831,9 @@ function buildStaff(g: GStaff, master: MasterOut[], drop: Drop): void {
     }
   });
 }
+
+/** Where a note is fretted, without a place in the score: an artificial harmonic an octave below its sound. */
+const played = (n: GNote) => (n.harmonic && n.harmonic !== "Natural" ? n.midi - 12 : n.midi);
 
 /** A note's pitch and place without its marks (the later pieces of a split note). */
 function plain(n: GNote): GNote {
@@ -1188,7 +1192,8 @@ function gpif(doc: Document, parts: PartIn[], master: MasterOut[], tempos: { m: 
   w(`<Score>${field("Title", title)}${field("SubTitle", subtitle)}${field("Artist", "")}${field("Album", "")}${field("Words", creator("lyricist"))}${field("Music", creator("composer"))}${field("WordsAndMusic", "")}${field("Copyright", rights)}${field("Tabber", "")}${field("Instructions", "")}${field("Notices", "")}<ScoreSystemsDefaultLayout>4</ScoreSystemsDefaultLayout><ScoreSystemsLayout></ScoreSystemsLayout></Score>\n`);
 
   const tracks = parts.filter((p) => p.gp.length);
-  w(`<MasterTrack><Tracks>${tracks.map((_, i) => i).join(" ")}</Tracks>${anacrusis ? "<Anacrusis />" : ""}<Automations>`);
+  // A pickup bar's flag comes first, where Guitar Pro 7 puts it.
+  w(`<MasterTrack>${anacrusis ? "<Anacrusis />" : ""}<Tracks>${tracks.map((_, i) => i).join(" ")}</Tracks><Automations>`);
   for (const t of [...tempos].sort(ordered)) {
     const mb = master[t.m];
     const tick = t.m === 0 && t.tick === 0 ? 0 : t.tick + (t.m === 0 ? mb.shift : 0);
@@ -1345,10 +1350,9 @@ const pitchXml = (midi: number) => {
   return `<Pitch><Step>${step}</Step><Accidental>${acc}</Accidental><Octave>${Math.floor(midi / 12)}</Octave></Pitch>`;
 };
 
-// Written to sounding in whole octaves (transposition or 8vb clef); MuseScore would move notes
-// again by any other interval, so those parts are written at concert pitch.
-const transposeOf = (p: PartIn) => (p.drums ? 0 : 12 * Math.trunc((p.transpose || 12 * (p.states[0]?.octave.get(p.gp[0]?.staff ?? 1) ?? 0)) / 12));
-
+// Written to sounding: a transposition, or an 8vb clef. A fretted part keeps whole octaves only
+// (its frets give the pitch), so another interval is written at concert pitch there.
+const transposeOf = (p: PartIn) => (p.drums ? 0 : !p.tuning && p.transpose ? p.transpose : 12 * Math.trunc((p.transpose || 12 * (p.states[0]?.octave.get(p.gp[0]?.staff ?? 1) ?? 0)) / 12));
 function noteXml(id: number, n: GNote, p: PartIn, kit: number[]): string {
   const on = (name: string) => `<Property name="${name}"><Enable /></Property>`;
   const float = (name: string, v: number) => `<Property name="${name}"><Float>${v.toFixed(6)}</Float></Property>`;
@@ -1360,10 +1364,13 @@ function noteXml(id: number, n: GNote, p: PartIn, kit: number[]): string {
   if (n.vibrato) s += `<Vibrato>Slight</Vibrato>`;
   if (n.ornament) s += `<Ornament>${n.ornament}</Ornament>`;
   if (n.trill) s += `<Trill>${n.midi + 2}</Trill>`;
+  // A harmonic sounds above the fret played, which Guitar Pro keeps as the note's pitch.
+  const open = p.tuning && n.string >= 0 ? p.tuning[n.string] + p.capo : null;
+  const midi = n.harmonic && open !== null ? open + n.fret : n.midi;
   s += `<InstrumentArticulation>${p.drums ? kit.indexOf(n.midi) : 0}</InstrumentArticulation><Properties>`;
-  if (!p.drums) s += `<Property name="ConcertPitch">${pitchXml(n.midi)}</Property><Property name="TransposedPitch">${pitchXml(n.midi - transposeOf(p))}</Property>`;
+  if (!p.drums) s += `<Property name="ConcertPitch">${pitchXml(midi)}</Property><Property name="TransposedPitch">${pitchXml(midi - transposeOf(p))}</Property>`;
   if (p.tuning) s += `<Property name="Fret"><Fret>${n.fret}</Fret></Property>`;
-  s += `<Property name="Midi"><Number>${n.midi}</Number></Property>`;
+  s += `<Property name="Midi"><Number>${midi}</Number></Property>`;
   if (p.tuning) s += `<Property name="String"><String>${n.string}</String></Property>`;
   if (n.dead) s += on("Muted");
   if (n.palmMute) s += on("PalmMuted");
@@ -1372,7 +1379,12 @@ function noteXml(id: number, n: GNote, p: PartIn, kit: number[]): string {
   if (n.hopoOrigin) s += on("HopoOrigin");
   if (n.hopoDest) s += on("HopoDestination");
   if (n.slide) s += `<Property name="Slide"><Flags>${n.slide}</Flags></Property>`;
-  if (n.harmonic) s += `<Property name="HarmonicType"><HType>${n.harmonic}</HType></Property><Property name="HarmonicFret"><HFret>${n.harmonic === "Natural" ? n.fret : 12}</HFret></Property>`;
+  if (n.harmonic) {
+    // The touch fret, from how far above the open string (natural) or the fretted note it sounds.
+    const natural = n.harmonic === "Natural";
+    const fret = harmonicFret(natural, n.midi - (natural ? (open ?? n.midi) : midi), n.fret) ?? (natural ? n.fret : 12);
+    s += `<Property name="HarmonicType"><HType>${n.harmonic}</HType></Property><Property name="HarmonicFret"><HFret>${fret}</HFret></Property>`;
+  }
   if (n.bend) {
     s += on("Bended") + float("BendOriginOffset", 0) + float("BendOriginValue", n.bend.origin);
     if (n.bend.middle !== null) s += float("BendMiddleOffset1", 50) + float("BendMiddleOffset2", 50) + float("BendMiddleValue", n.bend.middle);

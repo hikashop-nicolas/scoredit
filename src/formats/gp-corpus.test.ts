@@ -250,12 +250,11 @@ const dir = join(__dirname, "../../corpus/guitarpro");
 const on = process.env.SCOREDIT_CORPUS === "1" && existsSync(dir);
 
 // Files MuseScore reads otherwise, checked by hand: why scoredit keeps its own reading.
-const HARMONIC = "MuseScore writes a harmonic at its sounding pitch, or adds that pitch as a second note (and tab fret)";
+const HARMONIC = "MuseScore keeps an artificial harmonic's fretted note beside its sound (and tab fret), and sounds GP3 to GP5 ones an octave up or at the fret whatever their harmonic";
 const KNOWN: [RegExp, string][] = [
-  [/^(Effects|Harmonics)\.gp[345]$|^artificial-harmonic|^gpp_tab\.gp5$|^gp8_syncpoint/, HARMONIC],
+  [/^(Effects|Harmonics)\.gp[345]$|^artificial-harmonic|^gpp_tab\.gp[45]$/, HARMONIC],
   [/^(basic-)?bend\.|^gpp_tab\.gp4$/,"MuseScore writes a bent or pre-bent note at its bent pitch, and its tab adds the bend's target"],
   [/^capo-fret\.gp[34]$|^fret-diagram\.gp4$/, "MuseScore leaves a GP3 or GP4 capo out of the pitch (not a GP5 one); Guitar Pro sounds it"],
-  [/^all-percussion\./, "GP3 to GP5 drum keys are played on General MIDI sounds; GP6 kits other than drums, and notes naming no drum, differ"],
   [/^(chordnames_keyboard|clefs|dotted-tuplets|grace)\.gp/, "MuseScore gives a tab staff to a piano or xylophone track that has a tuning"],
   [/^high-pitch\.gp3$/, "a fret past MIDI 127: MuseScore writes fret 0, scoredit keeps the fret"],
   [/^Repeat\.gp5$/, "MuseScore counts a repeat's plays from its voltas"],
