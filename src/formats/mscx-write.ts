@@ -1,6 +1,6 @@
 import { strFromU8, strToU8, unzipSync, zipSync, type Zippable } from "fflate";
 import { pairEnds, type SlurItem } from "../edit/pairs";
-import { readMeasure, voiceKey, type Event } from "../edit/measure";
+import { isAfterGrace, readMeasure, voiceKey, type Event } from "../edit/measure";
 import { bendsOf, fingeringOf, lyricsOf, marksOf, midiOf, readPitch, slursOf, spansOf, spellMidi, tremoloOf, type Pitch } from "../edit/notes";
 import type { ScoreDoc } from "../model/score";
 import { kid, kids, text } from "../model/xml";
@@ -66,6 +66,8 @@ const CHORD_LINE: Record<string, number> = { falloff: 1, doit: 2, plop: 3, scoop
 // Written beside the chord or rest, not in it.
 const BESIDE = new Set(["fermata", "arpeggiate", "breath-mark", "caesura", "tap", ...Object.keys(CHORD_LINE)]);
 const ACCIDENTAL: Record<number, string> = { [-2]: "accidentalDoubleFlat", [-1]: "accidentalFlat", 0: "accidentalNatural", 1: "accidentalSharp", 2: "accidentalDoubleSharp" };
+/** MusicXML's name of each accidental. */
+const SHOWN: Record<number, string> = { [-2]: "flat-flat", [-1]: "flat", 0: "natural", 1: "sharp", 2: "double-sharp" };
 const TPC_BASE: Record<string, number> = { F: 13, C: 14, G: 15, D: 16, A: 17, E: 18, B: 19 };
 const TYPE_Q: Record<string, number> = { breve: 8, whole: 4, half: 2, quarter: 1, eighth: 0.5, "16th": 0.25, "32nd": 0.125, "64th": 0.0625, "128th": 0.03125 };
 const DURATION_NAME: [string, number][] = Object.entries(TYPE_Q).sort((a, b) => b[1] - a[1]);
@@ -213,6 +215,14 @@ function graceChords(graces: Element[]): Element[][] {
   return out;
 }
 
+/** Grace chords in file order with MuseScore's index: those before the notes, then those after, last first. */
+function graceSlots(graces: Element[]): { notes: Element[]; index: number; after: boolean; order: number }[] {
+  const before = graceChords(graces.filter((g) => !isAfterGrace(g)));
+  const after = graceChords(graces.filter(isAfterGrace));
+  const n = before.length + after.length;
+  return [...before.map((notes, i) => ({ notes, index: i, after: false, order: i })), ...after.map((notes, j) => ({ notes, index: n - 1 - j, after: true, order: 200 + j })).reverse()];
+}
+
 const holderCache = new WeakMap<ScoreDoc, Map<number, Holder[]>>();
 let byPlace = new Map<string, Holder>();
 /** Every place a slur can end in a part, in time order (cached per save). */
@@ -230,7 +240,7 @@ function holders(score: ScoreDoc, part: number): Holder[] {
       for (const ev of evs) {
         len = Math.max(len, (ev.pos + ev.dur) / per);
         const t = start + ev.pos / per;
-        graceChords(ev.graces).forEach((g, gi) => out.push({ key, m, per, pos: ev.pos, grace: gi, notes: g, t, order: gi, i: 0 }));
+        for (const g of graceSlots(ev.graces)) out.push({ key, m, per, pos: ev.pos, grace: g.index, notes: g.notes, t, order: g.order, i: 0 });
         if (!ev.rest || ev.notes.some((n) => slursOf(n).length)) out.push({ key, m, per, pos: ev.pos, grace: -1, notes: ev.notes, t, order: 100, i: 0 });
       }
     start += len;
@@ -529,10 +539,11 @@ function accidentalsFor(score: ScoreDoc, part: number, m: number, staff: number)
   for (const [key, evs] of read(score.measures[part][m]).voices) {
     if (Number(key.split("|")[0]) !== staff) continue;
     for (const ev of evs) {
-      ev.graces.forEach((g, gi) => {
-        const p = readPitch(g);
-        if (p && !p.unpitched) notes.push({ pos: ev.pos, grace: gi - 100, note: g, p, tied: false });
-      });
+      for (const slot of graceSlots(ev.graces))
+        for (const g of slot.notes) {
+          const p = readPitch(g);
+          if (p && !p.unpitched) notes.push({ pos: ev.pos, grace: slot.order - (slot.after ? 199 : 100), note: g, p, tied: false });
+        }
       for (const n of ev.notes) {
         const p = readPitch(n);
         if (p && !p.unpitched) notes.push({ pos: ev.pos, grace: 0, note: n, p, tied: kids(n, "tie").some((t) => t.getAttribute("type") === "stop") });
@@ -588,7 +599,7 @@ function writeVoice(ctx: Ctx, v: Element, part: number, k: number, staff: number
     if (!ev.rest && ev.notes.some((n) => marksOf(n).includes("fermata"))) add(add(v, "Fermata"), "subtype", "fermataAbove");
     else if (ev.rest && ev.notes.some((n) => marksOf(n).includes("fermata"))) add(add(v, "Fermata"), "subtype", "fermataAbove");
     const at = run.index?.get(`${m}|${ev.pos}`) ?? -1;
-    graceChords(ev.graces).forEach((gr, gi) => v.appendChild(chordFor(ctx, part, staff, m, pos, per, gr, gi, run, at, accidentals, key, ev.pos)));
+    for (const g of graceSlots(ev.graces)) v.appendChild(chordFor(ctx, part, staff, m, pos, per, g.notes, g.index, run, at, accidentals, key, ev.pos));
     v.appendChild(ev.rest ? restFor(ctx, ev, per, part, key, m, pos) : chordFor(ctx, part, staff, m, pos, per, ev.notes, -1, run, at, accidentals, key, ev.pos));
     // A breath mark or caesura stands after its chord or rest.
     const breath = ev.notes.flatMap(marksOf).find((x) => x === "breath-mark" || x === "caesura");
@@ -664,6 +675,8 @@ function chordFor(ctx: Ctx, part: number, staff: number, m: number, pos: number,
   // Untouched in an edited measure (never remembered): unchanged as well.
   const untouched = !!orig && !prints.has(given[0]);
   let chord: Element;
+  // A kept chord's accidentals, put back when still drawn (their look with them).
+  const keptAcc = new Map<Element, Element>();
   if (orig && (unchanged || untouched) && orig.tagName === "Chord" && !ctx.fresh) {
     chord = orig.cloneNode(true) as Element;
     for (const s of kids(chord, "Spanner")) if (s.getAttribute("type") === "Slur") s.remove();
@@ -675,7 +688,10 @@ function chordFor(ctx: Ctx, part: number, staff: number, m: number, pos: number,
         if (look) glissLooks.set(n, look);
         s.remove();
       }
-      for (const a of kids(n, "Accidental")) a.remove();
+      for (const a of kids(n, "Accidental")) {
+        keptAcc.set(n, a);
+        a.remove();
+      }
     }
   } else {
     chord = doc.createElementNS(null, "Chord");
@@ -690,7 +706,8 @@ function chordFor(ctx: Ctx, part: number, staff: number, m: number, pos: number,
     const tm = kid(notes[0], "time-modification");
     const ratio = tm ? (Number(text(tm, "normal-notes")) || 1) / (Number(text(tm, "actual-notes")) || 1) : 1;
     if (!grace && d && Math.abs(d / per - (TYPE_Q[type] ?? 1) * (2 - 2 ** -dots) * ratio) > 1e-9) add(chord, "duration", fraction(d, per));
-    if (grace) add(chord, kid(notes[0], "grace")?.getAttribute("slash") === "yes" ? "acciaccatura" : ({ quarter: "grace4", "16th": "grace16", "32nd": "grace32" } as Record<string, string>)[type] ?? "appoggiatura");
+    if (grace && isAfterGrace(notes[0])) add(chord, ({ "16th": "grace16after", "32nd": "grace32after" } as Record<string, string>)[type] ?? "grace8after");
+    else if (grace) add(chord, kid(notes[0], "grace")?.getAttribute("slash") === "yes" ? "acciaccatura" : ({ quarter: "grace4", "16th": "grace16", "32nd": "grace32" } as Record<string, string>)[type] ?? "appoggiatura");
     for (const l of lyricsOf(notes[0])) {
       const ly = add(chord, "Lyrics");
       if (Number(l.number) > 1) add(ly, "no", Number(l.number) - 1);
@@ -731,10 +748,18 @@ function chordFor(ctx: Ctx, part: number, staff: number, m: number, pos: number,
   notes.forEach((n, i) => {
     const el = noteEls[i];
     if (!el) return;
-    const acc = accidentals.get(n);
-    if (acc !== null && acc !== undefined) {
-      const a = doc.createElementNS(null, "Accidental");
-      add(a, "subtype", ACCIDENTAL[acc] ?? "accidentalNatural");
+    // Drawn where needed, and where the score shows one anyway (a courtesy accidental).
+    let acc = accidentals.get(n) ?? null;
+    const p = readPitch(n);
+    const courtesy = acc === null && !!p && text(n, "accidental") === SHOWN[p.alter];
+    if (courtesy) acc = p!.alter;
+    if (acc !== null) {
+      const old = keptAcc.get(el);
+      const a = old && text(old, "subtype") === ACCIDENTAL[acc] ? old : doc.createElementNS(null, "Accidental");
+      if (a !== old) {
+        if (courtesy) add(a, "role", 1);
+        add(a, "subtype", ACCIDENTAL[acc] ?? "accidentalNatural");
+      }
       el.insertBefore(a, el.firstChild?.nodeName === "eid" ? el.firstChild.nextSibling : el.firstChild);
     }
     if (grace) return;

@@ -1,6 +1,6 @@
 import type { ScoreDoc } from "../model/score";
 import { kid, kids, text } from "../model/xml";
-import { readMeasure, voiceKey, writeMeasure, type Event, type ReadMeasure } from "./measure";
+import { isAfterGrace, readMeasure, voiceKey, writeMeasure, type Event, type ReadMeasure } from "./measure";
 import { TYPES, addOrnamentXml, setOrnamentAccidental, addTechnicalXml, setTechValue, setBends, type Bend, addSpan, removeSpan, setFingering, setTremolo, spansOf, addSlur, defaultPosition, isTied, keepMarksFor, makeGrace, marksOf, placeInNote, removeSlur, setLyric, setMark, setPosition, slursOf, writtenFor, keyAlter, makeNote, midiOf, pieceOf, readPitch, setPitch, setTie, spellMidi, splitLength, type Pitch, type Written } from "./notes";
 
 /** Where the next note goes: a beat in one voice of one staff of a part. */
@@ -653,15 +653,21 @@ export class ScoreEditor {
 
   /** A grace note before the event at the caret (its first note's pitch unless given); returns it. */
   /** chord: sounds with the grace note before it (a grace chord). */
-  addGrace(caret: Caret, pitch?: Pitch, slash = true, chord = false): { grace: Element | null; change: Change } {
+  addGrace(caret: Caret, pitch?: Pitch, slash = true, chord = false, after = false): { grace: Element | null; change: Change } {
     const ev = this.eventAt(caret);
     const p = pitch ?? (ev && !ev.rest ? readPitch(ev.notes[0]) : null);
     if (!ev || ev.rest || !p) return { grace: null, change: { from: caret.measure, to: caret.measure, appended: 0 } };
     return this.transact(() => {
       this.touch(caret.part, caret.measure);
       const staves = this.staves(caret.part);
-      const g = makeGrace(this.score.doc, { ...p, position: undefined }, caret.voice, staves > 1 ? caret.staff : undefined, slash, chord && ev.graces.length > 0);
-      ev.notes[0].parentElement!.insertBefore(g, ev.notes[0]);
+      const same = ev.graces.filter((x) => isAfterGrace(x) === after);
+      const g = makeGrace(this.score.doc, { ...p, position: undefined }, caret.voice, staves > 1 ? caret.staff : undefined, slash, chord && same.length > 0);
+      // A grace note after the chord: following the chord and the ones already after it.
+      if (after) {
+        kid(g, "grace")!.setAttribute("steal-time-previous", "0");
+        const lastEl = same[same.length - 1] ?? ev.notes[ev.notes.length - 1];
+        lastEl.parentElement!.insertBefore(g, lastEl.nextSibling);
+      } else ev.notes[0].parentElement!.insertBefore(g, ev.notes[0]);
       return { grace: g, change: { from: caret.measure, to: caret.measure + 1, appended: 0 } };
     });
   }

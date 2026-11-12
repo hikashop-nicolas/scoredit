@@ -1,7 +1,7 @@
 import { ScoreDoc } from "../model/score";
 import { kid, kids, text } from "../model/xml";
 import { ScoreEditor, type Caret } from "./editor";
-import { readMeasure, writeMeasure, type Event } from "./measure";
+import { isAfterGrace, readMeasure, writeMeasure, type Event } from "./measure";
 import { ORNAMENTS, SPANS, bendsOf, otherOrnaments, otherTechnical, plainOrnaments, fingeringOf, type Bend, lyricsOf, marksOf, midiOf, readPitch, slursOf, spansOf, tremoloOf, type Lyric, type Pitch, type SlurEnd, type SpanEnd } from "./notes";
 import { pairEnds, type SlurItem } from "./pairs";
 
@@ -22,7 +22,7 @@ export interface Entry {
   rest?: boolean;
   /** Articulations, ornaments, fermata. */
   marks: string[];
-  graces: { pitch: Pitch; slash: boolean; chord: boolean; slurs: SlurEnd[] }[];
+  graces: { pitch: Pitch; slash: boolean; chord: boolean; after: boolean; slurs: SlurEnd[] }[];
   lyrics: Lyric[];
   slurs: SlurEnd[];
   /** Single-note tremolo strokes (0: none). */
@@ -106,7 +106,7 @@ export function plan(score: ScoreDoc): { entries: Entry[]; skipped: Skipped } {
             marks,
             graces: ev.graces.flatMap((g) => {
               const p = readPitch(g);
-              return p ? [{ pitch: p, slash: kid(g, "grace")?.getAttribute("slash") === "yes", chord: !!kid(g, "chord"), slurs: slursOf(g) }] : [];
+              return p ? [{ pitch: p, slash: kid(g, "grace")?.getAttribute("slash") === "yes", chord: !!kid(g, "chord"), after: isAfterGrace(g), slurs: slursOf(g) }] : [];
             }),
             lyrics: ev.notes.flatMap(lyricsOf),
             slurs: ev.notes.flatMap(slursOf),
@@ -193,7 +193,7 @@ export function rebuild(score: ScoreDoc): { doc: ScoreDoc; skipped: Skipped; ent
   const ordered = [...entries].sort((a, b) => a.at.part - b.at.part || a.at.measure - b.at.measure || a.at.pos - b.at.pos || a.at.staff - b.at.staff || Number(a.at.voice) - Number(b.at.voice));
   const graceEls = new Map<Entry, Element[]>();
   for (const e of ordered) {
-    graceEls.set(e, e.graces.map((g) => ed.addGrace(e.at, g.pitch, g.slash, g.chord).grace).filter((g): g is Element => !!g));
+    graceEls.set(e, e.graces.map((g) => ed.addGrace(e.at, g.pitch, g.slash, g.chord, g.after).grace).filter((g): g is Element => !!g));
     for (const m of e.marks) ed.mark(e.at, m, true);
     for (const l of e.lyrics) ed.lyric(e.at, l.text, l.syllabic, l.number);
     if (e.tremolo) ed.tremolo(e.at, e.tremolo);
@@ -232,7 +232,7 @@ export function rebuild(score: ScoreDoc): { doc: ScoreDoc; skipped: Skipped; ent
     const t = e.at.measure * 1e6 + e.at.pos;
     e.graces.forEach((g, gi) => {
       const el = graceEls.get(e)?.[gi];
-      if (el) for (const end of g.slurs) ends.push({ t, order: gi, staff: String(e.at.staff), voice: e.at.voice, end, ref: { at: e.at, grace: el } });
+      if (el) for (const end of g.slurs) ends.push({ t, order: g.after ? 200 + gi : gi, staff: String(e.at.staff), voice: e.at.voice, end, ref: { at: e.at, grace: el } });
     });
     for (const end of e.slurs) ends.push({ t, order: 100, staff: String(e.at.staff), voice: e.at.voice, end, ref: { at: e.at } });
   }
@@ -282,7 +282,7 @@ export function noteList(score: ScoreDoc): string[] {
         if (ev.rest) return;
         for (const g of derived(key) ? [] : ev.graces) {
           const gp = readPitch(g);
-          if (gp) out.push(`${at}|grace ${midiOf(gp)}${kid(g, "grace")?.getAttribute("slash") === "yes" ? " slashed" : ""}${kid(g, "chord") ? " chord" : ""}${count(g, "start") + count(g, "stop") ? ` slur${" start".repeat(count(g, "start"))}${" stop".repeat(count(g, "stop"))}` : ""}`);
+          if (gp) out.push(`${at}|grace ${midiOf(gp)}${kid(g, "grace")?.getAttribute("slash") === "yes" ? " slashed" : ""}${kid(g, "chord") ? " chord" : ""}${isAfterGrace(g) ? " after" : ""}${count(g, "start") + count(g, "stop") ? ` slur${" start".repeat(count(g, "start"))}${" stop".repeat(count(g, "stop"))}` : ""}`);
         }
         for (const l of derived(key) ? [] : ev.notes.flatMap(lyricsOf)) out.push(`${at}|lyric ${l.number} ${l.syllabic} ${l.text}`);
         const starts = ev.notes.reduce((n, x) => n + count(x, "start"), 0);
@@ -372,7 +372,7 @@ function pairedSlurs(voices: Map<string, { m: number; per: number; ev: Event }[]
       // A slur ending on a rest is not one edit mode makes; it drops like an unfinished one.
       if (ev.rest) continue;
       const t = m * 1e6 + ev.pos / per;
-      ev.graces.forEach((g, gi) => slursOf(g).forEach((end) => ends.push({ t, order: gi, staff, voice, end, ref: g })));
+      ev.graces.forEach((g, gi) => slursOf(g).forEach((end) => ends.push({ t, order: isAfterGrace(g) ? 200 + gi : gi, staff, voice, end, ref: g })));
       for (const n of ev.notes) for (const end of slursOf(n)) ends.push({ t, order: 100, staff, voice, end, ref: n });
     }
   }

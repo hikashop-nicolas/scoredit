@@ -570,6 +570,8 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
           let lastFirst: Element | null = null;
           let graceCount = 0;
           let lastEvent: Element | null = null;
+          // Grace notes after a chord come before it in the file, last first.
+          const afterGraces: Node[][] = [];
           const tuplets: number[] = [];
           const tupletInfo: { actual: number; normal: number; base: string }[] = [];
           for (const c of voiceKids) {
@@ -759,6 +761,7 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
                 else whole = ((DURATION[dt] ?? 1) / 4) * (2 - 2 ** -dots) * ratio;
                 if (graceTag) whole = 0;
                 goTo(pos);
+                const mark = meas.lastChild;
                 const notes = c.tagName === "Chord" ? gall(cg, "Note") : [null];
                 const tremEl = gone(cg, "TremoloSingleChord") ?? gone(cg, "TremoloTwoChord") ?? gone(cg, "Tremolo");
                 const tremSub = text(tremEl, "subtype");
@@ -957,6 +960,15 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
                     }
                   }
                 });
+                if (graceTag?.endsWith("after")) {
+                  const made: Node[] = [];
+                  for (let x = mark ? mark.nextSibling : meas.firstChild; x; x = x.nextSibling) made.push(x);
+                  for (const x of made) {
+                    meas.removeChild(x);
+                    if ((x as Element).tagName === "note") kid(x as Element, "grace")?.setAttribute("steal-time-previous", "0");
+                  }
+                  afterGraces.push(made);
+                } else if (!graceTag) for (const made of afterGraces.splice(0).reverse()) for (const x of made) meas.appendChild(x);
                 if (c.tagName === "Chord") {
                   if (trillNext) trillNext = false;
                   tremoloStop = tremolo?.two ? tremolo.strokes : 0;
@@ -983,6 +995,7 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
               }
             }
           }
+          for (const made of afterGraces.splice(0).reverse()) for (const x of made) meas.appendChild(x);
           goTo(0);
         });
       });

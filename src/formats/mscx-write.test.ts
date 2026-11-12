@@ -66,6 +66,28 @@ describe("Saving back into MuseScore files", () => {
     const want = noteList(loaded.score).map((k) => k.replace(/\|marks (.*)$/, (all, mk: string) => `|marks ${same[mk] ?? mk}`));
     expect(back).toEqual(want);
   });
+
+  it("keeps grace notes after a trill, and a courtesy natural", () => {
+    // MuseScore files hold the grace notes after a chord before it, last first.
+    const slur = `<Spanner type="Slur"><Slur/><next><location><grace>0</grace></location></next></Spanner>`;
+    const back = `<Spanner type="Slur"><prev><location/></prev></Spanner>`;
+    const trill = chord("16th", 74, 16, back + "<grace16after/>") + chord("16th", 72, 14, "<grace16after/>") + chord("half", 74, 16, slur + "<Ornament><subtype>ornamentTrill</subtype></Ornament>").replace("<pitch>74", "<Accidental><role>1</role><subtype>accidentalNatural</subtype></Accidental><pitch>74");
+    const src = file([TS + chord("half", 72, 14) + trill, chord("whole", 67, 15)]);
+    const loaded = loadScore(strToU8(src));
+    // Read: after the trill note, in the order they sound.
+    const notes = Array.from(loaded.score.measures[0][0].getElementsByTagName("note")).map((n) => (n.getElementsByTagName("grace").length ? "g" : "") + n.getElementsByTagName("step")[0].textContent);
+    expect(notes).toEqual(["C", "D", "gC", "gD"]);
+    for (const fresh of [false, true]) {
+      loaded.score.changing(0, 0);
+      const saved = strFromU8(loaded.save!({ fresh }).bytes);
+      const m = saved.slice(...measureOffsets(saved).staves[0][0]);
+      expect(m.match(/grace16after|<durationType>half/g)).toEqual(["<durationType>half", "grace16after", "grace16after", "<durationType>half"]);
+      expect(m.indexOf("<pitch>74")).toBeLessThan(m.indexOf("<pitch>72</pitch><tpc>14</tpc></Note></Chord><Chord><durationType>half"));
+      expect(m).toContain("<grace>0</grace>");
+      expect(m).toContain("accidentalNatural");
+      expect(noteList(loadScore(strToU8(saved)).score)).toEqual(noteList(loaded.score));
+    }
+  });
 });
 
 // A corpus file (SCOREDIT_SAVE=path, run by scripts/save-corpus.mjs, one per process): every
@@ -76,22 +98,23 @@ describe.skipIf(!target)("Saving a corpus score", () => {
     const { readFileSync, writeFileSync } = await import("node:fs");
     const { compareNotes, describeNote } = await import("../edit/rebuild");
     const out: Record<string, unknown> = {};
-    if (!loadScore(new Uint8Array(readFileSync(target!))).save) {
-      writeFileSync(process.env.SCOREDIT_SAVE_JSON ?? "/dev/stdout", JSON.stringify({ unwritable: true }));
-      return;
-    }
+    const bytes = new Uint8Array(readFileSync(target!));
     // SCOREDIT_SAVE_MODE runs one of them (a big score needs a process per mode).
     for (const mode of (["keep", "fresh"] as const).filter((x) => !process.env.SCOREDIT_SAVE_MODE || process.env.SCOREDIT_SAVE_MODE === x)) {
       const t0 = performance.now();
       try {
-        const bytes = new Uint8Array(readFileSync(target!));
+        // One load per mode: a big quartet's document costs gigabytes.
         const loaded = loadScore(bytes);
+        if (!loaded.save) {
+          writeFileSync(process.env.SCOREDIT_SAVE_JSON ?? "/dev/stdout", JSON.stringify({ unwritable: true }));
+          return;
+        }
         loaded.score.measures.forEach((ms, p) => ms.forEach((_, m) => loaded.score.changing(p, m)));
         const { bytes: saved, dropped } = loaded.save!({ fresh: mode === "fresh" });
         // MuseScore checks the way a real save writes: unchanged chords kept.
         if (mode === "keep" && process.env.SCOREDIT_SAVE_OUT) writeFileSync(process.env.SCOREDIT_SAVE_OUT, saved);
         if (mode === "fresh" && process.env.SCOREDIT_SAVE_FRESH_OUT) writeFileSync(process.env.SCOREDIT_SAVE_FRESH_OUT, saved);
-        const r = compareNotes(loadScore(bytes).score, loadScore(saved).score);
+        const r = compareNotes(loaded.score, loadScore(saved).score);
         out[mode] = { total: r.total, missing: r.missing.length, extra: r.extra.length, dropped, examples: [...r.missing.slice(0, 4).map((k) => "missing: " + describeNote(k, loaded.score)), ...r.extra.slice(0, 4).map((k) => "extra: " + describeNote(k, loaded.score))], ms: Math.round(performance.now() - t0) };
       } catch (e) {
         out[mode] = { error: e instanceof Error ? e.message : String(e) };

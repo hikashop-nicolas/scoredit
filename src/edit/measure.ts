@@ -28,6 +28,9 @@ export interface ReadMeasure {
 export const voiceKey = (staff: number, voice: string) => `${staff}|${voice}`;
 const keyOf = (note: Element) => voiceKey(Number(text(note, "staff")) || 1, text(note, "voice") || "1");
 
+/** A grace note played after its main note (MusicXML: it steals time from the note before). */
+export const isAfterGrace = (g: Element) => !!kid(g, "grace")?.hasAttribute("steal-time-previous");
+
 const LEFT = -1;
 const RIGHT = Number.MAX_SAFE_INTEGER;
 
@@ -37,6 +40,7 @@ export function readMeasure(m: Element): ReadMeasure {
   const graces = new Map<string, Element[]>();
   let pos = 0;
   let last: Event | null = null;
+  const lastOf = new Map<string, Event>();
   for (const c of kids(m)) {
     switch (c.tagName) {
       case "backup":
@@ -48,6 +52,11 @@ export function readMeasure(m: Element): ReadMeasure {
       case "note": {
         const key = keyOf(c);
         if (kid(c, "grace")) {
+          const before = lastOf.get(key);
+          if (before && isAfterGrace(c)) {
+            before.graces.push(c);
+            break;
+          }
           graces.set(key, [...(graces.get(key) ?? []), c]);
           break;
         }
@@ -61,6 +70,7 @@ export function readMeasure(m: Element): ReadMeasure {
         list.push(ev);
         voices.set(key, list);
         last = ev;
+        lastOf.set(key, ev);
         pos += ev.dur;
         break;
       }
@@ -114,13 +124,14 @@ export function writeMeasure(m: Element, r: ReadMeasure): void {
     for (const ev of r.voices.get(key)!) {
       if (k === 0) flush(ev.pos);
       move(ev.pos);
-      for (const g of ev.graces) m.appendChild(g);
+      for (const g of ev.graces) if (!isAfterGrace(g)) m.appendChild(g);
       ev.notes.forEach((n, i) => {
         const chord = kid(n, "chord");
         if (i === 0 && chord) chord.remove();
         if (i > 0 && !chord) n.insertBefore(doc.createElementNS(null, "chord"), kids(n).find((c) => c.tagName !== "grace" && c.tagName !== "cue") ?? null);
         m.appendChild(n);
       });
+      for (const g of ev.graces) if (isAfterGrace(g)) m.appendChild(g);
       cursor += ev.dur;
     }
     if (k === 0) flush(RIGHT - 1);
