@@ -579,7 +579,9 @@ export function createEditing(host: EditingHost): Editing {
   let floatQueued = false;
   function placeFloat(): void {
     floatQueued = false;
-    const notes = view && active && sel ? Array.from(view.root.querySelectorAll(".sv-sel")) : [];
+    // While text is typed (lyrics below, chord symbols above), the field is the tool: no bar over it.
+    const typing = !lyricBar.hidden;
+    const notes = view && active && sel && !typing ? Array.from(view.root.querySelectorAll(".sv-sel")) : [];
     const rects = notes.map((n) => n.getBoundingClientRect()).filter((r) => r.width || r.height);
     const area = view?.root.getBoundingClientRect();
     if (!rects.length || !area) return void (floatBar.hidden = true);
