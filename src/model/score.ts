@@ -28,6 +28,8 @@ export class ScoreDoc {
   sections: number[] = [0];
   /** "part:measure" of the measures edits changed, for saving only those. */
   readonly dirty = new Set<string>();
+  /** Each measure's index in the file it was read from (-1: added since); null: unchanged. */
+  origins: number[] | null = null;
   /** Called once per measure, just before an edit first changes it. */
   beforeChange?: (part: number, measure: number) => void;
   /** Attributes in force at the start of each measure, per part. */

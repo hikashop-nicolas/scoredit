@@ -414,3 +414,50 @@ describe("Key and clef changes", () => {
     expect(text(s.measures[0][0].getElementsByTagName("clef")[0], "sign")).toBe("C");
   });
 });
+
+describe("Adding and taking out bars", () => {
+  const four = () => score(note("C", 4, "whole", '<tie type="start"/><notations><tied type="start"/></notations>'.replace(/^/, "")), note("C", 4, "whole"), note("E", 4, "whole"), note("F", 4, "whole"));
+  const all = (s: ScoreDoc) => s.measures[0].map((_, m) => show(s, m)).join(" | ");
+
+  it("inserts empty bars in the middle, at the start and at the end", () => {
+    const s = four();
+    const ed = new ScoreEditor(s);
+    ed.insertMeasures(2, 2);
+    expect(all(s)).toBe("C4:4~ | C4:4 | r:4 | r:4 | E4:4 | F4:4");
+    expect(s.measures[0].map((m) => m.getAttribute("number"))).toEqual(["1", "2", "3", "4", "5", "6"]);
+    expect(s.origins).toEqual([0, 1, -1, -1, 2, 3]);
+    ed.insertMeasures(0);
+    // The opening clef, key and time moved to the new first bar.
+    expect(kids(s.measures[0][0], "attributes")).toHaveLength(1);
+    expect(kids(s.measures[0][1], "attributes")).toHaveLength(0);
+    expect(all(s)).toBe("r:4 | C4:4~ | C4:4 | r:4 | r:4 | E4:4 | F4:4");
+    ed.insertMeasures(s.measureCount);
+    expect(s.measureCount).toBe(8);
+    ed.undo();
+    ed.undo();
+    ed.undo();
+    expect(all(s)).toBe("C4:4~ | C4:4 | E4:4 | F4:4");
+    expect(s.origins).toBe(null);
+  });
+
+  it("cuts the tie across an inserted bar", () => {
+    const s = four();
+    new ScoreEditor(s).insertMeasures(1);
+    expect(all(s)).toBe("C4:4 | r:4 | C4:4 | E4:4 | F4:4");
+  });
+
+  it("takes out bars, carrying a key change in them to the next bar", () => {
+    const s = four();
+    const ed = new ScoreEditor(s);
+    ed.setKey(2, 2);
+    ed.deleteMeasures(1, 3);
+    expect(all(s)).toBe("C4:4 | F4:4");
+    expect(text(s.measures[0][1], "attributes")).toContain("2");
+    expect(s.origins).toEqual([0, 3]);
+    // Not every bar.
+    expect(ed.deleteMeasures(0, 2).to).toBe(0);
+    ed.deleteMeasures(0, 1);
+    expect(all(s)).toBe("F4:4");
+    expect(kids(s.measures[0][0], "attributes").flatMap((a) => kids(a)).map((e) => e.tagName)).toEqual(expect.arrayContaining(["divisions", "key", "time", "clef"]));
+  });
+});

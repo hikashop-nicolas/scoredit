@@ -365,7 +365,32 @@ export function createEditing(host: EditingHost): Editing {
   });
   const sep = document.createElement("span");
   sep.className = "sv-pal-sep";
-  row5.append(modePick, intervalPick, keyPick, dirPick, transposeBtn, sep, keyAtPick, clefAtPick);
+  // Bars: before or after the selected one, one more at the end, the selected ones out.
+  const barRange = () => {
+    const a = sel?.at.measure ?? editor.score.measureCount - 1;
+    const b = sel?.end?.measure ?? a;
+    return [Math.min(a, b), Math.max(a, b)] as const;
+  };
+  const textBtnOf = (label: string, fn: () => void) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "sv-pal-text-btn sv-pal-plain";
+    b.textContent = label;
+    b.addEventListener("click", fn);
+    return b;
+  };
+  const barBefore = textBtnOf(t("barBefore"), () => landed(editor.insertMeasures(barRange()[0])));
+  const barAfter = textBtnOf(t("barAfter"), () => landed(editor.insertMeasures(barRange()[1] + 1)));
+  const barEnd = textBtnOf(t("barAtEnd"), () => landed(editor.insertMeasures(editor.score.measureCount)));
+  const barDelete = textBtnOf(t("deleteBars"), () => {
+    const [a, b] = barRange();
+    sel = null;
+    caret = null;
+    landed(editor.deleteMeasures(a, b + 1));
+  });
+  const sep2 = document.createElement("span");
+  sep2.className = "sv-pal-sep";
+  row5.append(modePick, intervalPick, keyPick, dirPick, transposeBtn, sep, keyAtPick, clefAtPick, sep2, barBefore, barAfter, barEnd, barDelete);
   // Dynamics (the usual ones, "more" for the rest), hairpins, then the kinds of text.
   const dynBtn = (v: string) => button(`<span class="sv-dyn">${v}</span>`, v, () => dynamic(v));
   const DYN_MAIN = ["pp", "p", "mp", "mf", "f", "ff"];
@@ -538,6 +563,8 @@ export function createEditing(host: EditingHost): Editing {
     closest.hidden = closest.disabled = modePick.value !== "key";
     if (modePick.value === "interval" && dirPick.value === "closest") dirPick.value = "up";
     transposeBtn.title = t(sel?.end ? "transposeSelection" : "transposeScore");
+    barBefore.disabled = barAfter.disabled = barDelete.disabled = !sel;
+    barDelete.disabled ||= editor.score.measureCount < 2;
     pressed(moreDynBtn, moreDyn);
     const dirs = sel ? editor.directions(sel.at) : [];
     for (const [v, b] of dynBtns) {

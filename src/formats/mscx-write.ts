@@ -82,11 +82,16 @@ function fraction(divs: number, perQuarter: number): string {
 }
 
 /** Where each measure of the score body is in the text: per staff, [start, end) of each <Measure>. */
-function measureOffsets(source: string): { staves: [number, number][][]; staffEnds: number[] } {
+function measureOffsets(source: string): { staves: [number, number][][]; staffEnds: number[]; mmrests: [number, number][]; nested: [number, number][] } {
   const tag = /<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<\?[\s\S]*?\?>|<(\/?)([A-Za-z_][\w.-]*)[^>]*?(\/?)>/g;
   const stack: string[] = [];
   const staves: [number, number][][] = [];
   const staffEnds: number[] = [];
+  // Multi-measure rests (a part's drawing of several empty bars as one): not bars of their own.
+  const mmrests: [number, number][] = [];
+  // MuseScore 3 keeps instrument parts as scores inside the score.
+  const nested: [number, number][] = [];
+  let nestedStart = -1;
   let scoreDepth = -1;
   let measureStart = -1;
   for (let m = tag.exec(source); m; m = tag.exec(source)) {
@@ -96,8 +101,14 @@ function measureOffsets(source: string): { staves: [number, number][][]; staffEn
       // Leaving an element: a measure of a body staff ends, a body staff ends.
       const depth = stack.length - 1;
       if (name === "Measure" && measureStart >= 0 && scoreDepth >= 0 && depth === scoreDepth + 2) {
-        staves[staves.length - 1].push([measureStart, m.index + all.length]);
+        const range: [number, number] = [measureStart, m.index + all.length];
+        if (/^<Measure[^>]*>\s*(?:<eid>[^<]*<\/eid>\s*)?<multiMeasureRest>/.test(source.slice(...range))) mmrests.push(range);
+        else staves[staves.length - 1].push(range);
         measureStart = -1;
+      }
+      if (name === "Score" && scoreDepth >= 0 && depth === scoreDepth + 1 && nestedStart >= 0) {
+        nested.push([nestedStart, m.index + all.length]);
+        nestedStart = -1;
       }
       if (name === "Staff" && scoreDepth >= 0 && depth === scoreDepth + 1) staffEnds.push(m.index);
       if (name === "Score" && depth === scoreDepth) scoreDepth = -2;
@@ -106,6 +117,7 @@ function measureOffsets(source: string): { staves: [number, number][][]; staffEn
     }
     const depth = stack.length;
     if (name === "Score" && scoreDepth === -1) scoreDepth = depth;
+    else if (name === "Score" && scoreDepth >= 0 && depth === scoreDepth + 1 && !self) nestedStart = m.index;
     if (scoreDepth >= 0 && name === "Staff" && depth === scoreDepth + 1 && !self) staves.push([]);
     if (scoreDepth >= 0 && name === "Measure" && depth === scoreDepth + 2) {
       if (self) staves[staves.length - 1].push([m.index, m.index + all.length]);
@@ -113,7 +125,7 @@ function measureOffsets(source: string): { staves: [number, number][][]; staffEn
     }
     if (!self) stack.push(name);
   }
-  return { staves, staffEnds };
+  return { staves, staffEnds, mmrests, nested };
 }
 
 /** A note's content for telling whether an edit changed it (ties, slurs, beams, accidentals left out: written again anyway). */
@@ -155,6 +167,9 @@ interface Ctx {
   v4: boolean;
   /** Write every chord from the score, reusing none (to test the writer). */
   fresh: boolean;
+  /** A score measure's index in the file (-1: added), and back. */
+  origin: (m: number) => number;
+  place: (o: number) => number;
 }
 
 // Each measure read once per save (reads are the costly part of writing a big score).
@@ -326,7 +341,15 @@ function add(parent: Element, tag: string, value?: string | number): Element {
 function pitchOf(ctx: Ctx, part: number, staff: number, m: number, posWhole: number, p: Pitch): { pitch: number; tpc: number; tpc2?: number } {
   const { chromatic, diatonic } = ctx.link.transpose[part];
   const written = TPC_BASE[p.step] + 7 * p.alter;
-  const ott = staff >= 0 ? ctx.link.ottavaAt(staff, m, posWhole) : 0;
+  // Octave lines as the file has them: a new bar takes the end of the one before.
+  let fm = m;
+  let fpos = posWhole;
+  if (ctx.origin(m) < 0) {
+    fm = -1;
+    for (let j = m - 1; j >= 0 && fm < 0; j--) if (ctx.origin(j) >= 0) fm = ctx.origin(j);
+    fpos = Number.MAX_SAFE_INTEGER;
+  } else fm = ctx.origin(m);
+  const ott = staff >= 0 && fm >= 0 ? ctx.link.ottavaAt(staff, fm, fpos) : 0;
   const pitch = midiOf(p) + chromatic - ott;
   if (!chromatic) return { pitch, tpc: written };
   return { pitch, tpc: written + 7 * chromatic - 12 * diatonic, tpc2: written };
@@ -355,7 +378,7 @@ export function writeMuseScore(original: Uint8Array, score: ScoreDoc, link: Mscx
   try {
     for (const n of Object.keys(files).filter((x) => x.startsWith("Excerpts/") && x.endsWith(".mscx"))) {
       const sub = excerptLink(link, strFromU8(files[n]));
-      if (sub) parts.set(n, writeText(score, sub, dirty, prints, { fresh: true }, true).text);
+      if (sub) parts.set(n, writeText(score, sub, dirty, prints, { fresh: true }, true, true).text);
     }
   } finally {
     clearCaches(score);
@@ -391,13 +414,16 @@ function clearCaches(score: ScoreDoc): void {
 function excerptLink(main: MscxLink, source: string): MscxLink | null {
   const src = parseXml(source);
   const ms = src.documentElement;
-  const sc = kid(ms, "Score");
+  const sc = ms.tagName === "Score" ? ms : kid(ms, "Score");
   if (!sc) return null;
   const defs = (doc: Element) => kids(doc, "Part").flatMap((p) => kids(p, "Staff"));
   const mainScore = kid(main.src.documentElement, "Score");
-  const mainIds = mainScore ? defs(mainScore).map((st) => text(st, "eid")) : [];
-  // Each staff of the part: the score's staff it is linked to.
-  const toMain = defs(sc).map((st) => mainIds.indexOf(text(st, "linkedTo")));
+  const mainDefs = mainScore ? defs(mainScore) : [];
+  // Each staff of the part: the score's staff it is linked to (MuseScore 4: by eid, 3: by id).
+  const toMain = defs(sc).map((st) => {
+    const to = text(st, "linkedTo");
+    return to ? mainDefs.findIndex((d) => text(d, "eid") === to || d.getAttribute("id") === to) : -1;
+  });
   if (!toMain.some((x) => x >= 0)) return null;
   const toPart = new Map(toMain.map((m, i) => [m, i]));
   return {
@@ -405,21 +431,26 @@ function excerptLink(main: MscxLink, source: string): MscxLink | null {
     source,
     src,
     version: Number(ms.getAttribute("version")) || main.version,
-    measures: kids(sc, "Staff").map((st) => kids(st, "Measure")),
+    measures: kids(sc, "Staff").map((st) => kids(st, "Measure").filter((x) => !kid(x, "multiMeasureRest"))),
     staves: main.staves.map((list) => list.map((st) => (st < 0 ? -1 : (toPart.get(st) ?? -1)))),
     ottavaAt: (st, m, pos) => main.ottavaAt(toMain[st] ?? st, m, pos),
     chords: new WeakMap(),
   };
 }
 
-function writeText(score: ScoreDoc, link: MscxLink, dirty: Set<string>, prints: WeakMap<Element, string>, opts: { fresh?: boolean }, warm = false): { text: string; dropped: Dropped } {
+function writeText(score: ScoreDoc, link: MscxLink, dirty: Set<string>, prints: WeakMap<Element, string>, opts: { fresh?: boolean }, warm = false, part = false): { text: string; dropped: Dropped } {
   if (link.version < 3) throw new Error("Saving MuseScore 2 files is not supported yet");
   // A part written after the score reuses what the score's writing read.
   if (!warm) clearCaches(score);
   if (/<Tuplet id=/.test(link.source)) throw new Error("This MuseScore file writes tuplets the MuseScore 2 way, which scoredit cannot save yet");
-  const ctx: Ctx = { score, link, doc: link.src, prints, dropped: {}, v4: link.version >= 4, fresh: !!opts.fresh };
-  const { staves: offsets, staffEnds } = measureOffsets(link.source);
   const original = link.measures[0]?.length ?? 0;
+  // Bars added or taken out: each score measure's file measure (-1: a new one), and back.
+  const origin = (m: number) => (score.origins ? (score.origins[m] ?? -1) : m < original ? m : -1);
+  const places = new Map<number, number>();
+  for (let m = 0; m < score.measureCount; m++) if (origin(m) >= 0) places.set(origin(m), m);
+  const place = (o: number) => places.get(o) ?? -1;
+  const ctx: Ctx = { score, link, doc: link.src, prints, dropped: {}, v4: link.version >= 4, fresh: !!opts.fresh, origin, place };
+  const { staves: offsets, staffEnds, mmrests, nested } = measureOffsets(link.source);
   // Measures to write: the edited ones, and those holding the other end of their ties and slurs.
   const todo = new Map<number, Set<number>>();
   for (const k of dirty) {
@@ -431,38 +462,104 @@ function writeText(score: ScoreDoc, link: MscxLink, dirty: Set<string>, prints: 
   // Replacements in the text: [start, end, new text], applied from the end.
   const edits: [number, number, string][] = [];
   const ser = new XMLSerializer();
+  // A new measure goes after the file's measure of the nearest one before it.
+  const insertAt = (staff: number, m: number) => {
+    for (let j = m - 1; j >= 0; j--) if (origin(j) >= 0 && offsets[staff]?.[origin(j)]) return offsets[staff][origin(j)][1];
+    return offsets[staff]?.[0]?.[0] ?? staffEnds[staff];
+  };
+  const put = (staff: number, m: number, xml: string) => {
+    const o = origin(m);
+    if (o >= 0 && offsets[staff]?.[o]) edits.push([offsets[staff][o][0], offsets[staff][o][1], xml]);
+    else if (o < 0) {
+      const at = insertAt(staff, m);
+      edits.push([at, at, at === staffEnds[staff] ? `${xml}\n` : `\n${xml}`]);
+    }
+  };
+  const written = new Set<string>();
   for (const [p, ms] of todo) {
     link.staves[p]?.forEach((staff, k) => {
       if (staff < 0) return;
       for (const m of [...ms].sort((a, b) => a - b)) {
-        const meas = writeMeasure(ctx, p, k, staff, m);
-        const xml = xmlOf(ser, meas);
-        if (m < original && offsets[staff]?.[m]) edits.push([offsets[staff][m][0], offsets[staff][m][1], xml]);
-        else if (m >= original) edits.push([staffEnds[staff], staffEnds[staff], `${xml}\n`]);
+        put(staff, m, xmlOf(ser, writeMeasure(ctx, p, k, staff, m)));
+        written.add(`${staff}:${m}`);
       }
     });
   }
   // Every staff gets the added measures, even staves of parts the edit did not touch.
-  const added = score.measureCount - original;
-  if (added > 0)
-    link.measures.forEach((_, staff) => {
-      const owner = link.staves.findIndex((ss) => ss.includes(staff));
-      if (owner >= 0 && todo.has(owner)) return;
-      for (let i = 0; i < added; i++) {
-        const meas = ctx.doc.createElementNS(null, "Measure");
-        const r = add(add(meas, "voice"), "Rest");
-        add(r, "durationType", "measure");
-        add(r, "duration", fraction(Math.round(link.lengths[original - 1] * 4 * 480), 480));
-        edits.push([staffEnds[staff], staffEnds[staff], `${xmlOf(ser, meas)}\n`]);
-      }
+  const lastLen = link.lengths[original - 1] ?? 1;
+  link.measures.forEach((_, staff) => {
+    for (let m = 0; m < score.measureCount; m++) {
+      if (origin(m) >= 0 || written.has(`${staff}:${m}`)) continue;
+      const meas = ctx.doc.createElementNS(null, "Measure");
+      const r = add(add(meas, "voice"), "Rest");
+      add(r, "durationType", "measure");
+      add(r, "duration", fraction(Math.round(lastLen * 4 * 480), 480));
+      put(staff, m, xmlOf(ser, meas));
+    }
+  });
+  if (score.origins) {
+    // Measures taken out go; lines in the others that cross the change point to their bar again.
+    link.measures.forEach((list, staff) => {
+      list.forEach((meas, o) => {
+        const m = place(o);
+        if (m < 0) {
+          if (offsets[staff]?.[o]) edits.push([offsets[staff][o][0], offsets[staff][o][1], ""]);
+          return;
+        }
+        if (written.has(`${staff}:${m}`)) return;
+        const copy = meas.cloneNode(true) as Element;
+        if (moveSpanners(copy, o, m, place) && offsets[staff]?.[o]) edits.push([offsets[staff][o][0], offsets[staff][o][1], xmlOf(ser, copy)]);
+      });
     });
+  }
+  if (part && edits.length) {
+    // A part's multi-measure rests may no longer be empty bars: MuseScore makes them again.
+    for (const r of mmrests) edits.push([r[0], r[1], ""]);
+  }
+  if (!part)
+    for (const [s0, e0] of nested) {
+      const sub = excerptLink(link, link.source.slice(s0, e0));
+      if (sub) edits.push([s0, e0, writeText(score, sub, dirty, prints, { fresh: true }, true, true).text]);
+    }
   // Applied from the end, so earlier offsets stay right; measures added at one staff's end
   // keep the order they were made in.
   const order = edits.map((e, i) => [...e, i] as const).sort((a, b) => b[0] - a[0] || b[1] - a[1] || b[3] - a[3]);
   let out = link.source;
   for (const [s0, e0, t] of order) out = out.slice(0, s0) + t + out.slice(e0);
-  void original;
   return { text: out, dropped: ctx.dropped };
+}
+
+/**
+ * Lines (<Spanner> next/prev) in a file measure o, now measure m, counted again to their
+ * other end's new measure; one whose other end was taken out goes. True if any changed.
+ */
+function moveSpanners(root: Element, o: number, m: number, place: (o: number) => number): boolean {
+  let changed = false;
+  for (const sp of Array.from(root.getElementsByTagName("Spanner"))) {
+    for (const end of [kid(sp, "next"), kid(sp, "prev")]) {
+      const loc = end ? kid(end, "location") : null;
+      if (!loc) continue;
+      const d = Number(text(loc, "measures")) || 0;
+      const to = place(o + d);
+      if (to < 0) {
+        sp.remove();
+        changed = true;
+        break;
+      }
+      if (to - m === d) continue;
+      changed = true;
+      let el = kid(loc, "measures");
+      if (to - m === 0) el?.remove();
+      else {
+        if (!el) {
+          el = loc.ownerDocument.createElementNS(null, "measures");
+          loc.insertBefore(el, loc.firstChild);
+        }
+        el.textContent = String(to - m);
+      }
+    }
+  }
+  return changed;
 }
 
 /** XML text of an element; named entities a DOM may write (&nbsp;) as character references. */
@@ -496,12 +593,26 @@ function partnerMeasures(score: ScoreDoc, part: number, m: number): number[] {
 /** The new <Measure> for one staff: the original's own content, its voices written again. */
 function writeMeasure(ctx: Ctx, part: number, k: number, staff: number, m: number): Element {
   const { score, link, doc } = ctx;
-  const orig = link.measures[staff]?.[m] ?? null;
+  const o = ctx.origin(m);
+  const orig = o >= 0 ? (link.measures[staff]?.[o] ?? null) : null;
   const meas = orig ? (orig.cloneNode(false) as Element) : doc.createElementNS(null, "Measure");
   if (orig) for (const c of kids(orig)) if (c.tagName !== "voice") meas.appendChild(c.cloneNode(true));
-  // What the original voices hold besides notes, at its position (whole notes).
+  // What the original voices hold besides notes, at its position (whole notes); lines in
+  // them point to their other end's bar again when bars were added or taken out.
   const kept = new Map<number, Kept[]>();
-  (orig ? kids(orig, "voice") : []).forEach((v, vi) => kept.set(vi, keptItems(v, link.lengths[m] ?? 1)));
+  (orig ? kids(orig, "voice") : []).forEach((v, vi) =>
+    kept.set(
+      vi,
+      keptItems(v, link.lengths[o] ?? 1).flatMap((it) => {
+        const el = it.el.cloneNode(true) as Element;
+        const holder = doc.createElementNS(null, "voice");
+        holder.appendChild(el);
+        moveSpanners(holder, o, m, ctx.place);
+        return holder.firstElementChild ? [{ ...it, el: holder.firstElementChild }] : [];
+      }),
+    ),
+  );
+  if (orig) moveSpanners(meas, o, m, ctx.place);
   const xml = score.measures[part][m];
   const per = perQuarter(score, part, m);
   const voices = new Map<number, Event[]>();

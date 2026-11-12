@@ -151,6 +151,29 @@ describe("Saving back into MuseScore files", () => {
     expect(bars[0]).toBe(part.slice(...measureOffsets(part).staves[0][0]));
   });
 
+  it("adds and takes out bars, lines across them still reaching their end", () => {
+    const hp = `<Spanner type="HairPin"><HairPin><subtype>0</subtype></HairPin><next><location><measures>3</measures></location></next></Spanner>`;
+    const hpEnd = `<Spanner type="HairPin"><prev><location><measures>-3</measures></location></prev></Spanner>`;
+    const four = file([TS + hp + chord("whole", 60, 14), chord("whole", 62, 16), chord("whole", 64, 18), hpEnd + chord("whole", 65, 13)]);
+    const loaded = loadScore(strToU8(four));
+    const ed = new ScoreEditor(loaded.score);
+    ed.insertMeasures(2);
+    const saved = strFromU8(loaded.save!().bytes);
+    const bars = measureOffsets(saved).staves[0].map((r) => saved.slice(...r));
+    expect(bars).toHaveLength(5);
+    expect(bars[0]).toContain("<measures>4</measures>");
+    expect(bars[2]).toMatch(/<Rest><durationType>measure<\/durationType><duration>1\/1<\/duration><\/Rest>/);
+    expect(bars[4]).toContain("<measures>-4</measures>");
+    expect(noteList(loadScore(strToU8(saved)).score)).toEqual(noteList(loaded.score));
+    // Taking out the bar the hairpin ends in takes the hairpin with it.
+    ed.deleteMeasures(4, 5);
+    const cut = strFromU8(loaded.save!().bytes);
+    const left = measureOffsets(cut).staves[0].map((r) => cut.slice(...r));
+    expect(left).toHaveLength(4);
+    expect(cut).not.toContain("HairPin");
+    expect(noteList(loadScore(strToU8(cut)).score)).toEqual(noteList(loaded.score));
+  });
+
   it("keeps each kind of breath mark and caesura", () => {
     const symbols = ["breathMarkComma", "breathMarkTick", "breathMarkUpbow", "breathMarkSalzedo", "caesura", "caesuraThick", "caesuraShort", "caesuraCurved", "caesuraSingleStroke"];
     const src = file(symbols.map((sym, i) => (i ? "" : TS) + chord("whole", 72, 14) + `<Breath><symbol>${sym}</symbol></Breath>`));

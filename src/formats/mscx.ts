@@ -403,7 +403,8 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
   }
 
   // Staff contents in order: <Staff id> elements after the parts, matched to parts in order.
-  const measuresOf = staffEls.map((s) => kids(s, "Measure"));
+  // Multi-measure rests (several empty bars drawn as one) are not bars of their own.
+  const measuresOf = staffEls.map((s) => kids(s, "Measure").filter((m) => !kid(m, "multiMeasureRest")));
   let staffCursor = 0;
   const partStaves = parts.map((p) => {
     const ids = p.staves.map((_, k) => staffCursor + k);

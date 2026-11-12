@@ -69,6 +69,16 @@ interface Entry {
   after: Map<string, Element>;
   appended: number;
   appendedEls: Element[][];
+  /** Bars added or taken out in the middle: the whole parts before, and after (for redo). */
+  parts?: Snapshot;
+  partsAfter?: Snapshot;
+}
+
+interface Snapshot {
+  parts: Element[];
+  origins: number[] | null;
+  dirty: string[];
+  sections: number[];
 }
 
 // Divisions per quarter after the first edit: fine enough for 128ths, triplets, quintuplets,
@@ -1031,6 +1041,12 @@ export class ScoreEditor {
   undo(): Change | null {
     const e = this.done.pop();
     if (!e) return null;
+    if (e.parts) {
+      e.partsAfter = this.snapshot();
+      this.restore(e.parts);
+      this.undone.push(e);
+      return { from: 0, to: this.score.measureCount, appended: 0 };
+    }
     e.after = this.swap(e.before);
     for (let k = 0; k < e.appended; k++) {
       kids(this.score.root, "part").forEach((part, p) => {
@@ -1048,6 +1064,11 @@ export class ScoreEditor {
   redo(): Change | null {
     const e = this.undone.pop();
     if (!e) return null;
+    if (e.parts && e.partsAfter) {
+      this.restore(e.partsAfter);
+      this.done.push(e);
+      return { from: 0, to: this.score.measureCount, appended: 0 };
+    }
     kids(this.score.root, "part").forEach((part, p) => {
       for (const m of e.appendedEls[p] ?? []) part.appendChild(m);
     });
@@ -1057,6 +1078,163 @@ export class ScoreEditor {
     this.score.refresh();
     this.done.push(e);
     return { ...spanOf(e.after), appended: e.appended };
+  }
+
+  /**
+   * Empty bars (whole-bar rests in the time in force) before measure `at` in every part; at
+   * the end when `at` is the measure count. Ties across the gap go.
+   */
+  insertMeasures(at: number, count = 1): Change {
+    const n = this.score.measureCount;
+    at = Math.max(0, Math.min(at, n));
+    if (count < 1) return { from: at, to: at, appended: 0 };
+    return this.restructure(() => {
+      if (at > 0 && at < n) this.untieAcross(at - 1, at);
+      // The time in force where they go: at the end of the bar before.
+      const lengths = this.score.measures.map((_, p) => this.info(p, Math.max(0, at - 1)).length);
+      kids(this.score.root, "part").forEach((part, p) => {
+        const ms = kids(part, "measure");
+        const staves = this.staves(p);
+        const made: Element[] = [];
+        for (let i = 0; i < count; i++) {
+          const meas = this.score.doc.createElementNS(null, "measure");
+          for (let st = 1; st <= staves; st++)
+            meas.appendChild(makeNote(this.score.doc, { pitch: null, divs: lengths[p], written: null, voice: this.voiceId(p, st, 1), staff: staves > 1 ? st : undefined, measureRest: true }));
+          part.insertBefore(meas, ms[at] ?? null);
+          made.push(meas);
+        }
+        // Before the first bar: the opening attributes move to the new first one.
+        if (at === 0 && ms[0]) for (const a of leadingAttributes(ms[0])) made[0].insertBefore(a, made[0].firstChild);
+      });
+      this.score.refresh();
+      renumber(this.score, at);
+      const origins = this.score.origins ?? Array.from({ length: n }, (_, i) => i);
+      origins.splice(at, 0, ...Array<number>(count).fill(-1));
+      this.score.origins = origins;
+      this.shiftMarks(at, count);
+      this.score.measures.forEach((_, p) => {
+        for (let m = Math.max(0, at - 1); m <= Math.min(at + count, this.score.measureCount - 1); m++) this.score.changing(p, m);
+      });
+      return { from: at, to: this.score.measureCount, appended: 0 };
+    });
+  }
+
+  /** Takes out measures [from, to) of every part (one is always left); key, time and clef changes in them carry on. */
+  deleteMeasures(from: number, to: number): Change {
+    const n = this.score.measureCount;
+    from = Math.max(0, from);
+    to = Math.min(n, to);
+    if (to <= from || to - from >= n) return { from, to: from, appended: 0 };
+    return this.restructure(() => {
+      if (from > 0 && to < n) this.untieAcross(from - 1, to);
+      kids(this.score.root, "part").forEach((part, p) => {
+        const ms = kids(part, "measure");
+        const next = ms[to];
+        if (next) {
+          // What was in force after the deleted bars, and not before them, goes to the next one.
+          const before = from > 0 ? new Map(this.score.attributesAt(p, from).map((e) => [attrId(e), e])) : new Map<string, Element>();
+          const own = new Set(leadingAttributes(next).flatMap((a) => kids(a)).map(attrId));
+          const carry = this.score.attributesAt(p, to).filter((e) => !own.has(attrId(e)) && xmlOf(before.get(attrId(e))) !== xmlOf(e));
+          if (carry.length) {
+            let attrs = leadingAttributes(next)[0];
+            if (!attrs) {
+              attrs = this.score.doc.createElementNS(null, "attributes");
+              next.insertBefore(attrs, kids(next).find((c) => c.tagName !== "print") ?? null);
+            }
+            for (const e of carry) placeAttr(attrs, e.cloneNode(true) as Element);
+          }
+        }
+        for (const m of ms.slice(from, to)) m.remove();
+      });
+      this.score.refresh();
+      this.dropLoneHairpins();
+      renumber(this.score, from);
+      const origins = this.score.origins ?? Array.from({ length: n }, (_, i) => i);
+      origins.splice(from, to - from);
+      this.score.origins = origins;
+      this.shiftMarks(from, -(to - from));
+      this.score.measures.forEach((_, p) => {
+        for (let m = Math.max(0, from - 1); m <= Math.min(from, this.score.measureCount - 1); m++) this.score.changing(p, m);
+      });
+      return { from: Math.max(0, from - 1), to: this.score.measureCount, appended: 0 };
+    });
+  }
+
+  /** Hairpin ends whose other end went with the bars taken out go too. */
+  private dropLoneHairpins(): void {
+    this.score.measures.forEach((ms, p) => {
+      const open = new Map<string, { el: Element; m: number }>();
+      const lone: { el: Element; m: number }[] = [];
+      ms.forEach((meas, m) => {
+        const ws = readMeasure(meas)
+          .others.filter((o) => o.el.tagName === "direction")
+          .flatMap((o) => {
+            const d = directionOf(o.el);
+            return d?.kind === "wedge" ? [{ o, d }] : [];
+          })
+          .sort((a, b) => a.o.pos - b.o.pos || (a.d.type === "stop" ? -1 : 0) - (b.d.type === "stop" ? -1 : 0));
+        for (const { o, d } of ws) {
+          if (d.kind !== "wedge") continue;
+          const key = `${Number(text(o.el, "staff")) || 1}|${d.number}`;
+          if (d.type !== "stop") {
+            const prev = open.get(key);
+            if (prev) lone.push(prev);
+            open.set(key, { el: o.el, m });
+          } else if (open.has(key)) open.delete(key);
+          else lone.push({ el: o.el, m });
+        }
+      });
+      for (const x of [...lone, ...open.values()]) {
+        this.score.changing(p, x.m);
+        x.el.remove();
+      }
+    });
+  }
+
+  /** Ties from the end of one measure into the start of another (no longer next to it) go. */
+  private untieAcross(left: number, right: number): void {
+    this.score.measures.forEach((ms, p) => {
+      const len = this.info(p, left).length;
+      for (const evs of readMeasure(ms[left]).voices.values())
+        for (const ev of evs) if (ev.pos + ev.dur >= len - 1e-9) for (const nt of ev.notes) setTie(nt, "start", false);
+      for (const evs of readMeasure(ms[right]).voices.values())
+        for (const ev of evs) if (ev.pos <= 1e-9) for (const nt of ev.notes) setTie(nt, "stop", false);
+    });
+  }
+
+  /** Edited marks and section starts follow bars added (by > 0) or taken out (by < 0) at `at`. */
+  private shiftMarks(at: number, by: number): void {
+    const move = (m: number) => (m < at ? m : by < 0 && m < at - by ? -1 : m + by);
+    const dirty = [...this.score.dirty];
+    this.score.dirty.clear();
+    for (const k of dirty) {
+      const [p, m] = k.split(":").map(Number);
+      const to = move(m);
+      if (to >= 0) this.score.dirty.add(`${p}:${to}`);
+    }
+    this.score.sections = [...new Set(this.score.sections.map((s) => (s === 0 ? 0 : move(s))).filter((s) => s >= 0 && s < this.score.measureCount))].sort((a, b) => a - b);
+  }
+
+  /** An edit that adds or takes out bars: undone by putting the whole parts back. */
+  private restructure(fn: () => Change): Change {
+    const before = this.snapshot();
+    return this.transact(() => {
+      if (this.entry) this.entry.parts = before;
+      return fn();
+    });
+  }
+
+  private snapshot(): Snapshot {
+    return { parts: kids(this.score.root, "part").map((p) => p.cloneNode(true) as Element), origins: this.score.origins ? [...this.score.origins] : null, dirty: [...this.score.dirty], sections: [...this.score.sections] };
+  }
+
+  private restore(s: Snapshot): void {
+    kids(this.score.root, "part").forEach((p, i) => p.replaceWith(s.parts[i].cloneNode(true)));
+    this.score.origins = s.origins ? [...s.origins] : null;
+    this.score.dirty.clear();
+    for (const k of s.dirty) this.score.dirty.add(k);
+    this.score.sections = [...s.sections];
+    this.score.refresh();
   }
 
   // ---- internals
@@ -1072,7 +1250,7 @@ export class ScoreEditor {
     try {
       const out = fn();
       this.mirrorTabs();
-      if ((this.entry.before.size || this.entry.appended) && this.opts.history !== false) {
+      if ((this.entry.before.size || this.entry.appended || this.entry.parts) && this.opts.history !== false) {
         this.done.push(this.entry);
         this.undone = [];
       }
@@ -1521,3 +1699,34 @@ function placeAttr(attrs: Element, el: Element): void {
   const after = kids(attrs).find((c) => ORDER.indexOf(c.tagName) > rank);
   attrs.insertBefore(el, after ?? null);
 }
+
+/** The <attributes> a measure opens with (before any note, backup or direction). */
+function leadingAttributes(meas: Element): Element[] {
+  const out: Element[] = [];
+  for (const c of kids(meas)) {
+    if (c.tagName === "attributes") out.push(c);
+    else if (c.tagName !== "print" && c.tagName !== "barline") break;
+  }
+  return out;
+}
+
+/** An attribute's kind and staff (a clef of staff 2, the key...). */
+const attrId = (e: Element) => `${e.tagName}#${e.getAttribute("number") ?? ""}`;
+
+/** Measure numbers from `from` on follow the one before (pickups and numbers like "12a" are left). */
+function renumber(score: ScoreDoc, from: number): void {
+  for (const ms of score.measures) {
+    let prev = from > 0 ? Number(ms[from - 1]?.getAttribute("number")) : 0;
+    for (let m = from; m < ms.length; m++) {
+      const now = ms[m].getAttribute("number") ?? "";
+      if (!Number.isFinite(prev) || (now && !/^\d+$/.test(now))) {
+        prev = Number(now);
+        continue;
+      }
+      prev += 1;
+      ms[m].setAttribute("number", String(prev));
+    }
+  }
+}
+
+const xmlOf = (e: Element | undefined) => (e ? new XMLSerializer().serializeToString(e) : "");
