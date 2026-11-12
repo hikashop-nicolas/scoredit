@@ -383,8 +383,6 @@ export function createEditing(host: EditingHost): Editing {
     const at = sel?.at;
     landed(editor.setClef(at?.part ?? toFull(0), at?.staff ?? 1, at?.measure ?? 0, c));
   });
-  const sep = document.createElement("span");
-  sep.className = "sv-pal-sep";
   // Bars: before or after the selected one, one more at the end, the selected ones out.
   const barRange = () => {
     const a = sel?.at.measure ?? editor.score.measureCount - 1;
@@ -408,8 +406,6 @@ export function createEditing(host: EditingHost): Editing {
     caret = null;
     landed(editor.deleteMeasures(a, b + 1));
   });
-  const sep2 = document.createElement("span");
-  sep2.className = "sv-pal-sep";
   // Instruments: one more at the end, the selected note's one changed or taken out.
   const instrumentPick = (label: string) => {
     const box = document.createElement("select");
@@ -446,9 +442,38 @@ export function createEditing(host: EditingHost): Editing {
     caret = null;
     landed(editor.removePart(p));
   });
-  const sep3 = document.createElement("span");
-  sep3.className = "sv-pal-sep";
-  row5.append(modePick, intervalPick, keyPick, dirPick, transposeBtn, sep, keyAtPick, timeAtPick, clefAtPick, sep2, barBefore, barAfter, barEnd, barDelete, sep3, addInstPick, changeInstPick, removeInstBtn, scoreNote);
+  // One group of the Score row at a time, picked from a switcher.
+  const groupOf = (...items: HTMLElement[]) => {
+    const g = document.createElement("div");
+    g.className = "sv-pal-group";
+    g.append(...items);
+    return g;
+  };
+  const scoreGroups: [string, HTMLElement][] = [
+    ["groupTranspose", groupOf(modePick, intervalPick, keyPick, dirPick, transposeBtn)],
+    ["groupKeyTime", groupOf(keyAtPick, timeAtPick, clefAtPick)],
+    ["groupBars", groupOf(barBefore, barAfter, barEnd, barDelete)],
+    ["groupInstruments", groupOf(addInstPick, changeInstPick, removeInstBtn)],
+  ];
+  let scoreGroup = 0;
+  const switcher = document.createElement("div");
+  switcher.className = "sv-seg";
+  switcher.setAttribute("role", "tablist");
+  const segBtns = scoreGroups.map(([label], i) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "sv-seg-btn";
+    b.textContent = t(label);
+    b.setAttribute("role", "tab");
+    b.addEventListener("click", () => {
+      scoreGroup = i;
+      scoreNote.textContent = "";
+      sync();
+    });
+    return b;
+  });
+  switcher.append(...segBtns);
+  row5.append(switcher, ...scoreGroups.map(([, g]) => g), scoreNote);
   // Dynamics (the usual ones, "more" for the rest), hairpins, then the kinds of text.
   const dynBtn = (v: string) => button(`<span class="sv-dyn">${v}</span>`, v, () => dynamic(v));
   const DYN_MAIN = ["pp", "p", "mp", "mf", "f", "ff"];
@@ -618,6 +643,11 @@ export function createEditing(host: EditingHost): Editing {
     pressed(dynGroupBtn, !dynRow.hidden);
     pressed(textBtn, !textRow.hidden);
     pressed(scoreBtn, !row5.hidden);
+    scoreGroups.forEach(([, g], i) => (g.hidden = i !== scoreGroup));
+    segBtns.forEach((b, i) => {
+      b.classList.toggle("is-on", i === scoreGroup);
+      b.setAttribute("aria-selected", String(i === scoreGroup));
+    });
     intervalPick.hidden = modePick.value !== "interval";
     keyPick.hidden = modePick.value !== "key";
     const closest = dirPick.querySelector<HTMLOptionElement>('option[value="closest"]')!;
