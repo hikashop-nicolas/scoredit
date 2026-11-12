@@ -51,6 +51,8 @@ export interface MeasureSpan {
   quarters: number;
   /** Tempo changes inside the measure: [quarter offset, seconds per quarter]. */
   tempo: [number, number][];
+  /** Silences (caesura, section end): [quarter offset, seconds], taken before what starts there. */
+  pauses?: [number, number][];
 }
 
 export interface Timeline {
@@ -66,6 +68,11 @@ const STEP: Record<string, number> = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11
 const DYN: Record<string, number> = { pppp: 20, ppp: 30, pp: 42, p: 55, mp: 68, mf: 80, f: 95, ff: 108, fff: 118, ffff: 125, sf: 105, sfz: 108, fp: 95 };
 const DEFAULT_BPM = 100;
 const TYPE_Q: Record<string, number> = { whole: 4, half: 2, quarter: 1, eighth: 0.5, "16th": 0.25, "32nd": 0.125, "64th": 0.0625, "128th": 0.03125 };
+// How much slower a fermata plays, by shape (MuseScore's defaults, from its output).
+const FERMATA: Record<string, number> = { "": 2, normal: 2, angled: 1.5, square: 3, "double-angled": 1.25, "double-square": 4, "double-dot": 3, "half-curve": 1.5, curlew: 2 };
+// Seconds of silence after a caesura, and at a section end (MuseScore's default there).
+const CAESURA_PAUSE = 1;
+const SECTION_PAUSE = 3;
 
 // Tempo, from <sound tempo> or a metronome mark, keyed by quarter offset in the measure.
 function tempoMarks(score: ScoreDoc, m: number): [number, number][] {
@@ -247,25 +254,63 @@ export function buildTimeline(score: ScoreDoc, opts: { straight?: boolean; bpm?:
   // Measure lengths (quarters) and tempo marks, per score measure.
   const lengths = new Map<number, number>();
   const marks = new Map<number, [number, number][]>();
+  // Fermatas ([onset, stretch]), caesuras (quarter after the note) and every onset, per measure.
+  const fermatas = new Map<number, [number, number][]>();
+  const caesuras = new Map<number, number[]>();
+  const onsets = new Map<number, number[]>();
   for (const m of new Set(order)) {
     let len = 0;
+    const ferm: [number, number][] = [];
+    const caes = new Set<number>();
+    const starts = new Set<number>();
     score.measures.forEach((ms, p) => {
       const meas = ms[m];
       if (!meas) return;
       let div = Number(text(score.attributesAt(p, m).find((e) => e.tagName === "divisions"))) || 1;
       let pos = 0;
+      let last = 0;
       for (const c of kids(meas)) {
         if (c.tagName === "attributes") div = Number(text(c, "divisions")) || div;
         const dur = Number(text(c, "duration")) || 0;
         if (c.tagName === "backup") pos -= dur;
         else if (c.tagName === "forward") pos += dur;
-        else if (c.tagName === "note" && !kid(c, "chord") && !kid(c, "grace")) pos += dur;
+        else if (c.tagName === "note" && !kid(c, "grace")) {
+          if (!kid(c, "chord")) {
+            last = pos / div;
+            starts.add(last);
+            pos += dur;
+          }
+          const nots = kids(c, "notations");
+          const fe = nots.flatMap((n) => kids(n, "fermata"))[0];
+          if (fe) ferm.push([last, FERMATA[text(fe)] ?? 2]);
+          if (nots.some((n) => n.getElementsByTagName("caesura").length)) caes.add(last + dur / div);
+        }
         len = Math.max(len, pos / div);
       }
     });
     lengths.set(m, len || 1);
     marks.set(m, tempoMarks(score, m));
+    if (ferm.length) fermatas.set(m, ferm);
+    if (caes.size) caesuras.set(m, [...caes].sort((a, b) => a - b));
+    if (ferm.length) onsets.set(m, [...starts].sort((a, b) => a - b));
   }
+
+  // A fermata slows the tempo from its chord or rest to the next onset in any part, as MuseScore plays it.
+  const stretch = (tempo: [number, number][], m: number, quarters: number): [number, number][] => {
+    const ferm = fermatas.get(m);
+    if (!ferm) return tempo;
+    const starts = onsets.get(m) ?? [];
+    const ranges = ferm.map(([q, f]) => [q, starts.find((x) => x > q) ?? quarters, f]).filter(([a, b]) => b > a && a < quarters);
+    const factor = (q: number) => Math.max(1, ...ranges.filter(([a, b]) => q >= a && q < b).map((r) => r[2]));
+    const base = (q: number) => tempo.filter(([from]) => from <= q).pop()![1];
+    const cuts = [...new Set([...tempo.map(([q]) => q), ...ranges.flatMap(([a, b]) => [a, b])])].filter((q) => q < quarters).sort((a, b) => a - b);
+    const out: [number, number][] = [];
+    for (const q of cuts) {
+      const spq = base(q) * factor(q);
+      if (!out.length || Math.abs(out[out.length - 1][1] - spq) > 1e-12) out.push([q, spq]);
+    }
+    return out;
+  };
 
   // Lay the played measures out in time.
   // Until the score marks a tempo.
@@ -280,7 +325,11 @@ export function buildTimeline(score: ScoreDoc, opts: { straight?: boolean; bpm?:
       if (q <= 0) tempo[0] = [0, secPerQ];
       else tempo.push([q, secPerQ]);
     }
-    const span: MeasureSpan = { measure: m, start: t, end: 0, quarters, tempo };
+    const span: MeasureSpan = { measure: m, start: t, end: 0, quarters, tempo: stretch(tempo, m, quarters) };
+    // A caesura, and the end of a section, are followed by a silence.
+    const pauses: [number, number][] = (caesuras.get(m) ?? []).filter((q) => q > 0).map((q) => [Math.min(q, quarters), CAESURA_PAUSE]);
+    if (score.sections.includes(m + 1)) pauses.push([quarters, SECTION_PAUSE]);
+    if (pauses.length) span.pauses = pauses;
     span.end = t + quarterToSec(span, quarters);
     spans.push(span);
     t = span.end;
@@ -400,7 +449,7 @@ export function buildTimeline(score: ScoreDoc, opts: { straight?: boolean; bpm?:
             if (!pitch && kid(c, "unpitched") && drum !== undefined && !kid(c, "rest")) {
               const q = dur / div;
               const start = span.start + quarterToSec(span, onset);
-              events.push({ time: start, dur: span.start + quarterToSec(span, onset + q) - start, midi: drum, velocity: velocity[p], channel: 9, program: 128, part: p, staff: Number(text(c, "staff")) || 1, measure: m, onset, el: c });
+              events.push({ time: start, dur: span.start + quarterToSec(span, onset + q, true) - start, midi: drum, velocity: velocity[p], channel: 9, program: 128, part: p, staff: Number(text(c, "staff")) || 1, measure: m, onset, el: c });
               break;
             }
             if (!pitch || kid(c, "rest")) break;
@@ -410,7 +459,7 @@ export function buildTimeline(score: ScoreDoc, opts: { straight?: boolean; bpm?:
             const staff = Number(text(c, "staff")) || 1;
             const key = `${p}:${staff}:${midi}`;
             const start = span.start + quarterToSec(span, onset + late);
-            const length = span.start + quarterToSec(span, onset + q) - start;
+            const length = span.start + quarterToSec(span, onset + q, true) - start;
             const prev = ties.includes("stop") ? tied.get(key) ?? carry.get(key) : undefined;
             if (prev) {
               prev.dur = start + length - prev.time;
@@ -473,8 +522,8 @@ export function buildTimeline(score: ScoreDoc, opts: { straight?: boolean; bpm?:
   return { events: expand(dedupe(arpeggiate(events))), controls, spans, duration: t, programs };
 }
 
-/** Seconds from the start of a measure to quarter offset q in it. */
-export function quarterToSec(span: MeasureSpan, q: number): number {
+/** Seconds from the start of a measure to quarter offset q in it: after a pause there, or before it for the end of a note. */
+export function quarterToSec(span: MeasureSpan, q: number, end = false): number {
   let s = 0;
   for (let i = 0; i < span.tempo.length; i++) {
     const [from, spq] = span.tempo[i];
@@ -482,11 +531,20 @@ export function quarterToSec(span: MeasureSpan, q: number): number {
     if (q <= from) break;
     s += (Math.min(q, to) - from) * spq;
   }
+  for (const [at, sec] of span.pauses ?? []) if (at < q || (at === q && !end)) s += sec;
   return s;
 }
 
-/** Quarter offset in a measure at `sec` seconds from its start. */
+/** Quarter offset in a measure at `sec` seconds from its start (a pause stays on its quarter). */
 export function secToQuarter(span: MeasureSpan, sec: number): number {
+  let paused = 0;
+  for (const [at, len] of [...(span.pauses ?? [])].sort((a, b) => a[0] - b[0])) {
+    const before = quarterToSec({ ...span, pauses: undefined }, at) + paused;
+    if (sec <= before) break;
+    if (sec <= before + len) return at;
+    paused += len;
+  }
+  sec -= paused;
   let s = 0;
   for (let i = 0; i < span.tempo.length; i++) {
     const [from, spq] = span.tempo[i];

@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { ScoreDoc } from "../model/score";
 import { positionAt } from "./player";
-import { buildTimeline, playOrder, upperNeighbour } from "./timeline";
+import { buildTimeline, playOrder, secToQuarter, upperNeighbour } from "./timeline";
 
 const n = (step: string, dur: number, extra = "", octave = 4) => `<note><pitch><step>${step}</step><octave>${octave}</octave></pitch><duration>${dur}</duration>${extra}</note>`;
 const score = (measures: string[], partList = `<score-part id="P1"><part-name>P</part-name></score-part>`) =>
@@ -177,6 +177,51 @@ describe("ornaments and pedal", () => {
       [64, 0.65],
       [60, 0.7],
     ]);
+  });
+});
+
+describe("fermatas and pauses", () => {
+  const T = `<direction><direction-type><words> </words></direction-type><sound tempo="120"/></direction>`;
+  const ferm = (shape = "") => `<notations><fermata type="upright">${shape}</fermata></notations>`;
+  const A4 = `<attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type></time></attributes>`;
+
+  it("holds a fermata twice as long, longer or shorter by its shape, and only until the next onset", () => {
+    const tl = buildTimeline(new ScoreDoc(score([A4 + T + n("C", 1) + n("D", 1, ferm()) + n("E", 1, ferm("square")) + n("F", 1, ferm("angled"))])));
+    expect(tl.events.map((e) => [e.time, e.dur])).toEqual([
+      [0, 0.5],
+      [0.5, 1],
+      [1.5, 1.5],
+      [3, 0.75],
+    ]);
+    expect(tl.spans[0].tempo).toEqual([[0, 0.5], [1, 1], [2, 1.5], [3, 0.75]]);
+    // A half note held against quarters in another part: only its first beat slows down.
+    const two = `<score-partwise><part-list><score-part id="P1"><part-name>A</part-name></score-part><score-part id="P2"><part-name>B</part-name></score-part></part-list>` +
+      `<part id="P1"><measure number="1">${A4 + T + n("C", 2, ferm()) + n("E", 2)}</measure></part><part id="P2"><measure number="1">${A4 + n("C", 1, "", 3) + n("D", 1, "", 3) + n("E", 2, "", 3)}</measure></part></score-partwise>`;
+    const t2 = buildTimeline(new ScoreDoc(two));
+    expect(t2.events.find((e) => e.midi === 60)!.dur).toBe(1.5);
+    expect(t2.events.find((e) => e.midi === 50)!.time).toBe(1);
+    expect(t2.duration).toBe(2.5);
+  });
+
+  it("pauses after a caesura and at the end of a section, without lengthening the note before", () => {
+    const caes = `<notations><articulations><caesura/></articulations></notations>`;
+    const xml = `<score-partwise><part-list><score-part id="P1"><part-name>P</part-name></score-part></part-list><part id="P1">${[1, 2, 1].map((num, i) => `<measure number="${num}">${i === 0 ? A4 + T : ""}${n("C", 2, i === 0 ? caes : "")}${n("D", 2)}</measure>`).join("")}</part></score-partwise>`;
+    const s = new ScoreDoc(xml);
+    expect(s.sections).toEqual([0, 2]);
+    const tl = buildTimeline(s);
+    expect(tl.events.map((e) => [e.time, e.dur])).toEqual([
+      [0, 1],
+      [2, 1],
+      [3, 1],
+      [4, 1],
+      [8, 1],
+      [9, 1],
+    ]);
+    expect(tl.spans.map((sp) => [sp.start, sp.end])).toEqual([[0, 3], [3, 8], [8, 10]]);
+    // During the pause the position stays where it is.
+    expect(secToQuarter(tl.spans[0], 1.5)).toBe(2);
+    expect(secToQuarter(tl.spans[0], 2.5)).toBeCloseTo(3, 5);
+    expect(secToQuarter(tl.spans[1], 4)).toBe(4);
   });
 });
 
