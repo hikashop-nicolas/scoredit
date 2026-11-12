@@ -310,6 +310,8 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
   // Slurs paired by where each end says the other is: open ones by the place they end at,
   // and ends met before their start (an earlier staff or voice) by their own place.
   const slurOpen = new Map<string, number[]>();
+  // Hairpins waiting for their end, by where it is (two may overlap on a staff).
+  const wedgeOpen = new Map<string, number[]>();
   const slurEarly = new Map<string, Element[]>();
   const placeKey = (track: number, m: number, pos: number, grace: number) => `${track}|${m}|${Math.round(pos * 161280)}|${grace}`;
   const chordOf = new WeakMap<Element, Element>();
@@ -711,7 +713,21 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
                   const dir = el(meas, "direction", null, { placement: "below" });
                   const hp = spanInner;
                   const sub = Number(text(hp, "subtype"));
-                  el(el(dir, "direction-type"), "wedge", null, { type: starts ? (sub === 1 || sub === 3 ? "diminuendo" : "crescendo") : "stop" });
+                  const at = (mm: number, pp: number) => `${staffIdx}|${mm}|${Math.round(pp * 161280)}`;
+                  const nx = kid(c, "next");
+                  const loc = nx ? kid(nx, "location") : null;
+                  let number = 1;
+                  if (starts && c.tagName === "Spanner") {
+                    const used = new Set([...wedgeOpen].filter(([k2]) => k2.startsWith(`${staffIdx}|`)).flatMap(([, v2]) => v2));
+                    while (used.has(number) && number < 6) number++;
+                    const there = at(m + (Number(text(loc, "measures")) || 0), pos + (text(loc, "fractions") ? frac(text(loc, "fractions")) : 0));
+                    wedgeOpen.set(there, [...(wedgeOpen.get(there) ?? []), number]);
+                  } else if (!starts) {
+                    const list = wedgeOpen.get(at(m, pos));
+                    number = list?.shift() ?? 1;
+                    if (list && !list.length) wedgeOpen.delete(at(m, pos));
+                  }
+                  el(el(dir, "direction-type"), "wedge", null, { type: starts ? (sub === 1 || sub === 3 ? "diminuendo" : "crescendo") : "stop", number });
                   if (p.staves.length > 1) el(dir, "staff", k + 1);
                 } else if (type === "Ottava") {
                   const list = ottavas.get(staffIdx) ?? [];
