@@ -502,7 +502,9 @@ export function createEditing(host: EditingHost): Editing {
   const exprBtn = button(ICONS.expression, t("expressionText"), () => openField("expression", lyricBar.hidden !== false || fieldMode !== "expression"));
   const tempoBtn = button(ICONS.tempoMark, t("tempoMark"), () => openField("tempo", lyricBar.hidden !== false || fieldMode !== "tempo"));
   const rehearsalBtn = button(ICONS.rehearsal, t("rehearsalMark"), () => openField("rehearsal", lyricBar.hidden !== false || fieldMode !== "rehearsal"));
-  const chordBtn = button(ICONS.chordSym, t("chordSymbol"), () => openField("chord", lyricBar.hidden !== false || fieldMode !== "chord"));
+  // MuseScore's Ctrl+K, which some browsers keep for themselves, and Alt+K, always free.
+  const mac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
+  const chordBtn = button(ICONS.chordSym, `${t("chordSymbol")} (${mac ? "⌘K, ⌥K" : "Ctrl+K, Alt+K"})`, () => openField("chord", lyricBar.hidden !== false || fieldMode !== "chord"));
   dynRow.append(...dynBtns.map(([, b]) => b), moreDynBtn, crescBtn, dimBtn);
   const MARKS: [mark: string, icon: string, label: string][] = [
     ["accent", ICONS.accent, "accent"],
@@ -1372,6 +1374,7 @@ export function createEditing(host: EditingHost): Editing {
     if (!mod && e.altKey && e.code === "KeyT") return openField("tempo", true), true;
     if (mod && !e.altKey && (k === "m" || k === "M")) return openField("rehearsal", true), true;
     if (mod && !e.altKey && (k === "k" || k === "K")) return openField("chord", true), true;
+    if (!mod && e.altKey && e.code === "KeyK") return openField("chord", true), true;
     if (!mod && !e.altKey && (k === "<" || k === ">")) return hairpin(k === "<" ? "crescendo" : "diminuendo"), true;
     if (mod && !e.altKey && (k === "z" || k === "Z")) {
       if (e.shiftKey) redo();
