@@ -2,6 +2,7 @@ import { ScoreDoc } from "../model/score";
 import { kid, kids, text } from "../model/xml";
 import { ScoreEditor, type Caret } from "./editor";
 import { directionOf } from "./directions";
+import { chordText, readHarmony } from "./chords";
 import { isAfterGrace, readMeasure, writeMeasure, type Event } from "./measure";
 import { ORNAMENTS, SPANS, bendsOf, otherOrnaments, otherTechnical, plainOrnaments, fingeringOf, type Bend, lyricsOf, marksOf, midiOf, readPitch, slursOf, spansOf, tremoloOf, type Lyric, type Pitch, type SlurEnd, type SpanEnd } from "./notes";
 import { pairEnds, type SlurItem } from "./pairs";
@@ -273,6 +274,11 @@ export function noteList(score: ScoreDoc): string[] {
     ms.forEach((meas, m) => {
       const per = ed.info(p, m).perQuarter;
       for (const o of readMeasure(meas).others) {
+        if (o.el.tagName === "harmony") {
+          const c = readHarmony(o.el);
+          if (c) out.push(`${p}|${m}|${Number(text(o.el, "staff")) || 1}:d|${Math.round((Math.max(0, o.pos) / per) * 10080) / 10080}|direction chord symbol ${chordText(c)}`);
+          continue;
+        }
         const d = o.el.tagName === "direction" ? directionOf(o.el) : null;
         if (!d) continue;
         const what = d.kind === "dynamic" ? `dynamic ${d.value}` : d.kind === "wedge" ? (d.type === "stop" ? "hairpin end" : `hairpin ${d.type}`) : d.kind === "text" ? `${d.text} text "${d.words.trim()}"` : `tempo ${Math.round(d.bpm * 100) / 100} "${d.words.trim()}"`;

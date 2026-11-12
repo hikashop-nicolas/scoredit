@@ -219,6 +219,20 @@ describe("Saving back into MuseScore files", () => {
     expect(noteList(loadScore(strToU8(left)).score)).toEqual(noteList(loaded.score));
   });
 
+  it("writes chord symbols the way the file's MuseScore version keeps them", () => {
+    for (const [version, form] of [["4.50", "<Harmony><name>m7</name><root>16</root><base>14</base></Harmony>"], ["4.70", "<Harmony><harmonyInfo><name>m7</name><root>16</root><bass>14</bass></harmonyInfo></Harmony>"]]) {
+      const loaded = loadScore(strToU8(source.replace('version="4.50"', `version="${version}"`)));
+      const ed = new ScoreEditor(loaded.score);
+      ed.chordSymbol({ part: 0, measure: 0, staff: 1, voice: "1", pos: 1 }, "Dm7/C");
+      ed.chordSymbol({ part: 0, measure: 0, staff: 1, voice: "1", pos: 0 }, "C");
+      const saved = strFromU8(loaded.save!().bytes);
+      expect(saved).toContain(form);
+      const back = loadScore(strToU8(saved)).score;
+      expect(new ScoreEditor(back).chordSymbolAt({ part: 0, measure: 0, staff: 1, voice: "1", pos: 1 })).toBe("Dm7/C");
+      expect(noteList(back)).toEqual(noteList(loaded.score));
+    }
+  });
+
   it("keeps each kind of breath mark and caesura", () => {
     const symbols = ["breathMarkComma", "breathMarkTick", "breathMarkUpbow", "breathMarkSalzedo", "caesura", "caesuraThick", "caesuraShort", "caesuraCurved", "caesuraSingleStroke"];
     const src = file(symbols.map((sym, i) => (i ? "" : TS) + chord("whole", 72, 14) + `<Breath><symbol>${sym}</symbol></Breath>`));

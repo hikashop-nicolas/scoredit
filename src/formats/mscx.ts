@@ -1,5 +1,6 @@
 import { strFromU8, unzipSync } from "fflate";
 import { kidIndexed as kid, kids, parseXml } from "../model/xml";
+import { chordFromMuseScore, makeHarmony } from "../edit/chords";
 
 // A chord or note's children by tag, read in one pass.
 const NO_GROUPS = new Map<string, Element[]>();
@@ -663,6 +664,20 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
               case "endTuplet": {
                 tuplets.pop();
                 tupletInfo.pop();
+                break;
+              }
+              case "Harmony": {
+                // A chord symbol: MuseScore 4.6+ wraps it in <harmonyInfo>; older ones name the bass <base>.
+                const info = kid(c, "harmonyInfo") ?? c;
+                const rootTpc = text(info, "root");
+                if (rootTpc === "") break;
+                // Concert pitch in the file; a transposing part shows it written.
+                const move = shift ? 7 * shift - 12 * p.diatonic : 0;
+                const bassTpc = text(info, "bass") || text(info, "base");
+                const chord = chordFromMuseScore(text(info, "name"), Number(rootTpc) - move, bassTpc !== "" ? Number(bassTpc) - move : null);
+                goTo(pos);
+                const h = makeHarmony(out, chord, p.staves.length > 1 ? k + 1 : undefined);
+                meas.appendChild(h);
                 break;
               }
               case "Dynamic": {

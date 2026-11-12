@@ -58,6 +58,7 @@ const ICONS = {
   staffText: svg('<polyline points="6 8 6 5 18 5 18 8"/><line x1="12" x2="12" y1="5" y2="19"/><line x1="9" x2="15" y1="19" y2="19"/>'),
   expression: svg('<path d="M9 19 L13 5 L17 5"/><line x1="8" x2="15" y1="11" y2="11"/>'),
   tempoMark: svg('<ellipse cx="7" cy="17" rx="3" ry="2.2" fill="currentColor"/><line x1="10" x2="10" y1="17" y2="5"/><line x1="13" x2="20" y1="10" y2="10"/><line x1="13" x2="20" y1="14" y2="14"/>'),
+  chordSym: svg('<text x="3" y="17" font-size="13" font-family="serif" font-weight="700" fill="currentColor" stroke="none">C7</text>'),
   scoreTools: svg('<rect x="4" y="4" width="16" height="16" rx="2"/><line x1="4" x2="20" y1="9" y2="9"/><line x1="4" x2="20" y1="13" y2="13"/><line x1="4" x2="20" y1="17" y2="17"/>'),
   rehearsal: svg('<rect x="5" y="5" width="14" height="14" rx="1.5"/><path d="M9 16 L12 8 L15 16 M10.2 13 H13.8"/>'),
   accent: svg('<polyline points="5 7 19 12 5 17"/>'),
@@ -464,6 +465,7 @@ export function createEditing(host: EditingHost): Editing {
   const exprBtn = button(ICONS.expression, t("expressionText"), () => openField("expression", lyricBar.hidden !== false || fieldMode !== "expression"));
   const tempoBtn = button(ICONS.tempoMark, t("tempoMark"), () => openField("tempo", lyricBar.hidden !== false || fieldMode !== "tempo"));
   const rehearsalBtn = button(ICONS.rehearsal, t("rehearsalMark"), () => openField("rehearsal", lyricBar.hidden !== false || fieldMode !== "rehearsal"));
+  const chordBtn = button(ICONS.chordSym, t("chordSymbol"), () => openField("chord", lyricBar.hidden !== false || fieldMode !== "chord"));
   dynRow.append(...dynBtns.map(([, b]) => b), moreDynBtn, crescBtn, dimBtn);
   const MARKS: [mark: string, icon: string, label: string][] = [
     ["accent", ICONS.accent, "accent"],
@@ -523,7 +525,7 @@ export function createEditing(host: EditingHost): Editing {
     sync();
   });
   row3.append(...markBtns, slurBtn, graceBtn, arpBtn, tremBtn, glissBtn, trillLineBtn, upBowBtn, downBowBtn, hammerBtn, pullBtn, bendBtn, pluckBtn, holeBtn, arrowBtn, ornAccBtn, allBtn);
-  textRow.append(staffTextBtn, exprBtn, tempoBtn, rehearsalBtn, lyricsBtn, fingerBtn);
+  textRow.append(chordBtn, staffTextBtn, exprBtn, tempoBtn, rehearsalBtn, lyricsBtn, fingerBtn);
   const MELODIC: PartFamily[] = ["keys", "guitar", "bass", "strings", "winds", "brass", "voice", "other"];
   const ORNATE: PartFamily[] = ["keys", "guitar", "strings", "winds", "brass", "voice", "other"];
   const FRETTED: PartFamily[] = ["guitar", "bass", "other"];
@@ -632,7 +634,7 @@ export function createEditing(host: EditingHost): Editing {
     }
     pressed(crescBtn, dirs.some((d) => d.kind === "wedge" && d.type === "crescendo"));
     pressed(dimBtn, dirs.some((d) => d.kind === "wedge" && d.type === "diminuendo"));
-    for (const [b, mode] of [[staffTextBtn, "staff"], [exprBtn, "expression"], [tempoBtn, "tempo"], [rehearsalBtn, "rehearsal"]] as const) pressed(b, !lyricBar.hidden && fieldMode === mode);
+    for (const [b, mode] of [[chordBtn, "chord"], [staffTextBtn, "staff"], [exprBtn, "expression"], [tempoBtn, "tempo"], [rehearsalBtn, "rehearsal"]] as const) pressed(b, !lyricBar.hidden && fieldMode === mode);
     pressed(allBtn, allMarks);
     const part = (sel?.at ?? caret)?.part ?? toFull(0);
     const family = partFamily(editor.score.parts[part] ?? { id: "", name: "", abbreviation: "", program: null });
@@ -856,13 +858,13 @@ export function createEditing(host: EditingHost): Editing {
   // ---- The text field, for lyrics or fingerings. Lyrics: the selected note's syllable;
   // space or "-" moves to the next note (a hyphen joins a word's syllables). Fingerings: one
   // note at a time, a chord from its lowest note up. Enter moves on too, Escape closes.
-  type FieldMode = "lyrics" | "fingering" | TextKind | "tempo";
+  type FieldMode = "lyrics" | "fingering" | "chord" | TextKind | "tempo";
   let fieldMode: FieldMode = "lyrics";
   let hyphenBefore = false;
   let fingerIndex = 0;
-  const HINT: Record<FieldMode, [string, string]> = { lyrics: ["lyricsHint", "lyrics"], fingering: ["fingeringHint", "fingering"], staff: ["textHint", "staffText"], expression: ["textHint", "expressionText"], rehearsal: ["textHint", "rehearsalMark"], tempo: ["tempoHint", "tempoMark"] };
+  const HINT: Record<FieldMode, [string, string]> = { chord: ["chordHint", "chordSymbol"], lyrics: ["lyricsHint", "lyrics"], fingering: ["fingeringHint", "fingering"], staff: ["textHint", "staffText"], expression: ["textHint", "expressionText"], rehearsal: ["textHint", "rehearsalMark"], tempo: ["tempoHint", "tempoMark"] };
   /** Text marks: one per beat, Enter sets it (empty takes it off) and closes. */
-  const oneShot = (m: FieldMode) => m !== "lyrics" && m !== "fingering";
+  const oneShot = (m: FieldMode) => m !== "lyrics" && m !== "fingering" && m !== "chord";
   function openField(mode: FieldMode, open: boolean): void {
     if (!open) {
       lyricBar.hidden = true;
@@ -893,6 +895,8 @@ export function createEditing(host: EditingHost): Editing {
     if (oneShot(fieldMode)) {
       const d = sel ? editor.directions(sel.at).find((x) => (fieldMode === "tempo" ? x.kind === "tempo" : x.kind === "text" && x.text === fieldMode)) : undefined;
       lyricInput.value = d && (d.kind === "text" || d.kind === "tempo") ? d.words.trim() : "";
+    } else if (fieldMode === "chord") {
+      lyricInput.value = sel ? editor.chordSymbolAt(sel.at) : "";
     } else if (fieldMode === "fingering") {
       const n = fingerNote();
       lyricInput.value = n ? fingeringOf(n) : "";
@@ -913,6 +917,24 @@ export function createEditing(host: EditingHost): Editing {
     if (oneShot(fieldMode)) {
       landed(editor.text(sel.at, fieldMode as TextKind, words || null));
       return openField(fieldMode, false);
+    }
+    if (fieldMode === "chord") {
+      // A chord symbol, then the next note; what does not read as a chord stays to be fixed.
+      if (words !== editor.chordSymbolAt(sel.at)) {
+        const r = editor.chordSymbol(sel.at, words || null);
+        if (!r.ok) {
+          lyricInput.select();
+          lyricInput.setAttribute("aria-invalid", "true");
+          return;
+        }
+        landed(r.change);
+      }
+      lyricInput.removeAttribute("aria-invalid");
+      const next = editor.nextEvent(sel.at, true);
+      if (next) sel = { at: next, note: null };
+      showField();
+      sync();
+      return;
     }
     if (fieldMode === "fingering") {
       const n = fingerNote();
@@ -1300,6 +1322,7 @@ export function createEditing(host: EditingHost): Editing {
     if (mod && !e.altKey && (k === "e" || k === "E")) return openField("expression", true), true;
     if (!mod && e.altKey && e.code === "KeyT") return openField("tempo", true), true;
     if (mod && !e.altKey && (k === "m" || k === "M")) return openField("rehearsal", true), true;
+    if (mod && !e.altKey && (k === "k" || k === "K")) return openField("chord", true), true;
     if (!mod && !e.altKey && (k === "<" || k === ">")) return hairpin(k === "<" ? "crescendo" : "diminuendo"), true;
     if (mod && !e.altKey && (k === "z" || k === "Z")) {
       if (e.shiftKey) redo();

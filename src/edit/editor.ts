@@ -1,6 +1,7 @@
 import type { ScoreDoc } from "../model/score";
 import { kid, kids, text } from "../model/xml";
 import { fifthsOf, plainKey, transposePitch } from "./transpose";
+import { chordText, makeHarmony, parseChord, readHarmony } from "./chords";
 import { CLEFS, DRUM_KIT, type InstrumentDef } from "../model/instruments";
 import { directionOf, directionsAt, makeDirection, type Direction, type TextKind } from "./directions";
 import { isAfterGrace, readMeasure, voiceKey, writeMeasure, type Event, type Placed, type ReadMeasure } from "./measure";
@@ -726,6 +727,42 @@ export class ScoreEditor {
     return directionsAt(this.score.measures[caret.part][caret.measure], ev.pos, caret.staff)
       .map(directionOf)
       .filter((d): d is Direction => !!d);
+  }
+
+  /** The chord symbol at the caret's beat on its staff, as it reads ("" for none). */
+  chordSymbolAt(caret: Caret): string {
+    const ev = this.eventAt(caret);
+    if (!ev) return "";
+    const h = this.harmoniesAt(caret, ev.pos)[0];
+    const c = h ? readHarmony(h) : null;
+    return c ? chordText(c) : "";
+  }
+
+  private harmoniesAt(caret: Caret, pos: number): Element[] {
+    return readMeasure(this.score.measures[caret.part][caret.measure])
+      .others.filter((o) => o.el.tagName === "harmony" && Math.abs(o.pos - pos) < 1e-9 && (Number(text(o.el, "staff")) || 1) === caret.staff)
+      .map((o) => o.el);
+  }
+
+  /** A chord symbol at the caret's beat ("Cm7", "B♭/D"; empty or null takes it off). False when it does not read as one. */
+  chordSymbol(caret: Caret, input: string | null): { change: Change; ok: boolean } {
+    const ev = this.eventAt(caret);
+    const none = { from: caret.measure, to: caret.measure, appended: 0 };
+    if (!ev) return { change: none, ok: false };
+    const c = input && input.trim() ? parseChord(input) : null;
+    if (input && input.trim() && !c) return { change: none, ok: false };
+    const old = this.harmoniesAt(caret, ev.pos);
+    if (!old.length && !c) return { change: none, ok: true };
+    const change = this.transact(() => {
+      this.touch(caret.part, caret.measure);
+      for (const h of old) h.remove();
+      if (c) {
+        const first = ev.graces.find((g) => !isAfterGrace(g)) ?? ev.notes[0];
+        first.parentElement!.insertBefore(makeHarmony(this.score.doc, c, this.staves(caret.part) > 1 ? caret.staff : undefined), first);
+      }
+      return { from: caret.measure, to: caret.measure + 1, appended: 0 };
+    });
+    return { change, ok: true };
   }
 
   /** The dynamic at the caret's beat (null takes it off). */

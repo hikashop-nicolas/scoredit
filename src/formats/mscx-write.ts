@@ -6,6 +6,7 @@ import type { ScoreDoc } from "../model/score";
 import { kid, kids, parseXml, text } from "../model/xml";
 import { BREATH, SYM, marksOfSubtype, plain, type MscxLink } from "./mscx";
 import { DYNAMICS, directionOf, type Direction } from "../edit/directions";
+import { chordFromMuseScore, chordText, readHarmony, tpcOf } from "../edit/chords";
 import { CLEFS, INSTRUMENTS, type InstrumentDef } from "../model/instruments";
 import { partXml } from "./mscx-new";
 
@@ -909,6 +910,7 @@ function writeMeasure(ctx: Ctx, part: number, k: number, staff: number, m: numbe
     voices.set(vi, [...(voices.get(vi) ?? []), ...evs].sort((a, b) => a.pos - b.pos));
   }
   placeDirections(ctx, part, k, m, kept);
+  placeHarmonies(ctx, part, k, m, kept);
   // Tab and drum staves keep their clefs as the file has them.
   if (staffGroup(ctx, staff) === "pitched") placeClefs(ctx, part, k, m, kept);
   placeKey(ctx, part, k, m, kept);
@@ -1178,6 +1180,57 @@ function placeTime(ctx: Ctx, part: number, m: number, kept: Map<number, Kept[]>)
   if (!orig) while (at < list.length && list[at].pos <= 1e-9 && (list[at].el.tagName === "Clef" || list[at].el.tagName === "KeySig")) at++;
   list.splice(at, 0, { pos: 0, el });
   kept.set(vi, list);
+}
+
+/** The chord symbols of a staff in a measure, from the score; the file's own where they read the same. */
+function placeHarmonies(ctx: Ctx, part: number, k: number, m: number, kept: Map<number, Kept[]>): void {
+  const { score, doc } = ctx;
+  const { chromatic, diatonic } = ctx.link.transpose[part];
+  const move = chromatic ? 7 * chromatic - 12 * diatonic : 0;
+  const fileText = (el: Element) => {
+    const info = kid(el, "harmonyInfo") ?? el;
+    if (text(info, "root") === "") return null;
+    const bass = text(info, "bass") || text(info, "base");
+    return chordText(chordFromMuseScore(text(info, "name"), Number(text(info, "root")) - move, bass !== "" ? Number(bass) - move : null));
+  };
+  const pool: { vi: number; pos: number; el: Element; text: string; used?: boolean }[] = [];
+  for (const [vi, list] of kept)
+    kept.set(
+      vi,
+      list.filter((it) => {
+        if (it.el.tagName !== "Harmony") return true;
+        const t = fileText(it.el);
+        if (t === null) return true;
+        pool.push({ vi, pos: it.pos, el: it.el, text: t });
+        return false;
+      }),
+    );
+  const per = perQuarter(score, part, m);
+  for (const o of read(score.measures[part][m]).others) {
+    if (o.el.tagName !== "harmony" || (Number(text(o.el, "staff")) || 1) !== k + 1) continue;
+    const c = readHarmony(o.el);
+    if (!c) continue;
+    const pos = Math.max(0, o.pos) / per / 4;
+    const hit = pool.find((x) => !x.used && Math.abs(x.pos - pos) < 1e-9 && x.text === chordText(c));
+    let el: Element;
+    if (hit) {
+      hit.used = true;
+      el = hit.el;
+    } else {
+      // MuseScore 4.6 and later wrap it in <harmonyInfo> and name the bass <bass>; earlier, <base>.
+      el = doc.createElementNS(null, "Harmony");
+      const wrap = ctx.link.version >= 4.6;
+      const info = wrap ? add(el, "harmonyInfo") : el;
+      if (c.suffix) add(info, "name", c.suffix);
+      add(info, "root", tpcOf(c.root) + move);
+      if (c.bass) add(info, wrap ? "bass" : "base", tpcOf(c.bass) + move);
+    }
+    const vi = hit?.vi ?? 0;
+    const list = kept.get(vi) ?? [];
+    list.push({ pos, el, timeTick: undefined });
+    kept.set(vi, list);
+  }
+  for (const list of kept.values()) list.sort((a, b) => a.pos - b.pos);
 }
 
 /** A MuseScore element for a direction the file does not have. */

@@ -560,3 +560,25 @@ describe("Instruments", () => {
     expect(s.measures[1][0].getElementsByTagName("unpitched")).toHaveLength(1);
   });
 });
+
+describe("Chord symbols", () => {
+  it("reads typed chords, and sets, replaces and takes them off", async () => {
+    const { parseChord, chordText } = await import("./chords");
+    expect(parseChord("Cm7")).toMatchObject({ root: { step: "C", alter: 0 }, kind: "minor-seventh", suffix: "m7" });
+    expect(parseChord("Bb/D")).toMatchObject({ root: { step: "B", alter: -1 }, kind: "major", bass: { step: "D", alter: 0 } });
+    expect(parseChord("F#m7b5")?.kind).toBe("half-diminished");
+    expect(parseChord("hello")).toBe(null);
+    expect(chordText(parseChord("bb7")!)).toBe("B♭7");
+    const s = score(note("C", 2, "half") + note("D", 2, "half"));
+    const ed = new ScoreEditor(s);
+    expect(ed.chordSymbol(at(0, 0), "C").ok).toBe(true);
+    expect(ed.chordSymbol(at(0, 2), "G7/B").ok).toBe(true);
+    expect(ed.chordSymbolAt(at(0, 2))).toBe("G7/B");
+    expect(ed.chordSymbol(at(0, 0), "nonsense").ok).toBe(false);
+    ed.chordSymbol(at(0, 0), "Am");
+    expect(ed.chordSymbolAt(at(0, 0))).toBe("Am");
+    ed.chordSymbol(at(0, 0), null);
+    expect(ed.chordSymbolAt(at(0, 0))).toBe("");
+    expect(s.measures[0][0].getElementsByTagName("harmony")).toHaveLength(1);
+  });
+});
