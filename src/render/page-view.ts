@@ -5,6 +5,7 @@ patchOsmd();
 import { breakSystems, systemOf, type SystemRange } from "../layout/systems";
 import { abbreviate, type ScoreDoc } from "../model/score";
 import { kid, kids, text } from "../model/xml";
+import { capSystems } from "./caps";
 import { collectPositions, hitAt, xAt, type Positions } from "./positions";
 import type { View, ViewOptions } from "./view";
 
@@ -85,8 +86,9 @@ export function createPageView(initial: ScoreDoc, opts: ViewOptions): PageView {
   const params = { ...BREAK };
   const samples: [weight: number, need: number][] = [];
   let calibrations = 0;
-  // Extra room the first system gives up when its part names run longer than allowed for.
-  let firstCut = 0;
+  // Most measures a system starting at a measure can hold: set when OSMD wrapped a slice.
+  const caps = new Map<number, number>();
+  let capsFor = "";
   let weights: number[] = [];
   let units = 0;
 
@@ -138,10 +140,11 @@ export function createPageView(initial: ScoreDoc, opts: ViewOptions): PageView {
     let fresh = shift(breakSystems(weights.slice(from), { ...params, width: later }), from);
     // The first system also carries the part names and the time signature.
     if (from === 0 && fresh.length > 1 && score.parts.some((p) => p.name)) {
-      const first = breakSystems(weights, { ...params, width: units - label(score.parts.map((p) => p.name)) - TIME_WIDTH - firstCut })[0];
+      const first = breakSystems(weights, { ...params, width: units - label(score.parts.map((p) => p.name)) - TIME_WIDTH })[0];
       if (first.end < fresh[0].end) fresh = [first, ...shift(breakSystems(weights.slice(first.end), { ...params, width: later }), first.end)];
     }
-    return fresh;
+    // A system longer than OSMD fitted on one line is cut there, and the rest broken again.
+    return capSystems(fresh, caps, (m) => shift(breakSystems(weights.slice(m), { ...params, width: later }), m));
   }
 
   /** Breaks the score into systems again, keeping systems [0, keep) as they are. */
@@ -152,6 +155,8 @@ export function createPageView(initial: ScoreDoc, opts: ViewOptions): PageView {
       width = page.clientWidth;
       units = width / (UNIT_PX * zoom) - 2 * MARGIN;
     }
+    if (reweigh || `${width}:${zoom}` !== capsFor) caps.clear();
+    capsFor = `${width}:${zoom}`;
     if (reweigh || weights.length !== score.measureCount) weights = Array.from({ length: score.measureCount }, (_, m) => score.measureWeight(m));
     const kept = slots.slice(0, keep);
     for (const s of slots.slice(keep)) s.el.remove();
@@ -260,19 +265,26 @@ export function createPageView(initial: ScoreDoc, opts: ViewOptions): PageView {
       // load() resets OSMD's zoom to 1.
       osmd.zoom = zoom;
       osmd.render();
-      let rebreak = learn(osmd, range, first);
+      const rebreak = learn(osmd, range, first);
       const lines = osmd.GraphicSheet.MusicPages.reduce((n, p) => n + p.MusicSystems.length, 0);
-      if (!rebreak && first && lines > 1 && range.end - range.start > 1 && firstCut < units / 2) {
-        firstCut += units * 0.12;
-        rebreak = true;
-      } else if (!rebreak && !first && lines > 1 && range.end - range.start > 1 && calibrations < 6) {
-        // Still too full for OSMD: widen every measure a little.
-        params.measureBase *= 1.1;
-        calibrations++;
-        rebreak = true;
+      const wrapped = lines > 1 && range.end - range.start > 1;
+      if (wrapped) {
+        // OSMD wrapped the slice: cut the system where its first line ends.
+        const fit = osmd.GraphicSheet.MusicPages[0]?.MusicSystems[0]?.GraphicalMeasures.length ?? 1;
+        caps.set(range.start, Math.max(1, Math.min(fit, range.end - range.start - 1)));
+        // Unless just refitted, widen every measure a little (not for the title system).
+        if (!rebreak && !first && calibrations < 6) {
+          params.measureBase *= 1.1;
+          calibrations++;
+        }
       }
-      if (rebreak && !settled) {
+      if ((rebreak || wrapped) && !settled) {
         layout(false);
+        return;
+      }
+      if (wrapped) {
+        // On screen: drawn systems above stay, this one and those after it are broken again.
+        layout(false, i);
         return;
       }
       if (swap) {
