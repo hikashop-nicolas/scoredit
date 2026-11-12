@@ -21,7 +21,7 @@ function open(bytes: Uint8Array, name: string): void {
   renderMs = 0;
   const t0 = performance.now();
   try {
-    const loaded = loadScore(bytes, { tab: new URLSearchParams(location.search).get("tab") === "1" ? "always" : "auto" });
+    const loaded = loadScore(bytes, { tab: new URLSearchParams(location.search).get("tab") === "1" ? "always" : "auto", tune: Number(new URLSearchParams(location.search).get("tune")) || undefined });
     const { score, format } = loaded;
     const parsed = performance.now() - t0;
     (window as unknown as { viewer?: unknown }).viewer = null;

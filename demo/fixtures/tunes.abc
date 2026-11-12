@@ -1,0 +1,28 @@
+%abc-2.1
+X:1
+T:The Speed the Plough
+C:Trad.
+M:C|
+L:1/8
+Q:1/2=100
+R:reel
+K:G
+|:"G"GABc dedB|dedB dedB|"C"c2ec "G"B2dB|"D"c2A2 A2BA|
+"G"GABc dedB|dedB dedB|"C"c2ec "G"B2dB|"D"A2F2 "G"G4:|
+|:"G"g2gf gdBd|g2f2 e2d2|"C"c2ec "G"B2dB|"D"c2A2 A2df|
+"G"g2gf g2Bd|g2f2 e2d2|"C"c2ec "G"B2dB|"D"A2F2 "G"G4:|
+
+X:2
+T:Scale Study in Two Voices
+C:scoredit test
+M:3/4
+L:1/8
+Q:"Moderato" 1/4=96
+V:1 name="Flute"
+V:2 clef=bass name="Cello"
+K:D
+V:1
+!p!(DE F2) {g}A2|!crescendo(!B>c d2 !trill!e2|(3fga !accent!b2 !crescendo)!a2|[1 !f!d6:|[2 !fermata!d4 z2|]
+w:do re mi sol la ti do re mi fa sol la ti do
+V:2
+D,6|G,,4 A,,2|[D,F,]6|[1 D,6:|[2 D,4 z2|]
