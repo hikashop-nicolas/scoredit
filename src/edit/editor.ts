@@ -1,6 +1,7 @@
 import type { ScoreDoc } from "../model/score";
 import { kid, kids, text } from "../model/xml";
 import { fifthsOf, plainKey, transposePitch } from "./transpose";
+import { CLEFS, DRUM_KIT, type InstrumentDef } from "../model/instruments";
 import { directionOf, directionsAt, makeDirection, type Direction, type TextKind } from "./directions";
 import { isAfterGrace, readMeasure, voiceKey, writeMeasure, type Event, type Placed, type ReadMeasure } from "./measure";
 import { TYPES, addOrnamentXml, setOrnamentAccidental, addTechnicalXml, setTechValue, setBends, type Bend, addSpan, removeSpan, setFingering, setTremolo, spansOf, addSlur, defaultPosition, isTied, keepMarksFor, makeGrace, marksOf, placeInNote, removeSlur, setLyric, setMark, setPosition, slursOf, writtenFor, keyAlter, makeNote, midiOf, pieceOf, readPitch, setPitch, setTie, spellMidi, splitLength, type Pitch, type Written } from "./notes";
@@ -75,6 +76,8 @@ interface Entry {
 }
 
 interface Snapshot {
+  partList: Element | null;
+  partOrigins: number[] | null;
   parts: Element[];
   origins: number[] | null;
   dirty: string[];
@@ -390,7 +393,23 @@ export class ScoreEditor {
         if (!best || Math.abs(d(p) - want) < Math.abs(d(best) - want)) best = p;
         if (d(p) === want) return p;
       }
-    return best;
+    if (best) return best;
+    // No drum written yet: the kit piece drawn there, if the part has it.
+    const id = kids(this.score.root, "part")[part]?.getAttribute("id");
+    const sp = Array.from(this.score.root.getElementsByTagName("score-part")).find((x) => x.getAttribute("id") === id);
+    const has = new Set(sp ? kids(sp, "score-instrument").map((x) => x.getAttribute("id")) : []);
+    const TOP = 5 * 7 + 3; // F5, the top line
+    const HEADS: Record<string, string | undefined> = { normal: undefined, cross: "x", diamond: "diamond", "circle-x": "circle-x", triangle: "triangle" };
+    let kit: Pitch | null = null;
+    for (const k of DRUM_KIT) {
+      const at = TOP - k.line;
+      if (!has.has(`${id}-I${k.pitch + 1}`) || Math.abs(at - want) > reach) continue;
+      const p: Pitch = { step: "CDEFGAB"[((at % 7) + 7) % 7], alter: 0, octave: Math.floor(at / 7), unpitched: true, instrument: `${id}-I${k.pitch + 1}`, notehead: HEADS[k.head] };
+      // Two on one line (snare and side stick): the plain notehead first.
+      const closer = !kit || Math.abs(at - want) < Math.abs(d(kit) - want) || (Math.abs(at - want) === Math.abs(d(kit) - want) && !p.notehead && !!kit.notehead);
+      if (closer) kit = p;
+    }
+    return kit;
   }
 
   /**
@@ -1379,16 +1398,209 @@ export class ScoreEditor {
   }
 
   private snapshot(): Snapshot {
-    return { parts: kids(this.score.root, "part").map((p) => p.cloneNode(true) as Element), origins: this.score.origins ? [...this.score.origins] : null, dirty: [...this.score.dirty], sections: [...this.score.sections] };
+    const list = kid(this.score.root, "part-list");
+    return { partList: list ? (list.cloneNode(true) as Element) : null, partOrigins: this.score.partOrigins ? [...this.score.partOrigins] : null, parts: kids(this.score.root, "part").map((p) => p.cloneNode(true) as Element), origins: this.score.origins ? [...this.score.origins] : null, dirty: [...this.score.dirty], sections: [...this.score.sections] };
   }
 
   private restore(s: Snapshot): void {
-    kids(this.score.root, "part").forEach((p, i) => p.replaceWith(s.parts[i].cloneNode(true)));
+    const list = kid(this.score.root, "part-list");
+    if (list && s.partList) list.replaceWith(s.partList.cloneNode(true));
+    for (const p of kids(this.score.root, "part")) p.remove();
+    for (const p of s.parts) this.score.root.appendChild(p.cloneNode(true));
+    this.score.partOrigins = s.partOrigins ? [...s.partOrigins] : null;
     this.score.origins = s.origins ? [...s.origins] : null;
     this.score.dirty.clear();
     for (const k of s.dirty) this.score.dirty.add(k);
     this.score.sections = [...s.sections];
-    this.score.refresh();
+    this.score.rescanParts();
+  }
+
+  // ---- Instruments
+
+  /** A part's transposition, written to sounding: diatonic steps and semitones. */
+  private transposition(part: number): [number, number] {
+    const tr = [...this.score.attributesAt(part, 0), ...kids(this.score.measures[part][0], "attributes").flatMap((a) => kids(a))].filter((e) => e.tagName === "transpose").pop();
+    if (!tr) return [0, 0];
+    const oct = Number(text(tr, "octave-change")) || 0;
+    return [(Number(text(tr, "diatonic")) || 0) + 7 * oct, (Number(text(tr, "chromatic")) || 0) + 12 * oct];
+  }
+
+  /** MusicXML's <transpose> for a transposition (an octave apart as octave-change). */
+  private transposeEl(t: [number, number]): Element {
+    const doc = this.score.doc;
+    const oct = Math.trunc(t[1] / 12);
+    const tr = doc.createElementNS(null, "transpose");
+    for (const [tag, v] of [["diatonic", t[0] - 7 * oct], ["chromatic", t[1] - 12 * oct], ...(oct ? [["octave-change", oct]] : [])] as [string, number][]) {
+      const e = doc.createElementNS(null, tag);
+      e.textContent = String(v);
+      tr.appendChild(e);
+    }
+    return tr;
+  }
+
+  /** The part-list entry of an instrument: its name, sound and MIDI program (a drum per kit piece). */
+  private scorePart(id: string, def: InstrumentDef, name: string): Element {
+    const doc = this.score.doc;
+    const el = (parent: Element, tag: string, value?: string | number, attrs: Record<string, string> = {}) => {
+      const e = doc.createElementNS(null, tag);
+      if (value !== undefined) e.textContent = String(value);
+      for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+      parent.appendChild(e);
+      return e;
+    };
+    const sp = doc.createElementNS(null, "score-part");
+    sp.setAttribute("id", id);
+    el(sp, "part-name", name);
+    el(sp, "part-abbreviation", def.short);
+    if (def.drums) {
+      DRUM_KIT.forEach((d, i) => {
+        const si = el(sp, "score-instrument", undefined, { id: `${id}-I${d.pitch + 1}` });
+        el(si, "instrument-name", d.name);
+        if (i === 0) el(si, "instrument-sound", def.musescore);
+      });
+      for (const d of DRUM_KIT) {
+        const mi = el(sp, "midi-instrument", undefined, { id: `${id}-I${d.pitch + 1}` });
+        el(mi, "midi-channel", 10);
+        el(mi, "midi-unpitched", d.pitch + 1);
+      }
+      return sp;
+    }
+    const si = el(sp, "score-instrument", undefined, { id: `${id}-I1` });
+    el(si, "instrument-name", name);
+    el(si, "instrument-sound", def.musescore);
+    const mi = el(sp, "midi-instrument", undefined, { id: `${id}-I1` });
+    el(mi, "midi-program", def.program + 1);
+    return sp;
+  }
+
+  /**
+   * A new instrument after the others: empty bars following the score's bars, its written key
+   * at each key change, the time changes, its clefs and transposition.
+   */
+  addPart(def: InstrumentDef, name: string): Change {
+    const n = this.score.measureCount;
+    if (!n) return { from: 0, to: 0, appended: 0 };
+    return this.restructure(() => {
+      const doc = this.score.doc;
+      const before = this.score.measures.length;
+      const used = new Set(kids(this.score.root, "part").map((p) => p.getAttribute("id")));
+      let k = before + 1;
+      while (used.has(`P${k}`)) k++;
+      const id = `P${k}`;
+      const list = kid(this.score.root, "part-list")!;
+      list.appendChild(this.scorePart(id, def, name));
+      const part = doc.createElementNS(null, "part");
+      part.setAttribute("id", id);
+      // The first part sets the bars: lengths, numbers, keys and time changes.
+      const ref = this.score.measures[0];
+      const refShift = this.transposition(0);
+      const shift = def.transpose ?? [0, 0];
+      const per = this.info(0, 0).perQuarter;
+      const add = (parent: Element, tag: string, value?: string | number) => {
+        const e = doc.createElementNS(null, tag);
+        if (value !== undefined) e.textContent = String(value);
+        parent.appendChild(e);
+        return e;
+      };
+      for (let m = 0; m < n; m++) {
+        const meas = doc.createElementNS(null, "measure");
+        for (const a of ["number", "implicit"]) if (ref[m]?.hasAttribute(a)) meas.setAttribute(a, ref[m].getAttribute(a)!);
+        const own = ref[m] ? leadingAttributes(ref[m]).flatMap((a) => kids(a)) : [];
+        const key = m === 0 ? this.info(0, 0) : null;
+        const attrs = doc.createElementNS(null, "attributes");
+        if (m === 0) add(attrs, "divisions", per);
+        const written = (refWritten: number) => plainKey(refWritten + (7 * refShift[1] - 12 * refShift[0]) - (7 * shift[1] - 12 * shift[0]));
+        const ownKey = own.find((e) => e.tagName === "key");
+        if (!def.drums && (m === 0 || ownKey)) setFifths(add(attrs, "key"), written(m === 0 ? key!.fifths : Number(text(ownKey!, "fifths")) || 0));
+        const time = own.find((e) => e.tagName === "time") ?? (m === 0 ? this.score.attributesAt(0, 0).find((e) => e.tagName === "time") : undefined);
+        if (time) attrs.appendChild(time.cloneNode(true));
+        if (m === 0) {
+          if (def.clefs.length > 1) add(attrs, "staves", def.clefs.length);
+          def.clefs.forEach((c, i) => {
+            const cl = CLEFS[c] ?? CLEFS.G;
+            const e = add(attrs, "clef");
+            if (def.clefs.length > 1) e.setAttribute("number", String(i + 1));
+            add(e, "sign", cl.sign);
+            add(e, "line", cl.line);
+            if (cl.octave) add(e, "clef-octave-change", cl.octave);
+          });
+          if (def.transpose) attrs.appendChild(this.transposeEl(def.transpose));
+        }
+        if (attrs.firstChild) meas.appendChild(attrs);
+        part.appendChild(meas);
+      }
+      this.score.root.appendChild(part);
+      this.score.rescanParts();
+      // Then a whole-bar rest on each staff, in the part's own divisions.
+      const p = before;
+      this.score.measures[p].forEach((meas, m) => {
+        // The bar's real length (a pickup, a bar cut short), from the music of the first part.
+        const ends = [...readMeasure(ref[m]).voices.values()].flat().map((e) => e.pos + e.dur);
+        const real = ends.length ? Math.max(...ends) : this.info(0, m).length;
+        const len = Math.round((real / this.info(0, m).perQuarter) * per);
+        const r = readMeasure(meas);
+        for (let st = 1; st <= def.clefs.length; st++) {
+          const voice = String((st - 1) * 4 + 1);
+          r.voices.set(voiceKey(st, voice), [{ pos: 0, dur: len, graces: [], rest: true, notes: [makeNote(doc, { pitch: null, divs: len, written: null, voice, staff: def.clefs.length > 1 ? st : undefined, measureRest: true })] }]);
+        }
+        writeMeasure(meas, r);
+        this.score.changing(p, m);
+      });
+      this.score.refresh();
+      this.score.partOrigins = [...(this.score.partOrigins ?? Array.from({ length: before }, (_, i) => i)), -1];
+      return { from: 0, to: n, appended: 0 };
+    });
+  }
+
+  /** Takes an instrument out (one is always left). */
+  removePart(part: number): Change {
+    const count = this.score.measures.length;
+    if (count < 2 || part < 0 || part >= count) return { from: 0, to: 0, appended: 0 };
+    return this.restructure(() => {
+      const el = kids(this.score.root, "part")[part];
+      const id = el.getAttribute("id");
+      for (const sp of Array.from(this.score.root.getElementsByTagName("score-part"))) if (sp.getAttribute("id") === id) sp.remove();
+      el.remove();
+      this.score.rescanParts();
+      const origins = this.score.partOrigins ?? Array.from({ length: count }, (_, i) => i);
+      origins.splice(part, 1);
+      this.score.partOrigins = origins;
+      const dirty = [...this.score.dirty];
+      this.score.dirty.clear();
+      for (const k of dirty) {
+        const [p, m] = k.split(":").map(Number);
+        if (p !== part) this.score.dirty.add(`${p > part ? p - 1 : p}:${m}`);
+      }
+      return { from: 0, to: this.score.measureCount, appended: 0 };
+    });
+  }
+
+  /**
+   * Another instrument for a part: its name, sound, clefs and transposition. The music keeps
+   * sounding the same: written notes and keys move by the change of transposition. Refused
+   * (null) for another number of staves, or between a drum kit and a pitched instrument.
+   */
+  changePart(part: number, def: InstrumentDef, name: string): Change | null {
+    if (def.clefs.length !== this.staves(part) || !!def.drums !== this.isDrums(part)) return null;
+    return this.restructure(() => {
+      const [d0, c0] = this.transposition(part);
+      const [d1, c1] = def.transpose ?? [0, 0];
+      const n = this.score.measureCount;
+      if (d0 !== d1 || c0 !== c1) this.transposeRange([part], 0, n, d0 - d1, c0 - c1);
+      for (let m = 0; m < n; m++) this.touch(part, m);
+      for (const meas of this.score.measures[part]) for (const a of kids(meas, "attributes")) for (const t of kids(a, "transpose")) t.remove();
+      if (def.transpose) {
+        const attrs = leadingAttributes(this.score.measures[part][0])[0];
+        if (attrs) placeAttr(attrs, this.transposeEl(def.transpose));
+      }
+      this.score.refresh();
+      def.clefs.forEach((c, i) => this.setClef(part, i + 1, 0, CLEFS[c] ?? CLEFS.G));
+      const id = kids(this.score.root, "part")[part].getAttribute("id")!;
+      const old = Array.from(this.score.root.getElementsByTagName("score-part")).find((x) => x.getAttribute("id") === id);
+      if (old) old.replaceWith(this.scorePart(id, def, name));
+      this.score.rescanParts();
+      return { from: 0, to: n, appended: 0 };
+    });
   }
 
   // ---- internals

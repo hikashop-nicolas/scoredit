@@ -188,6 +188,37 @@ describe("Saving back into MuseScore files", () => {
     expect(noteList(loadScore(strToU8(saved)).score)).toEqual(noteList(loaded.score));
   });
 
+  it("adds, changes and takes out instruments", async () => {
+    const { instrument } = await import("../model/instruments");
+    const loaded = loadScore(strToU8(source));
+    const ed = new ScoreEditor(loaded.score);
+    ed.addPart(instrument("clarinet")!, "Clarinet");
+    ed.enter({ part: 1, measure: 0, staff: 1, voice: ed.voiceId(1, 1, 1), pos: 0 }, { pitches: [{ step: "D", alter: 0, octave: 5 }], quarters: 1 });
+    const added = strFromU8(loaded.save!().bytes);
+    expect(added.match(/<Part id=/g)).toHaveLength(2);
+    expect(added).toContain("<instrumentId>wind.reed.clarinet.bflat</instrumentId><transposeDiatonic>-1</transposeDiatonic><transposeChromatic>-2</transposeChromatic>");
+    expect(measureOffsets(added).staves).toHaveLength(2);
+    expect(measureOffsets(added).staves[1]).toHaveLength(3);
+    // The written D sounds C: MuseScore keeps the sounding pitch and both spellings.
+    expect(added).toContain("<pitch>72</pitch><tpc>14</tpc><tpc2>16</tpc2>");
+    expect(noteList(loadScore(strToU8(added)).score)).toEqual(noteList(loaded.score));
+    // The flute becomes an oboe: a new definition, the same staff.
+    ed.changePart(0, instrument("oboe")!, "Oboe");
+    const changed = strFromU8(loaded.save!().bytes);
+    expect(changed).toContain("<instrumentId>wind.reed.oboe</instrumentId>");
+    expect(changed).not.toContain("wind.flutes.flute");
+    expect(loadScore(strToU8(changed)).score.parts.map((p) => p.name)).toEqual(["Oboe", "Clarinet"]);
+    // The oboe goes: the clarinet's definition and staff become the first.
+    ed.removePart(0);
+    const left = strFromU8(loaded.save!().bytes);
+    expect(left.match(/<Part id=/g)).toHaveLength(1);
+    // Part ids stay (MuseScore's part files find their instrument by them); staves are numbered again.
+    expect(left).toContain('<Part id="2">');
+    expect(left).toMatch(/<Staff id="1">\s*<Measure/);
+    expect(left).not.toContain('<Staff id="2"');
+    expect(noteList(loadScore(strToU8(left)).score)).toEqual(noteList(loaded.score));
+  });
+
   it("keeps each kind of breath mark and caesura", () => {
     const symbols = ["breathMarkComma", "breathMarkTick", "breathMarkUpbow", "breathMarkSalzedo", "caesura", "caesuraThick", "caesuraShort", "caesuraCurved", "caesuraSingleStroke"];
     const src = file(symbols.map((sym, i) => (i ? "" : TS) + chord("whole", 72, 14) + `<Breath><symbol>${sym}</symbol></Breath>`));

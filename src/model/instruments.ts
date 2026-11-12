@@ -106,3 +106,15 @@ export const DRUM_KIT: { pitch: number; line: number; head: "normal" | "cross" |
   { pitch: 56, line: 1, head: "triangle", name: "Cowbell", up: true },
   { pitch: 57, line: -3, head: "cross", name: "Crash Cymbal 2", up: true },
 ];
+
+/** MuseScore's clef types as MusicXML clefs: sign, line, octave change. */
+export const CLEFS: Record<string, { sign: string; line: number; octave?: number }> = {
+  G: { sign: "G", line: 2 },
+  G8vb: { sign: "G", line: 2, octave: -1 },
+  G8va: { sign: "G", line: 2, octave: 1 },
+  F: { sign: "F", line: 4 },
+  F8vb: { sign: "F", line: 4, octave: -1 },
+  C3: { sign: "C", line: 3 },
+  C4: { sign: "C", line: 4 },
+  PERC: { sign: "percussion", line: 2 },
+};

@@ -30,6 +30,8 @@ export class ScoreDoc {
   readonly dirty = new Set<string>();
   /** Each measure's index in the file it was read from (-1: added since); null: unchanged. */
   origins: number[] | null = null;
+  /** Each part's index in the file it was read from (-1: added since); null: unchanged. */
+  partOrigins: number[] | null = null;
   /** Called once per measure, just before an edit first changes it. */
   beforeChange?: (part: number, measure: number) => void;
   /** Attributes in force at the start of each measure, per part. */
@@ -41,6 +43,13 @@ export class ScoreDoc {
     if (doc.documentElement.tagName !== "score-partwise") throw new Error("Not a MusicXML score");
     this.doc = doc;
     this.root = doc.documentElement;
+    this.parts = [];
+    this.measures = [];
+    this.rescanParts();
+  }
+
+  /** Reads the parts (names, sounds) and their measures again, after parts were added, removed or changed. */
+  rescanParts(): void {
     const list = kid(this.root, "part-list");
     const named = new Map<string, PartInfo>();
     for (const sp of list ? kids(list, "score-part") : []) {
@@ -51,8 +60,8 @@ export class ScoreDoc {
       named.set(id, { id, name: text(sp, "part-name"), abbreviation: text(sp, "part-abbreviation"), program });
     }
     const partEls = kids(this.root, "part");
-    this.parts = partEls.map((p) => named.get(p.getAttribute("id") ?? "") ?? { id: p.getAttribute("id") ?? "", name: "", abbreviation: "", program: null });
-    this.measures = partEls.map((p) => kids(p, "measure"));
+    this.parts.splice(0, this.parts.length, ...partEls.map((p) => named.get(p.getAttribute("id") ?? "") ?? { id: p.getAttribute("id") ?? "", name: "", abbreviation: "", program: null }));
+    this.measures.splice(0, this.measures.length, ...partEls.map((p) => kids(p, "measure")));
     this.reindex();
   }
 
@@ -73,11 +82,13 @@ export class ScoreDoc {
 
   /** Reads the measures again after measures were added, removed or replaced. */
   refresh(): void {
-    kids(this.root, "part").forEach((p, i) => {
+    const parts = kids(this.root, "part");
+    parts.forEach((p, i) => {
       const ms = kids(p, "measure");
       if (this.measures[i]) this.measures[i].splice(0, this.measures[i].length, ...ms);
       else this.measures[i] = ms;
     });
+    this.measures.length = parts.length;
     this.reindex();
   }
 

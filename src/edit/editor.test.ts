@@ -503,3 +503,60 @@ describe("Time signature changes", () => {
     expect(e2.setTime(0, 5, 8).refused?.reason).toBe("tuplet");
   });
 });
+
+describe("Instruments", () => {
+  const flute = () => score(note("C", 1, "quarter") + note("D", 1, "quarter") + note("E", 1, "quarter") + note("F", 1, "quarter"), note("G", 4, "whole"));
+  const part = (s: ScoreDoc, p: number, m: number) => {
+    const per = Number(s.measures[p][0].getElementsByTagName("divisions")[0]?.textContent) || 1;
+    return (readMeasure(s.measures[p][m]).voices.get(voiceKey(1, [...readMeasure(s.measures[p][m]).voices.keys()][0]?.split("|")[1] ?? "1")) ?? [])
+      .map((e) => (e.rest ? "r" : e.notes.map((n) => `${text(n.getElementsByTagName("pitch")[0], "step")}${text(n.getElementsByTagName("pitch")[0], "alter") === "1" ? "#" : ""}${text(n.getElementsByTagName("pitch")[0], "octave")}`).join("+")) + ":" + e.dur / per)
+      .join(" ");
+  };
+
+  it("adds a B flat clarinet with its written key and empty bars, and takes it out again", async () => {
+    const { instrument } = await import("../model/instruments");
+    const s = flute();
+    const ed = new ScoreEditor(s);
+    ed.addPart(instrument("clarinet")!, "Clarinet");
+    expect(s.parts.map((p) => p.name)).toEqual(["Flute", "Clarinet"]);
+    expect(s.measures[1]).toHaveLength(2);
+    expect(ed.info(1, 0).fifths).toBe(2);
+    expect(text(s.measures[1][0].getElementsByTagName("transpose")[0], "chromatic")).toBe("-2");
+    expect(part(s, 1, 0)).toBe("r:4");
+    expect(s.partOrigins).toEqual([0, -1]);
+    ed.addPart(instrument("piano")!, "Piano");
+    expect(Array.from(s.measures[2][0].getElementsByTagName("sign")).map((x) => x.textContent)).toEqual(["G", "F"]);
+    ed.removePart(1);
+    expect(s.parts.map((p) => p.name)).toEqual(["Flute", "Piano"]);
+    expect(s.partOrigins).toEqual([0, -1]);
+    ed.undo();
+    ed.undo();
+    ed.undo();
+    expect(s.parts.map((p) => p.name)).toEqual(["Flute"]);
+    expect(s.partOrigins).toBe(null);
+  });
+
+  it("changes a flute into a clarinet: the music sounds the same, written a tone higher", async () => {
+    const { instrument } = await import("../model/instruments");
+    const s = flute();
+    const ed = new ScoreEditor(s);
+    expect(ed.changePart(0, instrument("clarinet")!, "Clarinet")).not.toBe(null);
+    expect(s.parts[0].name).toBe("Clarinet");
+    expect(part(s, 0, 0)).toBe("D4:1 E4:1 F#4:1 G4:1");
+    expect(ed.info(0, 0).fifths).toBe(2);
+    // A piano has two staves: not this way.
+    expect(ed.changePart(0, instrument("piano")!, "Piano")).toBe(null);
+  });
+
+  it("enters drums on a new drum kit from the kit's places", async () => {
+    const { instrument } = await import("../model/instruments");
+    const s = flute();
+    const ed = new ScoreEditor(s);
+    ed.addPart(instrument("drumset")!, "Drums");
+    expect(ed.isDrums(1)).toBe(true);
+    const snare = ed.drumAt(1, "C", 5);
+    expect(snare?.instrument).toBe(`${s.parts[1].id}-I39`);
+    ed.enter({ part: 1, measure: 0, staff: 1, voice: ed.voiceId(1, 1, 1), pos: 0 }, { pitches: [snare!], quarters: 1 });
+    expect(s.measures[1][0].getElementsByTagName("unpitched")).toHaveLength(1);
+  });
+});

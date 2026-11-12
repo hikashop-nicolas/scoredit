@@ -6,6 +6,8 @@ import type { ScoreDoc } from "../model/score";
 import { kid, kids, parseXml, text } from "../model/xml";
 import { BREATH, SYM, marksOfSubtype, plain, type MscxLink } from "./mscx";
 import { DYNAMICS, directionOf, type Direction } from "../edit/directions";
+import { CLEFS, INSTRUMENTS, type InstrumentDef } from "../model/instruments";
+import { partXml } from "./mscx-new";
 
 // Writing an edited score back into its MuseScore file. Only the measures an edit touched are
 // written again; everything else in the file stays byte for byte. In a rewritten measure, a
@@ -82,7 +84,21 @@ function fraction(divs: number, perQuarter: number): string {
 }
 
 /** Where each measure of the score body is in the text: per staff, [start, end) of each <Measure>. */
-function measureOffsets(source: string): { staves: [number, number][][]; staffEnds: number[]; mmrests: [number, number][]; nested: [number, number][] } {
+interface Offsets {
+  staves: [number, number][][];
+  staffEnds: number[];
+  mmrests: [number, number][];
+  nested: [number, number][];
+  /** <Part> definitions, and the body <Staff> elements, whole. */
+  partDefs: [number, number][];
+  bodies: [number, number][];
+  /** Opening tags carrying ids: <Part>, its <Staff>s, the body <Staff>s. */
+  partTags: [number, number][];
+  defStaffTags: [number, number][];
+  bodyTags: [number, number][];
+}
+
+function measureOffsets(source: string): Offsets {
   const tag = /<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<\?[\s\S]*?\?>|<(\/?)([A-Za-z_][\w.-]*)[^>]*?(\/?)>/g;
   const stack: string[] = [];
   const staves: [number, number][][] = [];
@@ -94,6 +110,13 @@ function measureOffsets(source: string): { staves: [number, number][][]; staffEn
   let nestedStart = -1;
   let scoreDepth = -1;
   let measureStart = -1;
+  const partDefs: [number, number][] = [];
+  const bodies: [number, number][] = [];
+  const partTags: [number, number][] = [];
+  const defStaffTags: [number, number][] = [];
+  const bodyTags: [number, number][] = [];
+  let partStart = -1;
+  let bodyStart = -1;
   for (let m = tag.exec(source); m; m = tag.exec(source)) {
     if (!m[2]) continue;
     const [all, close, name, self] = m;
@@ -110,7 +133,11 @@ function measureOffsets(source: string): { staves: [number, number][][]; staffEn
         nested.push([nestedStart, m.index + all.length]);
         nestedStart = -1;
       }
-      if (name === "Staff" && scoreDepth >= 0 && depth === scoreDepth + 1) staffEnds.push(m.index);
+      if (name === "Staff" && scoreDepth >= 0 && depth === scoreDepth + 1) {
+        staffEnds.push(m.index);
+        bodies.push([bodyStart, m.index + all.length]);
+      }
+      if (name === "Part" && scoreDepth >= 0 && depth === scoreDepth + 1) partDefs.push([partStart, m.index + all.length]);
       if (name === "Score" && depth === scoreDepth) scoreDepth = -2;
       stack.pop();
       continue;
@@ -118,14 +145,23 @@ function measureOffsets(source: string): { staves: [number, number][][]; staffEn
     const depth = stack.length;
     if (name === "Score" && scoreDepth === -1) scoreDepth = depth;
     else if (name === "Score" && scoreDepth >= 0 && depth === scoreDepth + 1 && !self) nestedStart = m.index;
-    if (scoreDepth >= 0 && name === "Staff" && depth === scoreDepth + 1 && !self) staves.push([]);
+    if (scoreDepth >= 0 && name === "Staff" && depth === scoreDepth + 1 && !self) {
+      staves.push([]);
+      bodyStart = m.index;
+      bodyTags.push([m.index, m.index + all.length]);
+    }
+    if (scoreDepth >= 0 && name === "Part" && depth === scoreDepth + 1 && !self) {
+      partStart = m.index;
+      partTags.push([m.index, m.index + all.length]);
+    }
+    if (scoreDepth >= 0 && name === "Staff" && depth === scoreDepth + 2 && stack[stack.length - 1] === "Part") defStaffTags.push([m.index, m.index + all.length]);
     if (scoreDepth >= 0 && name === "Measure" && depth === scoreDepth + 2) {
       if (self) staves[staves.length - 1].push([m.index, m.index + all.length]);
       else measureStart = m.index;
     }
     if (!self) stack.push(name);
   }
-  return { staves, staffEnds, mmrests, nested };
+  return { staves, staffEnds, mmrests, nested, partDefs, bodies, partTags, defStaffTags, bodyTags };
 }
 
 /** A note's content for telling whether an edit changed it (ties, slurs, beams, accidentals left out: written again anyway). */
@@ -375,16 +411,26 @@ export function writeMuseScore(original: Uint8Array, score: ScoreDoc, link: Mscx
   // MuseScore's instrument parts (Excerpts/...) are scores of their own: the same bars are
   // written into each, or MuseScore would show them as they were.
   const parts = new Map<string, string>();
+  const gone = new Set<string>();
+  const view = partsView(score, link);
   try {
     for (const n of Object.keys(files).filter((x) => x.startsWith("Excerpts/") && x.endsWith(".mscx"))) {
-      const sub = excerptLink(link, strFromU8(files[n]));
-      if (sub) parts.set(n, writeText(score, sub, dirty, prints, { fresh: true }, true, true).text);
+      const text = strFromU8(files[n]);
+      // The part of an instrument taken out goes with it.
+      if (excerptGone(link, view, text)) gone.add(n.slice(0, n.lastIndexOf("/") + 1));
+      else {
+        const sub = excerptLink(view, text);
+        if (sub) parts.set(n, writeText(score, sub, dirty, prints, { fresh: true }, true, true).text);
+      }
     }
   } finally {
     clearCaches(score);
   }
   const next: Zippable = {};
-  for (const [n, data] of Object.entries(files)) next[n] = n === name ? strToU8(out) : parts.has(n) ? strToU8(parts.get(n)!) : data;
+  for (const [n, data] of Object.entries(files)) {
+    if ([...gone].some((dir) => n.startsWith(dir))) continue;
+    next[n] = n === name ? strToU8(out) : parts.has(n) ? strToU8(parts.get(n)!) : data;
+  }
   return { bytes: zipSync(next), dropped };
 }
 
@@ -438,7 +484,87 @@ function excerptLink(main: MscxLink, source: string): MscxLink | null {
   };
 }
 
+/** Each score part's file part (-1: added since). */
+const partOrigin = (score: ScoreDoc, p: number) => (score.partOrigins ? (score.partOrigins[p] ?? -1) : p);
+
+/** A part's transposition in the score, written to sounding, as MuseScore keeps it. */
+function scoreTranspose(score: ScoreDoc, p: number): { chromatic: number; diatonic: number } {
+  const tr = [...score.attributesAt(p, 0), ...kids(score.measures[p][0], "attributes").flatMap((a) => kids(a))].filter((e) => e.tagName === "transpose").pop();
+  if (!tr) return { chromatic: 0, diatonic: 0 };
+  const oct = Number(text(tr, "octave-change")) || 0;
+  return { chromatic: (Number(text(tr, "chromatic")) || 0) + 12 * oct, diatonic: (Number(text(tr, "diatonic")) || 0) + 7 * oct };
+}
+
+/** The MuseScore instrument id a score part names (MusicXML's instrument-sound), if any. */
+function soundOf(score: ScoreDoc, p: number): string {
+  return scorePartOf(score, p)?.getElementsByTagName("instrument-sound")[0]?.textContent?.trim() ?? "";
+}
+
+/** A score part's part-list entry. */
+function scorePartOf(score: ScoreDoc, p: number): Element | undefined {
+  const id = score.parts[p]?.id;
+  return Array.from(score.root.getElementsByTagName("score-part")).find((x) => x.getAttribute("id") === id);
+}
+
+/**
+ * The file seen through the score's parts: each part's file staves (none for one added
+ * since), its transposition and drums as the score has them now.
+ */
+function partsView(score: ScoreDoc, link: MscxLink): MscxLink {
+  if (!score.partOrigins) return link;
+  return {
+    ...link,
+    staves: score.parts.map((_, p) => (partOrigin(score, p) >= 0 ? (link.staves[partOrigin(score, p)] ?? []) : [])),
+    transpose: score.parts.map((_, p) => scoreTranspose(score, p)),
+    drums: score.parts.map((_, p) => {
+      const sp = scorePartOf(score, p);
+      const map = new Map<string, number>();
+      for (const mi of sp ? kids(sp, "midi-instrument") : []) if (kid(mi, "midi-unpitched")) map.set(mi.getAttribute("id") ?? "", (Number(text(mi, "midi-unpitched")) || 1) - 1);
+      return map.size ? map : partOrigin(score, p) >= 0 ? (link.drums[partOrigin(score, p)] ?? null) : null;
+    }),
+  };
+}
+
+/** File staves of the instruments taken out. */
+function removedStaves(score: ScoreDoc, link: MscxLink): Set<number> {
+  const kept = new Set(score.parts.map((_, p) => partOrigin(score, p)));
+  const out = new Set<number>();
+  link.staves.forEach((list, o) => {
+    if (!kept.has(o)) for (const st of list) if (st >= 0) out.add(st);
+  });
+  return out;
+}
+
+/** A MuseScore part (excerpt) all of whose staves belong to instruments taken out. */
+function excerptGone(main: MscxLink, view: MscxLink, source: string): boolean {
+  if (view === main) return false;
+  const sub = excerptLink(main, source);
+  if (!sub) return false;
+  // The score staves the part shows.
+  const shown = main.staves.flatMap((list, o) => list.filter((st, k) => st >= 0 && (sub.staves[o]?.[k] ?? -1) >= 0));
+  const kept = new Set(view.staves.flat());
+  return shown.length > 0 && shown.every((st) => !kept.has(st));
+}
+
+/** The instrument a score part is: its sound, else one like it from its clefs and staves. */
+function instrumentOfPart(score: ScoreDoc, p: number): InstrumentDef {
+  const sound = soundOf(score, p);
+  const known = INSTRUMENTS.find((x) => x.musescore === sound);
+  if (known) return known;
+  const clefs = Array.from(score.measures[p][0].getElementsByTagName("clef")).map((c) => {
+    const sig = `${text(c, "sign")}${text(c, "line")}/${Number(text(c, "clef-octave-change")) || 0}`;
+    return Object.entries(CLEFS).find(([, v]) => `${v.sign}${v.line}/${v.octave ?? 0}` === sig)?.[0] ?? "G";
+  });
+  const sp = scorePartOf(score, p);
+  const mi = sp ? kid(sp, "midi-instrument") : null;
+  return { key: "custom", family: "other", musescore: sound || "keyboard.piano", program: Math.max(0, (Number(text(mi, "midi-program")) || 1) - 1), clefs: clefs.length ? clefs : ["G"], short: score.parts[p]?.abbreviation || "" };
+}
+
 function writeText(score: ScoreDoc, link: MscxLink, dirty: Set<string>, prints: WeakMap<Element, string>, opts: { fresh?: boolean }, warm = false, part = false): { text: string; dropped: Dropped } {
+  const fileLink = link;
+  // Instruments added, taken out or changed: the file seen through the score's parts.
+  if (!part) link = partsView(score, link);
+  const gone = part ? new Set<number>() : removedStaves(score, fileLink);
   if (link.version < 3) throw new Error("Saving MuseScore 2 files is not supported yet");
   // A part written after the score reuses what the score's writing read.
   if (!warm) clearCaches(score);
@@ -488,6 +614,7 @@ function writeText(score: ScoreDoc, link: MscxLink, dirty: Set<string>, prints: 
   // Every staff gets the added measures, even staves of parts the edit did not touch.
   const lastLen = link.lengths[original - 1] ?? 1;
   link.measures.forEach((_, staff) => {
+    if (gone.has(staff)) return;
     for (let m = 0; m < score.measureCount; m++) {
       if (origin(m) >= 0 || written.has(`${staff}:${m}`)) continue;
       const meas = ctx.doc.createElementNS(null, "Measure");
@@ -500,6 +627,7 @@ function writeText(score: ScoreDoc, link: MscxLink, dirty: Set<string>, prints: 
   if (score.origins) {
     // Measures taken out go; lines in the others that cross the change point to their bar again.
     link.measures.forEach((list, staff) => {
+      if (gone.has(staff)) return;
       list.forEach((meas, o) => {
         const m = place(o);
         if (m < 0) {
@@ -516,17 +644,169 @@ function writeText(score: ScoreDoc, link: MscxLink, dirty: Set<string>, prints: 
     // A part's multi-measure rests may no longer be empty bars: MuseScore makes them again.
     for (const r of mmrests) edits.push([r[0], r[1], ""]);
   }
+  if (part && score.partOrigins) excerptInstrumentEdits(ctx, edits);
   if (!part)
     for (const [s0, e0] of nested) {
+      if (excerptGone(fileLink, link, link.source.slice(s0, e0))) {
+        edits.push([s0, e0, ""]);
+        continue;
+      }
       const sub = excerptLink(link, link.source.slice(s0, e0));
       if (sub) edits.push([s0, e0, writeText(score, sub, dirty, prints, { fresh: true }, true, true).text]);
     }
+  if (!part && score.partOrigins) instrumentEdits(ctx, fileLink, edits, gone);
   // Applied from the end, so earlier offsets stay right; measures added at one staff's end
   // keep the order they were made in.
   const order = edits.map((e, i) => [...e, i] as const).sort((a, b) => b[0] - a[0] || b[1] - a[1] || b[3] - a[3]);
   let out = link.source;
   for (const [s0, e0, t] of order) out = out.slice(0, s0) + t + out.slice(e0);
+  if (!part && score.partOrigins) out = renumberStaves(out, fileLink, gone);
   return { text: out, dropped: ctx.dropped };
+}
+
+/**
+ * Instruments taken out (their definition and staves go), added (a definition and every bar
+ * written) or changed (names, sound, the definition anew for another instrument).
+ */
+function instrumentEdits(ctx: Ctx, fileLink: MscxLink, edits: [number, number, string][], gone: Set<number>): void {
+  const { score } = ctx;
+  const off = measureOffsets(fileLink.source);
+  const kept = new Set(score.parts.map((_, p) => partOrigin(score, p)));
+  fileLink.staves.forEach((_, o) => {
+    if (!kept.has(o) && off.partDefs[o]) edits.push([off.partDefs[o][0], off.partDefs[o][1], ""]);
+  });
+  for (const st of gone) if (off.bodies[st]) edits.push([off.bodies[st][0], off.bodies[st][1], ""]);
+  const ser = new XMLSerializer();
+  const mainScore = kid(fileLink.src.documentElement, "Score");
+  const defs = mainScore ? kids(mainScore, "Part") : [];
+  const afterDefs = off.partDefs.length ? off.partDefs[off.partDefs.length - 1][1] : 0;
+  const afterBodies = off.bodies.length ? off.bodies[off.bodies.length - 1][1] : 0;
+  let staffCount = fileLink.measures.length;
+  // A new part takes the next id after the file's own.
+  let nextId = Math.max(0, ...defs.map((d) => Number(d.getAttribute("id")) || 0), defs.length) + 1;
+  score.parts.forEach((info, p) => {
+    const o = partOrigin(score, p);
+    const def = instrumentOfPart(score, p);
+    const sound = soundOf(score, p);
+    const name = info.name;
+    if (o < 0) {
+      // A new instrument: its definition after the others, its staves after theirs.
+      edits.push([afterDefs, afterDefs, partXml(def, name, nextId++, staffCount + 1)]);
+      def.clefs.forEach((_, k) => {
+        const bars = Array.from({ length: score.measureCount }, (_, m) => xmlOf(ser, writeMeasure(ctx, p, k, -1, m)));
+        edits.push([afterBodies, afterBodies, `\n    <Staff id="${staffCount + 1}">\n      ${bars.join("\n      ")}\n      </Staff>`]);
+        staffCount++;
+      });
+      return;
+    }
+    const old = defs[o];
+    if (!old || !off.partDefs[o]) return;
+    const inst = kid(old, "Instrument");
+    if (sound && inst && text(inst, "instrumentId") !== sound) {
+      // Another instrument: its definition anew; the staves (and what links to them) stay.
+      edits.push([off.partDefs[o][0], off.partDefs[o][1], xmlOf(ser, swapInstrument(old, def, name))]);
+      return;
+    }
+    // The same instrument: its names and sound as the score has them.
+    const copy = old.cloneNode(true) as Element;
+    const ci = kid(copy, "Instrument");
+    let changed = false;
+    const set = (parent: Element | null, tag: string, value: string) => {
+      const e = parent ? kid(parent, tag) : null;
+      if (e && e.textContent !== value) {
+        e.textContent = value;
+        changed = true;
+      }
+    };
+    set(copy, "trackName", name);
+    set(ci, "longName", name);
+    set(ci, "trackName", name);
+    if (info.abbreviation) set(ci, "shortName", info.abbreviation);
+    const prog = info.program;
+    const pe = ci ? kid(kid(ci, "Channel") ?? ci, "program") : null;
+    if (pe && prog !== null && prog < 128 && pe.getAttribute("value") !== String(prog)) {
+      pe.setAttribute("value", String(prog));
+      changed = true;
+    }
+    if (changed) edits.push([off.partDefs[o][0], off.partDefs[o][1], xmlOf(ser, copy)]);
+  });
+}
+
+/** A part definition with another instrument: its names, clefs and <Instrument> anew, its staves kept. */
+function swapInstrument(old: Element, def: InstrumentDef, name: string): Element {
+  const copy = old.cloneNode(true) as Element;
+  const doc = copy.ownerDocument;
+  const fresh = parseXml(`<x>${partXml(def, name, 1, 1)}</x>`).documentElement;
+  const freshPart = kid(fresh, "Part")!;
+  const inst = doc.importNode(kid(freshPart, "Instrument")!, true) as Element;
+  const oldInst = kid(copy, "Instrument");
+  if (oldInst) oldInst.replaceWith(inst);
+  else copy.appendChild(inst);
+  const track = kid(copy, "trackName");
+  if (track) track.textContent = name;
+  kids(copy, "Staff").forEach((st, k) => {
+    for (const d of kids(st, "defaultClef")) d.remove();
+    const clef = def.clefs[k];
+    if (clef && clef !== "G") {
+      const d = doc.createElementNS(null, "defaultClef");
+      d.textContent = clef;
+      st.appendChild(d);
+    }
+  });
+  return copy;
+}
+
+/** A MuseScore part file's own definitions of the instruments changed in the score, and its name. */
+function excerptInstrumentEdits(ctx: Ctx, edits: [number, number, string][]): void {
+  const { score, link } = ctx;
+  const sc = link.src.documentElement.tagName === "Score" ? link.src.documentElement : kid(link.src.documentElement, "Score");
+  if (!sc) return;
+  const off = measureOffsets(link.source);
+  const defs = kids(sc, "Part");
+  // Which part definition holds each of the part file's staves.
+  const holder: number[] = [];
+  defs.forEach((d, i) => kids(d, "Staff").forEach(() => holder.push(i)));
+  const ser = new XMLSerializer();
+  score.parts.forEach((info, p) => {
+    const st = link.staves[p]?.find((x) => x >= 0);
+    if (st === undefined || holder[st] === undefined) return;
+    const i = holder[st];
+    const old = defs[i];
+    const sound = soundOf(score, p);
+    const inst = kid(old, "Instrument");
+    if (!sound || !inst || text(inst, "instrumentId") === sound || !off.partDefs[i]) return;
+    edits.push([off.partDefs[i][0], off.partDefs[i][1], xmlOf(ser, swapInstrument(old, instrumentOfPart(score, p), info.name))]);
+    // The part named after its instrument is named after the new one.
+    const oldName = text(old, "trackName");
+    const re = /<metaTag name="partName">([^<]*)<\/metaTag>/;
+    const m = re.exec(link.source);
+    if (m && m[1] === oldName) edits.push([m.index, m.index + m[0].length, `<metaTag name="partName">${info.name.replace(/&/g, "&amp;").replace(/</g, "&lt;")}</metaTag>`]);
+  });
+}
+
+/** Parts and staves numbered again in order (and MuseScore 3's parts pointing to them by number). */
+function renumberStaves(text0: string, fileLink: MscxLink, gone: Set<number>): string {
+  const off = measureOffsets(text0);
+  const edits: [number, number, string][] = [];
+  const retag = (ranges: [number, number][], from: number) =>
+    ranges.forEach(([a, b], i) => {
+      const tag = text0.slice(a, b);
+      if (/\sid="\d+"/.test(tag)) edits.push([a, b, tag.replace(/\sid="\d+"/, ` id="${i + from}"`)]);
+    });
+  // Part ids stay: MuseScore's part files find their instrument by them.
+  retag(off.defStaffTags, 1);
+  retag(off.bodyTags, 1);
+  // MuseScore 3 parts name the score's staves by their old numbers.
+  const map = new Map<number, number>();
+  let next = 1;
+  for (let st = 0; st < fileLink.measures.length; st++) if (!gone.has(st)) map.set(st + 1, next++);
+  for (const [a, b] of off.nested) {
+    const inner = text0.slice(a, b).replace(/(<Part>[\s\S]*?<\/Part>)/g, (part) => part.replace(/<linkedTo>(\d+)<\/linkedTo>/g, (all, n) => (map.has(Number(n)) ? `<linkedTo>${map.get(Number(n))}</linkedTo>` : all)));
+    if (inner !== text0.slice(a, b)) edits.push([a, b, inner]);
+  }
+  let out = text0;
+  for (const [a, b, t] of edits.sort((x, y) => y[0] - x[0])) out = out.slice(0, a) + t + out.slice(b);
+  return out;
 }
 
 /**
@@ -597,6 +877,12 @@ function writeMeasure(ctx: Ctx, part: number, k: number, staff: number, m: numbe
   const orig = o >= 0 ? (link.measures[staff]?.[o] ?? null) : null;
   const meas = orig ? (orig.cloneNode(false) as Element) : doc.createElementNS(null, "Measure");
   if (orig) for (const c of kids(orig)) if (c.tagName !== "voice") meas.appendChild(c.cloneNode(true));
+  // A staff of an instrument added since: its bars as long as the first staff's, repeats and all.
+  const like = !orig && staff < 0 && o >= 0 ? link.measures[0]?.[o] : null;
+  if (like) {
+    for (const a of Array.from(like.attributes)) meas.setAttribute(a.name, a.value);
+    for (const c of kids(like)) if (["irregular", "startRepeat", "endRepeat", "breakMultiMeasureRest"].includes(c.tagName)) meas.appendChild(c.cloneNode(true));
+  }
   // What the original voices hold besides notes, at its position (whole notes); lines in
   // them point to their other end's bar again when bars were added or taken out.
   const kept = new Map<number, Kept[]>();
@@ -789,6 +1075,7 @@ function staffGroup(ctx: Ctx, staff: number): string {
 const CLEF_TYPES: [string, string, number, number][] = [
   ["G", "G", 2, 0], ["G8va", "G", 2, 1], ["G15ma", "G", 2, 2], ["G8vb", "G", 2, -1], ["F", "F", 4, 0], ["F8vb", "F", 4, -1], ["F15mb", "F", 4, -2],
   ["F3", "F", 3, 0], ["F5", "F", 5, 0], ["C1", "C", 1, 0], ["C2", "C", 2, 0], ["C3", "C", 3, 0], ["C4", "C", 4, 0], ["C5", "C", 5, 0],
+  ["PERC", "percussion", 2, 0], ["PERC", "percussion", 3, 0],
 ];
 const clefSig = (sign: string, line: number, octave: number) => `${sign}${line}/${octave}`;
 /** A MuseScore clef's sign, or null for one written as the file has it (tab, percussion, unknown). */
@@ -843,16 +1130,17 @@ function placeKey(ctx: Ctx, part: number, k: number, m: number, kept: Map<number
   if (want === null) return;
   const before = m > 0 ? (keyOf(ctx, part, k, m, false) ?? 0) : 0;
   const was = orig ? Number(text(orig.item.el, "concertKey") || text(orig.item.el, "accidental") || text(orig.item.el, "key")) || 0 : null;
-  // Only where the file had one, or the key changes there.
-  if (!orig && before === want) return;
+  // Only where the file had one, or the key changes there (a transposing staff starts with its written key).
+  const { chromatic, diatonic } = ctx.link.transpose[part];
+  const written = want - (chromatic ? 7 * chromatic - 12 * diatonic : 0);
+  if (!orig && before === want && (m > 0 || written === 0)) return;
   let el: Element;
   if (orig && was === want) el = orig.item.el;
   else {
     el = ctx.doc.createElementNS(null, "KeySig");
     add(el, ctx.v4 ? "concertKey" : "accidental", want);
     // A transposing staff names its written key too.
-    const { chromatic, diatonic } = ctx.link.transpose[part];
-    if (ctx.v4 && chromatic) add(el, "actualKey", want - (7 * chromatic - 12 * diatonic));
+    if (ctx.v4 && chromatic) add(el, "actualKey", written);
   }
   const vi = orig?.vi ?? 0;
   const list = kept.get(vi) ?? [];
