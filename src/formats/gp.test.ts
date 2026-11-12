@@ -32,9 +32,9 @@ describe("Guitar Pro reader", () => {
   const loaded = loadScore(file());
   const doc = loaded.score.doc;
 
-  it("opens read-only, with a tab staff under the fretted part", () => {
+  it("opens with a tab staff under the fretted part, and saves", () => {
     expect(loaded.format).toBe("guitarpro");
-    expect(loaded.save).toBeUndefined();
+    expect(loaded.save).toBeDefined();
     expect(loaded.fretted).toBe(true);
     expect(loaded.tab).toBe(true);
     expect(all(doc, "part-name").map((e) => e.textContent)).toEqual(["Guitar", "Drums"]);

@@ -9,6 +9,7 @@ export { loadScore, type LoadedScore, type LoadOptions } from "./formats/load";
 export { readMxl, writeMxl } from "./formats/mxl";
 export { readAbc, abcTunes, type AbcOptions } from "./formats/abc";
 export { readGuitarPro, type GuitarProOptions } from "./formats/gp";
+export { writeGuitarPro, type GuitarProWriteOptions } from "./formats/gp-write";
 export { midiToMusicXml } from "./formats/midi";
 export type { Dropped } from "./formats/mscx-write";
 export { ScoreDoc, partFamily, PART_FAMILIES, type PartFamily, type PartInfo } from "./model/score";
