@@ -26,3 +26,29 @@ V:1
 w:do re mi sol la ti do re mi fa sol la ti do
 V:2
 D,6|G,,4 A,,2|[D,F,]6|[1 D,6:|[2 D,4 z2|]
+
+X:3
+T:Little Prelude for Piano
+C:scoredit test
+M:4/4
+L:1/8
+Q:1/4=80
+%%score {(RH1 RH2) | LH}
+V:RH1 name="Piano"
+V:RH2
+V:LH clef=bass
+K:G
+V:RH1
+d2gf e2dc|B2AG A4|B2cd e2dc|B8|]
+V:RH2
+B4 c4|G2F2 F4|G4 G2F2|G8|]
+V:LH
+G,2B,2 C2E2|D4 D,4|G,4 C2D2|G,,8|]
+
+X:4
+T:Overlay Study
+C:scoredit test
+M:3/4
+L:1/8
+K:D
+A2|d2f2a2 & F6|g2f2e2 & E2G2c2|(& d2c2B2|A6 & F4G2|F6 &)|d6 & D6|]

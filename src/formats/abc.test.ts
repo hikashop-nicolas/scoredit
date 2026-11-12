@@ -265,3 +265,306 @@ C,4|G,,4|
     for (const m of measures(doc)) expect(durations(m).reduce((a, b) => a + b, 0)).toBe(4);
   });
 });
+
+const voice = (n: Element) => text(n, "voice");
+const inVoice = (m: Element, v: string) => notes(m).filter((n) => voice(n) === v && !kid(n, "grace"));
+const stems = (m: Element, v: string) => inVoice(m, v).map((n) => text(n, "stem"));
+const backups = (m: Element) => kids(m, "backup").map((b) => Number(text(b, "duration")) / DIV);
+
+describe("ABC voice overlay", () => {
+  it("puts the music after & in a second voice of the same bar", () => {
+    const doc = readAbc(tune("CDEF GABc & C4 E4|d8|"));
+    const [m1, m2] = measures(doc);
+    expect(measures(doc).length).toBe(2);
+    expect(inVoice(m1, "1").map(pitchOf)).toEqual(["C4", "D4", "E4", "F4", "G4", "A4", "B4", "C5"]);
+    expect(inVoice(m1, "2").map(pitchOf)).toEqual(["C4", "E4"]);
+    expect(backups(m1)).toEqual([4]);
+    expect(stems(m1, "1").every((s) => s === "up")).toBe(true);
+    expect(stems(m1, "2")).toEqual(["down", "down"]);
+    // The bar after is one voice again, with free stems.
+    expect(notes(m2).map(voice)).toEqual(["1"]);
+    expect(stems(m2, "1")).toEqual([""]);
+  });
+  it("stacks a voice for each &", () => {
+    const m = measures(readAbc(tune("c8 & e8 & g8|")))[0];
+    expect(notes(m).map((n) => `${voice(n)}${pitchOf(n)}`)).toEqual(["1C5", "2E5", "3G5"]);
+    expect(backups(m)).toEqual([4, 4]);
+  });
+  it("sets the time back one bar per & after a bar line (the standard's && example)", () => {
+    const doc = readAbc(tune("g4 f4 | e6 e2 |\n&& (d8 | c6) c2|\nw: ha-la-| lu-yoh"));
+    const [m1, m2] = measures(doc);
+    expect(measures(doc).length).toBe(2);
+    expect(inVoice(m1, "2").map(pitchOf)).toEqual(["D5"]);
+    expect(inVoice(m2, "2").map(pitchOf)).toEqual(["C5", "C5"]);
+    // Lyrics go to the voice's own notes, not to the overlay.
+    const sung = (m: Element) => inVoice(m, "1").map((n) => text(n.getElementsByTagName("lyric")[0], "text"));
+    expect(sung(m1)).toEqual(["ha", "la"]);
+    expect(sung(m2)).toEqual(["lu", "yoh"]);
+  });
+  it("reads (& ... & ... &) over several bars, from mid-bar with a forward", () => {
+    const doc = readAbc(tune("C4 (& c4 | d8 & E4 | F8 &) | g8 |"));
+    const [m1, m2, m3] = measures(doc);
+    expect(measures(doc).length).toBe(3);
+    expect(inVoice(m1, "1").map(pitchOf)).toEqual(["C4", "C5"]);
+    const fw = kids(m1, "forward")[0];
+    expect(Number(text(fw, "duration")) / DIV).toBe(2);
+    expect(text(fw, "voice")).toBe("2");
+    expect(inVoice(m1, "2").map(pitchOf)).toEqual(["E4"]);
+    expect(inVoice(m2, "2").map(pitchOf)).toEqual(["F4"]);
+    expect(notes(m3).map(voice)).toEqual(["1"]);
+  });
+  it("keeps the accidentals of an overlay to itself", () => {
+    const m = measures(readAbc(tune("^F4 F4 & F4 F4|")))[0];
+    expect(inVoice(m, "1").map(pitchOf)).toEqual(["F#4", "F#4"]);
+    expect(inVoice(m, "2").map(pitchOf)).toEqual(["F4", "F4"]);
+  });
+  it("ends a bar's overlay at a repeat sign", () => {
+    const ms = measures(readAbc(tune("C8 :| D8 & c8 |: E8 :|")));
+    expect(ms.length).toBe(3);
+    expect(inVoice(ms[1], "2").map(pitchOf)).toEqual(["C5"]);
+    expect(kids(ms[2], "barline")[0].getElementsByTagName("repeat")[0].getAttribute("direction")).toBe("forward");
+  });
+});
+
+const SATB = (score: string) => `X:1
+T:Chorale
+M:4/4
+L:1/4
+${score}
+V:S name="Soprano"
+V:A name="Alto"
+V:T clef=bass name="Tenor"
+V:B clef=bass name="Bass"
+K:C
+V:S
+e d c2|
+V:A
+c B G2|
+V:T
+G, G, E,2|
+V:B
+C, G,, C,2|
+`;
+
+describe("ABC %%score and %%staves", () => {
+  it("puts voices in parentheses on one staff, as voices 1 and 2 with stems up and down", () => {
+    const doc = readAbc(SATB("%%score (S A) (T B)"));
+    expect(doc.getElementsByTagName("part").length).toBe(2);
+    const m = measures(doc, 0)[0];
+    expect(inVoice(m, "1").map(pitchOf)).toEqual(["E5", "D5", "C5"]);
+    expect(inVoice(m, "2").map(pitchOf)).toEqual(["C5", "B4", "G4"]);
+    expect(stems(m, "1")).toEqual(["up", "up", "up"]);
+    expect(stems(m, "2")).toEqual(["down", "down", "down"]);
+    expect(backups(m)).toEqual([4]);
+    expect(text(measures(doc, 1)[0].getElementsByTagName("clef")[0], "sign")).toBe("F");
+    expect([...doc.getElementsByTagName("part-name")].map((p) => p.textContent)).toEqual(["Soprano", "Tenor"]);
+  });
+  it("drops the voices it does not list and follows its order", () => {
+    const doc = readAbc(SATB("%%score B S"));
+    expect([...doc.getElementsByTagName("part-name")].map((p) => p.textContent)).toEqual(["Bass", "Soprano"]);
+  });
+  it("makes a brace of staves one part with two staves (a piano)", () => {
+    const doc = readAbc(`X:1
+T:Piano
+M:2/4
+L:1/4
+%%score {(RH1 RH2) | LH}
+V:RH1 name="Piano"
+V:RH2
+V:LH clef=bass
+K:C
+V:RH1
+e d|
+V:RH2
+c B|
+V:LH
+C, G,,|
+`);
+    expect(doc.getElementsByTagName("part").length).toBe(1);
+    const m = measures(doc)[0];
+    const attrs = kid(m, "attributes")!;
+    expect(text(attrs, "staves")).toBe("2");
+    expect([...attrs.getElementsByTagName("clef")].map((c) => `${c.getAttribute("number")}${text(c, "sign")}`)).toEqual(["1G", "2F"]);
+    expect(inVoice(m, "5").map((n) => `${pitchOf(n)}/${text(n, "staff")}`)).toEqual(["C3/2", "G2/2"]);
+    expect(inVoice(m, "2").map((n) => text(n, "staff"))).toEqual(["1", "1"]);
+    expect(backups(m)).toEqual([2, 2]);
+    expect(stems(m, "5")).toEqual(["", ""]);
+  });
+  it("brackets parts, with | or %%staves for bar lines through the staves", () => {
+    const group = (score: string) => {
+      const list = readAbc(SATB(score)).getElementsByTagName("part-list")[0];
+      return kids(list).map((e) => (e.tagName === "part-group" ? `${e.getAttribute("type")}${e.getAttribute("type") === "start" ? `:${text(e, "group-symbol")}:${text(e, "group-barline")}` : ""}` : "part"));
+    };
+    expect(group("%%score [S A T B]")).toEqual(["start:bracket:no", "part", "part", "part", "part", "stop"]);
+    expect(group("%%score [S | A | T | B]")).toEqual(["start:bracket:yes", "part", "part", "part", "part", "stop"]);
+    expect(group("%%staves [S A T B]")).toEqual(["start:bracket:yes", "part", "part", "part", "part", "stop"]);
+    expect(group("%%score S [A T] B")).toEqual(["part", "start:bracket:no", "part", "part", "stop", "part"]);
+  });
+  it("keeps a brace over named staves as separate parts (the standard's string section)", () => {
+    const list = readAbc(SATB("%%score [{S | A} | T | B]")).getElementsByTagName("part-list")[0];
+    expect(kids(list, "score-part").length).toBe(4);
+    expect(kids(list, "part-group").map((g) => text(g, "group-symbol"))).toEqual(["bracket", "brace", "", ""]);
+  });
+  it("puts a floating voice on the staff before it, and reads I:score", () => {
+    const doc = readAbc(SATB("I:score (S A) *T B"));
+    expect(doc.getElementsByTagName("part").length).toBe(2);
+    expect(inVoice(measures(doc, 0)[0], "3").map(pitchOf)).toEqual(["G3", "G3", "E3"]);
+  });
+  it("brings voices back in step at a %%score in the body", () => {
+    const doc = readAbc(`X:1
+T:Entries
+M:4/4
+L:1/4
+K:C
+V:1
+c4|d4|
+%%score 1 2
+V:2
+C4|
+V:1
+e4|
+`);
+    expect(measures(doc, 0).length).toBe(3);
+    expect(pitches(measures(doc, 1)[2])).toEqual(["C4"]);
+    expect(kid(notes(measures(doc, 1)[0])[0], "rest")).toBeTruthy();
+  });
+});
+
+describe("ABC voice properties", () => {
+  it("reads +8/-8 clefs and octave= as heard, the clef showing the 8", () => {
+    const doc = readAbc(`X:1
+T:Tenor
+M:4/4
+L:1/4
+V:T clef=treble-8
+V:B clef=bass octave=-1
+K:C
+V:T
+c4|
+V:B
+c4|
+`);
+    const clef = measures(doc, 0)[0].getElementsByTagName("clef")[0];
+    expect(text(clef, "clef-octave-change")).toBe("-1");
+    expect(pitches(measures(doc, 0)[0])).toEqual(["C4"]);
+    expect(pitches(measures(doc, 1)[0])).toEqual(["C4"]);
+  });
+  it("reads transpose= as a written-to-sounding interval", () => {
+    const doc = readAbc(tune("c4 d4|", "M:4/4\nL:1/8\nV:1 transpose=-2\nK:D"));
+    const t = doc.getElementsByTagName("transpose")[0];
+    expect([text(t, "chromatic"), text(t, "diatonic")]).toEqual(["-2", "-1"]);
+    const oct = readAbc(tune("c4 d4|", "M:4/4\nL:1/8\nV:1 transpose=-14\nK:D")).getElementsByTagName("transpose")[0];
+    expect([text(oct, "chromatic"), text(oct, "octave-change")]).toEqual(["-2", "-1"]);
+  });
+  it("reads names and subnames, written in any spelling", () => {
+    const doc = readAbc(`X:1
+T:Names
+M:4/4
+L:1/4
+V:1 clef=treble name="Soprano"sname="S."
+V:2 nm="Alto" snm="A."
+K:C
+V:1
+c4|
+V:2
+A4|
+`);
+    expect([...doc.getElementsByTagName("part-name")].map((p) => p.textContent)).toEqual(["Soprano", "Alto"]);
+    expect([...doc.getElementsByTagName("part-abbreviation")].map((p) => p.textContent)).toEqual(["S.", "A."]);
+  });
+  it("forces stems with stem= and applies V:* to every voice", () => {
+    const doc = readAbc(`X:1
+T:Stems
+M:4/4
+L:1/4
+V:* clef=bass
+V:1 stem=down
+V:2 clef=treble
+K:C
+V:1
+C,4|
+V:2
+c4|
+`);
+    expect(text(notes(measures(doc, 0)[0])[0], "stem")).toBe("down");
+    expect(text(measures(doc, 0)[0].getElementsByTagName("clef")[0], "sign")).toBe("F");
+    expect(text(measures(doc, 1)[0].getElementsByTagName("clef")[0], "sign")).toBe("G");
+  });
+  it("changes clef from a V: or K: in the body, not when the clef is the same", () => {
+    const doc = readAbc(`X:1
+T:Clefs
+M:4/4
+L:1/4
+V:1 clef=treble
+K:G
+V:1 clef=treble
+c4|
+V:1 clef=bass
+C,4|
+[K:clef=treble] c4|
+`);
+    const ms = measures(doc);
+    expect(ms[0].getElementsByTagName("clef").length).toBe(1);
+    expect(text(ms[1].getElementsByTagName("clef")[0], "sign")).toBe("F");
+    expect(text(ms[2].getElementsByTagName("clef")[0], "sign")).toBe("G");
+    // K: with only a clef keeps the key.
+    expect(ms[2].getElementsByTagName("key").length).toBe(0);
+  });
+  it("carries a voice on across tune parts and inline [V:] fields", () => {
+    const doc = readAbc(`X:1
+T:Parts
+M:2/4
+L:1/4
+K:C
+P:A
+[V:1] c d|e2|
+[V:2] C D|E2|
+P:B
+[V:1] f g|a2|]
+[V:2] F G|A2|]
+`);
+    expect(measures(doc, 0).map(pitches)).toEqual([["C5", "D5"], ["E5"], ["F5", "G5"], ["A5"]]);
+    expect(measures(doc, 1).map(pitches)).toEqual([["C4", "D4"], ["E4"], ["F4", "G4"], ["A4"]]);
+  });
+  it("keeps the header meter at the start when the body changes it", () => {
+    const doc = readAbc(tune("C8|[M:3/4]C6|"));
+    expect(text(measures(doc)[0].getElementsByTagName("time")[0], "beats")).toBe("4");
+  });
+});
+
+describe("ABC files as found", () => {
+  it("ends a tune at an empty line, so text after it is not music", () => {
+    const doc = readAbc("X:1\nT:A\nM:4/4\nL:1/4\nK:C\nc4|\n\nSome words about the tune.\n");
+    expect(measures(doc).length).toBe(1);
+  });
+  it("applies the file header to every tune", () => {
+    const file = "%abc-2.1\nL:1/4\nU:s=!staccato!\n\nX:1\nT:A\nM:4/4\nK:C\nsc4|\n\nX:2\nT:B\nM:4/4\nK:C\nC D E F|\n";
+    expect(durations(measures(readAbc(file, { tune: 2 }))[0])).toEqual([1, 1, 1, 1]);
+    expect(readAbc(file).getElementsByTagName("staccato").length).toBe(1);
+  });
+  it("decodes text mnemonics and entities", () => {
+    const doc = readAbc(`X:1\nT:Si Mh\\'or &amp; Caf&eacute; \\u00e0 la \\"uber\nM:2/4\nL:1/4\nK:C\nc d|\nw:\\ss\\aa \\oo\n`);
+    expect(text(doc.documentElement, "work")).toBe("Si Mh\u00f3r & Caf\u00e9 \u00e0 la \u00fcber");
+    expect([...doc.getElementsByTagName("lyric")].map((l) => text(l, "text"))).toEqual(["\u00df\u00e5", "\u00f8"]);
+    expect(abcTunes(`X:1\nT:Caf\\'e\nK:C\n`)[0].title).toBe("Caf\u00e9");
+  });
+  it("reads verses, bar skips, held and lone hyphen syllables and +: continuations", () => {
+    const doc = readAbc(tune("CDEF|GABc|\nw:one two three_ |four - five\n+:six\nw:un deux", "M:4/4\nL:1/4\nK:C"));
+    const sung = [...doc.getElementsByTagName("note")].map((n) => [...n.getElementsByTagName("lyric")].map((l) => `${l.getAttribute("number")}:${text(l, "text")}:${text(l, "syllabic")}`).join(" "));
+    expect(sung).toEqual(["1:one:single 2:un:single", "1:two:single 2:deux:single", "1:three:single", "", "1:four:begin", "", "1:five:end", "1:six:single"]);
+  });
+  it("takes lyrics under a music line continued with \\", () => {
+    const doc = readAbc(tune("CD|\\\nEF|\nw:a b c d", "M:2/4\nL:1/4\nK:C"));
+    expect([...doc.getElementsByTagName("lyric")].map((l) => text(l, "text"))).toEqual(["a", "b", "c", "d"]);
+  });
+  it("ties chords", () => {
+    const [m1, m2] = measures(readAbc(tune("[CE]8-|[CE]8|")));
+    expect(notes(m1).map((n) => kids(n, "tie").map((t) => t.getAttribute("type")).join())).toEqual(["start", "start"]);
+    expect(notes(m2).map((n) => kids(n, "tie").map((t) => t.getAttribute("type")).join())).toEqual(["stop", "stop"]);
+  });
+  it("puts the fermata of a lower voice below", () => {
+    const m = measures(readAbc(tune("Hc8 & HC8|")))[0];
+    expect(inVoice(m, "2")[0].getElementsByTagName("fermata")[0].getAttribute("type")).toBe("inverted");
+    expect(inVoice(m, "1")[0].getElementsByTagName("fermata")[0].getAttribute("type")).toBe("upright");
+  });
+});
