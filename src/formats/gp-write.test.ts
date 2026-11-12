@@ -5,7 +5,9 @@ import { join } from "node:path";
 import { parseGuitarPro } from "guitarpro-parser";
 import { describe, expect, it } from "vitest";
 import { gpFile } from "../../scripts/gp-fixture.mjs";
+import { readMeasure } from "../edit/measure";
 import { ScoreDoc } from "../model/score";
+import { kid, kids, text } from "../model/xml";
 import { buildTimeline } from "../play/timeline";
 import { readGuitarPro } from "./gp";
 import { writeGuitarPro } from "./gp-write";
@@ -19,7 +21,36 @@ export function content(score: ScoreDoc) {
   const straight = buildTimeline(score, { straight: true });
   const notes = straight.events.filter((e) => !e.grace).map((e) => `${e.part}|${e.measure}|${Math.round(e.onset * 48)}|${e.midi}|${Math.round(e.dur * 1000)}|${e.string ?? ""}|${e.fret ?? ""}`);
   const played = buildTimeline(score);
-  return { notes: notes.sort(), order: played.spans.map((s) => s.measure), seconds: Math.round((played.events.at(-1)?.time ?? 0) * 100) };
+  return { notes: notes.sort(), order: played.spans.map((s) => s.measure), seconds: Math.round((played.events.at(-1)?.time ?? 0) * 100), marks: marks(score) };
+}
+
+/** Ottavas, bar repeats, harmonic kinds and tempo marks, each with its part, measure and beat. */
+function marks(score: ScoreDoc): string[] {
+  const out: string[] = [];
+  score.measures.forEach((ms, p) => {
+    let div = 1;
+    ms.forEach((meas, m) => {
+      for (const d of meas.getElementsByTagName("divisions")) div = Number(d.textContent) || div;
+      const at = (pos: number) => `${p}|${m}|${Math.round((pos * 48) / div)}`;
+      const r = readMeasure(meas);
+      for (const { pos, el } of r.others) {
+        for (const o of el.getElementsByTagName("octave-shift")) out.push(`${at(pos)}|ottava ${o.getAttribute("type")} ${o.getAttribute("size") ?? 8}`);
+        for (const mr of el.getElementsByTagName("measure-repeat")) out.push(`${p}|${m}|repeat ${mr.getAttribute("type")} ${mr.textContent}`);
+        const tempo = el.tagName === "direction" ? kid(el, "sound")?.getAttribute("tempo") : null;
+        if (tempo) out.push(`${at(pos)}|tempo ${tempo}`);
+      }
+      for (const evs of r.voices.values())
+        for (const ev of evs)
+          for (const n of [...ev.notes, ...ev.graces]) {
+            const tech = kids(n, "notations").flatMap((x) => kids(x, "technical"));
+            const h = tech.flatMap((t) => kids(t, "harmonic"))[0];
+            if (h) out.push(`${at(ev.pos)}|harmonic ${h.firstElementChild?.tagName ?? ""} ${tech.map((t) => text(t, "other-technical")).join("")}`);
+          }
+    });
+  });
+  // Once each (a tab staff repeats its notation staff); a harmonic's kind as its tab labels it.
+  const all = new Set(out);
+  return [...all].filter((x) => !(x.endsWith(" ") && [...all].some((y) => y !== x && y.startsWith(x)))).sort();
 }
 
 const roundTrip = (score: ScoreDoc) => {
@@ -72,14 +103,16 @@ export function featureScore(): string {
       note({ d: 60, t: "quarter" }) +
       `<barline location="right"><bar-style>light-heavy</bar-style><ending number="1" type="stop"/><repeat direction="backward"/></barline>`,
     `<barline location="left"><ending number="2" type="start">2.</ending></barline>` +
-      [0, 2, 3, 5, 7].map((f, i) => note({ p: ["F#4", "G#4", "A4", "B4", "C#5"][i], d: 12, t: "16th", tm: "5:4", nots: i === 0 ? `<tuplet type="start"/>` : i === 4 ? `<tuplet type="stop"/>` : "", tech: sf(1, f) })).join("") +
+      [0, 2, 3, 5, 7].map((f, i) => note({ p: ["F#4", "G#4", "A4", "B4", "C#5"][i], d: 12, t: "16th", tm: "5:4", nots: i === 0 ? `<tuplet type="start"/>` : i === 4 ? `<tuplet type="stop"/>` : "", tech: sf(1, f) + (i === 0 ? `<harmonic><artificial/></harmonic><other-technical>P.H.</other-technical>` : "") })).join("") +
       words("let ring", "", "below") +
       note({ p: "E4", d: 180, t: "half", dots: 1, nots: `<slide type="start" number="1"/>`, tech: sf(2, 3) }) +
       `<barline location="right"><ending number="2" type="discontinue"/></barline>`,
     `<attributes><key><fifths>1</fifths></key><time><beats>3</beats><beat-type>4</beat-type></time></attributes>` +
       `<direction placement="above"><direction-type><segno/></direction-type><sound segno="segno"/></direction>` +
+      `<direction placement="above"><direction-type><octave-shift type="down" size="8"/></direction-type></direction>` +
       note({ p: "F#4", d: 105, t: "quarter", dots: 2, nots: `<slide type="stop" number="1"/>`, tech: sf(2, 5) }) +
       note({ p: "G#4", d: 15, t: "16th", tech: sf(2, 7) + "<tap/>" }) +
+      `<direction placement="above"><direction-type><octave-shift type="stop" size="8"/></direction-type></direction>` +
       note({ p: "C#4", d: 60, t: "quarter", tech: sf(3, 4) }) +
       words("To Coda", `tocoda="coda"`),
     words("P.M.", "", "below") +
@@ -88,8 +121,8 @@ export function featureScore(): string {
       note({ p: "C#4", d: 60, t: "quarter", nots: `<articulations><accent/></articulations>`, tech: sf(3, 4) + `<bend><bend-alter>1</bend-alter><pre-bend/></bend><bend><bend-alter>1</bend-alter><release/></bend>` }) +
       words("D.S. al Coda", `dalsegno="segno"`),
     `<direction placement="above"><direction-type><coda/></direction-type><sound coda="coda"/></direction>` +
-      `<direction placement="above"><direction-type><metronome><beat-unit>quarter</beat-unit><per-minute>120</per-minute></metronome></direction-type><sound tempo="120"/></direction>` +
       note({ p: "F#2", d: 60, t: "quarter", head: "normal", tech: sf(6, 0) }) +
+      `<direction placement="above"><direction-type><metronome><beat-unit>quarter</beat-unit><per-minute>120</per-minute></metronome></direction-type><sound tempo="120"/></direction>` +
       note({ p: "B2", d: 60, t: "quarter", tie: "start", tech: sf(5, 0) }) +
       note({ p: "B2", d: 60, t: "quarter", tie: "stop", nots: `<fermata type="upright"/>`, tech: sf(5, 0) }) +
       `<barline location="right"><bar-style>light-heavy</bar-style></barline>`,
@@ -100,6 +133,9 @@ export function featureScore(): string {
   const pn = bars(7, LENS, 2);
   pn[0] = `<attributes><divisions>${DIV}</divisions><key><fifths>0</fifths></key><time><beats>4</beats><beat-type>4</beat-type></time><staves>2</staves><clef number="1"><sign>G</sign><line>2</line></clef><clef number="2"><sign>F</sign><line>4</line></clef></attributes>` + pn[0];
   pn[1] = note({ p: "C5", d: 240, t: "whole", staff: 1 }) + `<backup><duration>240</duration></backup>` + note({ p: "C3", d: 120, t: "half", staff: 2, v: 5 }) + note({ p: "E3", d: 120, t: "half", staff: 2, v: 5 });
+  // Bar 2 repeats bar 1 on both staves, with its notes filled in for playback as the reader does.
+  pn[2] = `<attributes><measure-style><measure-repeat type="start">1</measure-repeat></measure-style></attributes>` + pn[1];
+  pn[3] = `<attributes><measure-style><measure-repeat type="stop"/></measure-style></attributes>` + pn[3];
   const dr = bars(7, LENS);
   dr[0] = `<attributes><divisions>${DIV}</divisions><key><fifths>0</fifths></key><time><beats>4</beats><beat-type>4</beat-type></time><clef><sign>percussion</sign><line>2</line></clef></attributes>` + dr[0];
   dr[1] = [0, 1, 2, 3].map((i) => note({ p: i % 2 ? "C5" : "F4", d: 60, t: "quarter", drum: i % 2 ? "P4-I39" : "P4-I37" }) + note({ p: "G5", d: 60, t: "quarter", chord: true, head: "x", drum: "P4-I43" })).join("");
@@ -135,6 +171,9 @@ describe("Guitar Pro writer", () => {
     expect(b.notes).toEqual(a.notes);
     expect(b.order).toEqual(a.order);
     expect(b.seconds).toEqual(a.seconds);
+    expect(b.marks).toEqual(a.marks);
+    expect(a.marks.filter((x) => !x.includes("harmonic"))).toEqual(["0|0|0|tempo 90", "0|4|0|ottava down 8", "0|4|96|ottava stop 8", "0|6|48|tempo 120", "2|2|repeat start 1", "2|3|repeat stop "]);
+    expect(a.marks.filter((x) => x.includes("harmonic"))).toEqual(["0|1|96|harmonic natural ", "0|3|0|harmonic artificial P.H."]);
     const song = parseGuitarPro(bytes);
     expect(song.tracks.map((t) => [t.kind, t.name])).toEqual([["stringed", "Guitar"], ["pitched", "Clarinet"], ["pitched", "Piano"], ["pitched", "Piano"], ["percussion", "Drums"]]);
     const gtr = song.tracks[0];
@@ -165,6 +204,11 @@ describe("Guitar Pro writer", () => {
     expect(song.tempoChanges.map((t) => [t.masterBar, t.bpm])).toEqual([[0, 90], [6, 120]]);
     expect(song.tracks[1].lyrics).toEqual([{ masterBar: 1, text: "Hel-lo world" }]);
     expect(gtr.bars[2].voices[0].beats[0].chord).toBe("Em");
+    const gpif = new TextDecoder().decode(unzipSync(bytes)["Content/score.gpif"]);
+    expect(gpif.match(/<SimileMark>\w+<\/SimileMark>/g)).toEqual(["<SimileMark>Simple</SimileMark>", "<SimileMark>Simple</SimileMark>"]);
+    expect(gpif.match(/<Ottavia>8va<\/Ottavia>/g)).toHaveLength(2);
+    expect(find(1, 0)[0].harmonic?.type).toBe("pinch");
+    expect(song.tempoChanges[1].offsetTick).toBe(960);
   });
 
   for (const name of ["guitar", "drums", "melody", "piano"]) {
@@ -202,5 +246,6 @@ describe.skipIf(process.env.SCOREDIT_CORPUS !== "1" || !gpDirs.length)("Guitar P
         expect(extra).toEqual([]);
         expect(b.order).toEqual(a.order);
         expect(b.seconds).toEqual(a.seconds);
+        expect(b.marks).toEqual(a.marks);
       }, 60_000);
 });

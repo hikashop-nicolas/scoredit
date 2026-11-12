@@ -24,6 +24,9 @@ const EXACT_DYNAMICS = new Set(["ppp", "pp", "p", "mp", "mf", "f", "ff", "fff"])
 const ACCENTS: Record<string, number> = { staccato: 1, "strong-accent": 4, accent: 8, tenuto: 16 };
 const SLIDES_OUT: Record<string, number> = { falloff: 4, doit: 8, scoop: 16, plop: 32 };
 const ORNAMENTS: Record<string, string> = { turn: "Turn", "inverted-turn": "InvertedTurn", "inverted-mordent": "UpperMordent", mordent: "LowerMordent" };
+// The tab labels of artificial harmonics, and Guitar Pro's harmonic types.
+const HARMONIC_LABELS: Record<string, string> = { "A.H.": "Artificial", "P.H.": "Pinch", "T.H.": "Tap", "S.H.": "Semi", "Fdbk.": "Feedback" };
+const OTTAVAS: Record<string, string> = { down8: "8va", up8: "8vb", down15: "15ma", up15: "15mb" };
 const TREMOLO: Record<number, string> = { 1: "1/2", 2: "1/4", 3: "1/8" };
 const CLEF: Record<string, string> = { G: "G2", F: "F4", C3: "C3", C4: "C4", percussion: "Neutral" };
 const JUMP_WORDS: [RegExp, string][] = [
@@ -72,7 +75,7 @@ interface GNote {
   hopoOrigin: boolean;
   hopoDest: boolean;
   slide: number;
-  harmonic: "Natural" | "Artificial" | null;
+  harmonic: string | null;
   bend: Bend | null;
   tapped: boolean;
   leftTapped: boolean;
@@ -93,6 +96,7 @@ interface GBeat {
   slurStop: number;
   legato: [boolean, boolean] | null;
   hairpin: string | null;
+  ottava: string | null;
   lyrics: Map<number, { text: string; syllabic: string }>;
 }
 type Voice = GBeat[] | null;
@@ -106,6 +110,9 @@ interface GStaff {
   dynamics: { m: number; tick: number; value: string }[];
   wedges: { m: number; tick: number; type: string }[];
   runs: { m: number; tick: number; kind: "pm" | "ring"; end: { m: number; tick: number } | null }[];
+  ottavas: { m: number; tick: number; kind: string }[];
+  /** Bars marked to repeat the one or two before (Guitar Pro's simile marks). */
+  similes: Map<number, string>;
 }
 interface MeasureState {
   div: number;
@@ -115,6 +122,8 @@ interface MeasureState {
   minor: boolean;
   clefs: Map<number, string>;
   octave: Map<number, number>;
+  /** Measure repeats on each staff: this bar's place in the sign. */
+  repeats: Map<number, string>;
 }
 interface PartIn {
   el: Element;
@@ -251,7 +260,7 @@ export function writeGuitarPro(score: ScoreDoc | Document, opts: GuitarProWriteO
     if (!p.drums && !p.tuning && p.staves > 2) drop("staff beyond the second", p.staves - 2);
     if (p.tuning) for (let s = 1; s <= p.staves; s++) if (s !== p.primary && s !== p.tab) drop("staff beside a fretted one");
     for (const s of list) {
-      const g: GStaff = { part: p, staff: s, bars: [], clefs: [], voiceSlots: new Map(), dynamics: [], wedges: [], runs: [] };
+      const g: GStaff = { part: p, staff: s, bars: [], clefs: [], voiceSlots: new Map(), dynamics: [], wedges: [], runs: [], ottavas: [], similes: new Map() };
       p.gp.push(g);
       staves.push(g);
     }
@@ -265,6 +274,7 @@ export function writeGuitarPro(score: ScoreDoc | Document, opts: GuitarProWriteO
     applyDynamics(g);
     applyWedges(g);
     applyRuns(g);
+    applyOttavas(g);
     applyLegato(g);
   }
   for (const p of parts) if (p.tuning) checkHopos(p);
@@ -327,7 +337,8 @@ function readPart(el: Element, index: number, root: Element, drop: Drop): PartIn
   const clefs = new Map<number, string>();
   const octave = new Map<number, number>();
   let unpitched = false;
-  for (const meas of measures) {
+  const repeating = new Map<number, { bars: number; from: number }>();
+  for (const [mi, meas] of measures.entries()) {
     let started = false;
     let start: { clefs: Map<number, string>; octave: Map<number, number> } | null = null;
     let measDiv: number | null = null;
@@ -370,6 +381,15 @@ function readPart(el: Element, index: number, root: Element, drop: Drop): PartIn
           case "staves":
             p.staves = Math.max(p.staves, Number(a.textContent) || 1);
             break;
+          case "measure-style":
+            for (const mr of kids(a, "measure-repeat")) {
+              const staves = a.hasAttribute("number") ? [n] : Array.from({ length: Math.max(p.staves, 2) }, (_, i) => i + 1);
+              for (const sn of staves) {
+                if (mr.getAttribute("type") === "start") repeating.set(sn, { bars: Number(mr.textContent) === 2 ? 2 : 1, from: mi });
+                else repeating.delete(sn);
+              }
+            }
+            break;
           case "staff-details": {
             const tunings = kids(a, "staff-tuning");
             if (tunings.length && !p.tuning) {
@@ -387,7 +407,8 @@ function readPart(el: Element, index: number, root: Element, drop: Drop): PartIn
         }
       }
     }
-    p.states.push({ div: measDiv ?? div, beats, beatType, fifths, minor, clefs: start?.clefs ?? new Map(clefs), octave: start?.octave ?? new Map(octave) });
+    const repeats = new Map([...repeating].map(([sn, r]) => [sn, r.bars === 1 ? "Simple" : (mi - r.from) % 2 ? "SecondOfDouble" : "FirstOfDouble"]));
+    p.states.push({ div: measDiv ?? div, beats, beatType, fifths, minor, clefs: start?.clefs ?? new Map(clefs), octave: start?.octave ?? new Map(octave), repeats });
   }
   const first = p.states[0]?.clefs;
   const tabClef = first ? [...first].find(([, c]) => c === "TAB")?.[0] : undefined;
@@ -492,6 +513,12 @@ function buildStaff(g: GStaff, master: MasterOut[], drop: Drop): void {
     g.bars.push(slots);
     const r = p.reads[m];
     if (!r || !st) return;
+    // A bar repeat sign: Guitar Pro plays the bars before, so the notes filled in are not written.
+    const simile = st.repeats.get(g.staff);
+    if (simile && m >= (simile === "Simple" ? 1 : 2)) {
+      g.similes.set(m, simile);
+      return;
+    }
     const div = st.div;
     const tk = (d: number) => Math.round((d * TPQ) / div);
     const barLen = m === 0 && mb.shift ? mb.ticks - mb.shift : mb.ticks;
@@ -631,6 +658,7 @@ function buildStaff(g: GStaff, master: MasterOut[], drop: Drop): void {
       const head = kid(el, "notehead");
       if (!p.drums && head) {
         if (text(head) === "x" && p.tuning) n.dead = true;
+        else if (text(head) === "diamond" && p.tuning) n.harmonic = "Natural";
         else if (text(head) !== "normal" && count) drop(`notehead ${text(head)}`);
         if (head.getAttribute("parentheses") === "yes") n.ghost = true;
       }
@@ -658,7 +686,11 @@ function buildStaff(g: GStaff, master: MasterOut[], drop: Drop): void {
                       bends.push({ alter: Number(text(t, "bend-alter")) || 0, pre: !!kid(t, "pre-bend"), release: !!kid(t, "release") });
                       break;
                     case "harmonic":
-                      n.harmonic = kid(t, "artificial") ? "Artificial" : "Natural";
+                      if (!n.harmonic || n.harmonic === "Natural") n.harmonic = kid(t, "artificial") ? "Artificial" : "Natural";
+                      break;
+                    case "other-technical":
+                      if (HARMONIC_LABELS[text(t)]) n.harmonic = HARMONIC_LABELS[text(t)];
+                      else lost(t.tagName);
                       break;
                     case "tap":
                       if (t.getAttribute("hand") === "left") n.leftTapped = true;
@@ -805,7 +837,7 @@ function plain(n: GNote): GNote {
 }
 
 function beat(rhythm: Rhythm, tick: number, dur: number): GBeat {
-  return { rhythm, tick, dur, grace: null, notes: [], dynamic: "MF", chord: null, text: [], brush: null, pick: null, tremolo: null, slurStart: 0, slurStop: 0, legato: null, hairpin: null, lyrics: new Map() };
+  return { rhythm, tick, dur, grace: null, notes: [], dynamic: "MF", chord: null, text: [], brush: null, pick: null, tremolo: null, slurStart: 0, slurStop: 0, legato: null, hairpin: null, ottava: null, lyrics: new Map() };
 }
 
 /** A note's written value, when it matches its length (any length for grace notes). */
@@ -860,7 +892,7 @@ function placeMarks(p: PartIn, master: MasterOut[], drop: Drop): void {
         const name = `${c.root.step}${c.root.alter > 0 ? "#".repeat(c.root.alter) : "b".repeat(-c.root.alter)}${c.suffix}${c.bass ? `/${c.bass.step}${c.bass.alter > 0 ? "#".repeat(c.bass.alter) : "b".repeat(-c.bass.alter)}` : ""}`;
         const b = beatAt(g, m, tk(pos + (Number(text(el, "offset")) || 0)), master);
         if (b && !b.chord) b.chord = name;
-        else drop("chord symbol");
+        else if (!g.similes.has(m)) drop("chord symbol");
         continue;
       }
       if (el.tagName === "sound" && Number(el.getAttribute("tempo")) > 0) {
@@ -924,6 +956,9 @@ function placeMarks(p: PartIn, master: MasterOut[], drop: Drop): void {
               if (run) run.end = { m, tick: at };
             }
             break;
+          case "octave-shift":
+            if (g) g.ottavas.push({ m, tick: at, kind: t.getAttribute("type") === "stop" ? "" : (OTTAVAS[`${t.getAttribute("type")}${t.getAttribute("size") ?? 8}`] ?? "") });
+            break;
           case "words":
           case "rehearsal":
           case "segno":
@@ -943,7 +978,7 @@ function placeMarks(p: PartIn, master: MasterOut[], drop: Drop): void {
           // Text on a tab staff copies its notation staff's.
           const b = g ? beatAt(g, m, at, master) : null;
           if (b) b.text.push(words);
-          else drop("text");
+          else if (!g?.similes.has(m)) drop("text");
         }
       }
     }
@@ -962,7 +997,7 @@ function staffOf(p: PartIn, staff: number): GStaff | null {
 /** The first voice's beat at a time in a bar; a rest is split so a beat starts there. */
 function beatAt(g: GStaff, m: number, tick: number, master: MasterOut[]): GBeat | null {
   const slots = g.bars[m];
-  if (!slots) return null;
+  if (!slots || g.similes.has(m)) return null;
   const mb = master[m];
   const barLen = m === 0 && mb.shift ? mb.ticks - mb.shift : mb.ticks;
   if (!slots[0]) {
@@ -1037,6 +1072,17 @@ function applyWedges(g: GStaff): void {
 }
 
 /** Palm mute and let ring: from the word on, until the line ends or the first rest. */
+/** Ottava lines: every beat from a start to its stop. */
+function applyOttavas(g: GStaff): void {
+  if (!g.ottavas.length) return;
+  g.ottavas.sort(ordered);
+  eachBeat(g, (b, m) => {
+    let kind = "";
+    for (const o of g.ottavas) if (ordered(o, { m, tick: b.tick }) <= 0) kind = o.kind;
+    if (kind) b.ottava = kind;
+  });
+}
+
 function applyRuns(g: GStaff): void {
   if (!g.runs.length) return;
   const voice0: { b: GBeat; m: number }[] = [];
@@ -1243,7 +1289,7 @@ function gpif(doc: Document, parts: PartIn[], master: MasterOut[], tempos: { m: 
           if (b.pick) props.push(`<Property name="PickStroke"><Direction>${b.pick}</Direction></Property>`);
           const lyrics = [...b.lyrics].sort((x, y) => x[0] - y[0]);
           beats.push(
-            `<Beat id="${id}">${b.grace ? `<GraceNotes>${b.grace}</GraceNotes>` : ""}<Dynamic>${b.dynamic}</Dynamic>${b.chord !== null ? `<Chord>${chordIds.get(b.chord)}</Chord>` : ""}<Rhythm ref="${rhythmId(b.rhythm)}" />${b.tremolo ? `<Tremolo>${b.tremolo}</Tremolo>` : ""}${b.hairpin ? `<Hairpin>${b.hairpin}</Hairpin>` : ""}${b.legato ? `<Legato origin="${b.legato[0]}" destination="${b.legato[1]}" />` : ""}${b.text.length ? `<FreeText>${cdata(b.text.join(" "))}</FreeText>` : ""}${nids.length ? `<Notes>${nids.join(" ")}</Notes>` : ""}<Properties>${props.join("")}</Properties>${lyrics.length ? `<Lyrics>${[1, 2, 3, 4, 5].map((k) => `<Line>${cdata(b.lyrics.get(k) ? b.lyrics.get(k)!.text + (/^(begin|middle)$/.test(b.lyrics.get(k)!.syllabic) ? "-" : "") : "")}</Line>`).join("")}</Lyrics>` : ""}</Beat>`,
+            `<Beat id="${id}">${b.grace ? `<GraceNotes>${b.grace}</GraceNotes>` : ""}<Dynamic>${b.dynamic}</Dynamic>${b.chord !== null ? `<Chord>${chordIds.get(b.chord)}</Chord>` : ""}<Rhythm ref="${rhythmId(b.rhythm)}" />${b.tremolo ? `<Tremolo>${b.tremolo}</Tremolo>` : ""}${b.hairpin ? `<Hairpin>${b.hairpin}</Hairpin>` : ""}${b.ottava ? `<Ottavia>${b.ottava}</Ottavia>` : ""}${b.legato ? `<Legato origin="${b.legato[0]}" destination="${b.legato[1]}" />` : ""}${b.text.length ? `<FreeText>${cdata(b.text.join(" "))}</FreeText>` : ""}${nids.length ? `<Notes>${nids.join(" ")}</Notes>` : ""}<Properties>${props.join("")}</Properties>${lyrics.length ? `<Lyrics>${[1, 2, 3, 4, 5].map((k) => `<Line>${cdata(b.lyrics.get(k) ? b.lyrics.get(k)!.text + (/^(begin|middle)$/.test(b.lyrics.get(k)!.syllabic) ? "-" : "") : "")}</Line>`).join("")}</Lyrics>` : ""}</Beat>`,
           );
           return id;
         });
@@ -1252,7 +1298,7 @@ function gpif(doc: Document, parts: PartIn[], master: MasterOut[], tempos: { m: 
         return id;
       });
       const id = bars.length;
-      bars.push(`<Bar id="${id}"><Clef>${g.clefs[m] ?? "G2"}</Clef><Voices>${vids.join(" ")}</Voices></Bar>`);
+      bars.push(`<Bar id="${id}"><Clef>${g.clefs[m] ?? "G2"}</Clef>${g.similes.has(m) ? `<SimileMark>${g.similes.get(m)}</SimileMark>` : ""}<Voices>${vids.join(" ")}</Voices></Bar>`);
       barIds[m].push(id);
     });
   }
