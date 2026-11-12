@@ -695,6 +695,8 @@ function keptItems(voice: Element, len: number): { pos: number; el: Element }[] 
         if (GRACE_TAGS.some((g) => kid(c, g))) break;
         const dt = text(c, "durationType");
         if (dt === "measure") pos += text(c, "duration") ? frac(text(c, "duration")) : len;
+        // A real length other than the drawn one (a two-chord tremolo's chords).
+        else if (c.tagName === "Chord" && text(c, "duration")) pos += frac(text(c, "duration"));
         else pos += (TYPE_Q[dt] ?? 1) / 4 * (2 - 2 ** -(Number(text(c, "dots")) || 0)) * ratios.reduce((a, b) => a * b, 1);
         break;
       }

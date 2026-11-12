@@ -28,6 +28,8 @@ export function directionOf(d: Element): Direction | null {
   const wedge = kid(dt, "wedge");
   if (wedge) return { kind: "wedge", type: (wedge.getAttribute("type") as "crescendo") ?? "stop", number: Number(wedge.getAttribute("number")) || 1 };
   const sound = kid(d, "sound");
+  // Repeat navigation (Fine, D.C., segno, coda): not text edit mode changes.
+  if (sound && ["fine", "dacapo", "dalsegno", "segno", "coda", "tocoda"].some((a) => sound.hasAttribute(a))) return null;
   const tempo = sound?.getAttribute("tempo");
   const metro = kid(dt, "metronome");
   if (tempo || metro) {
