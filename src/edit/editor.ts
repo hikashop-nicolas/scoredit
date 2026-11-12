@@ -1,5 +1,6 @@
 import type { ScoreDoc } from "../model/score";
 import { kid, kids, text } from "../model/xml";
+import { fifthsOf, plainKey, transposePitch } from "./transpose";
 import { directionOf, directionsAt, makeDirection, type Direction, type TextKind } from "./directions";
 import { isAfterGrace, readMeasure, voiceKey, writeMeasure, type Event, type ReadMeasure } from "./measure";
 import { TYPES, addOrnamentXml, setOrnamentAccidental, addTechnicalXml, setTechValue, setBends, type Bend, addSpan, removeSpan, setFingering, setTremolo, spansOf, addSlur, defaultPosition, isTied, keepMarksFor, makeGrace, marksOf, placeInNote, removeSlur, setLyric, setMark, setPosition, slursOf, writtenFor, keyAlter, makeNote, midiOf, pieceOf, readPitch, setPitch, setTie, spellMidi, splitLength, type Pitch, type Written } from "./notes";
@@ -815,6 +816,64 @@ export class ScoreEditor {
     });
   }
 
+  /**
+   * Transposes measures [from, to) of some parts (null: all) by an interval (steps and
+   * semitones, negative down), key signatures and chord symbols with them. A range inside
+   * the score gets the new key at its start and the old one back after it. Drums stay.
+   */
+  transposeRange(parts: number[] | null, from: number, to: number, steps: number, semitones: number): Change {
+    const count = this.score.measureCount;
+    to = Math.min(to, count);
+    if (from >= to || (!steps && !semitones)) return { from, to: from, appended: 0 };
+    const delta = fifthsOf(steps, semitones);
+    const keysIn = (meas: Element) => kids(meas, "attributes").flatMap((a) => kids(a, "key"));
+    return this.transact(() => {
+      for (const p of parts ?? this.score.measures.map((_, i) => i)) {
+        if (this.isDrums(p)) continue;
+        const ms = this.score.measures[p];
+        const startKey = this.info(p, from).fifths;
+        const afterKey = to < count ? this.info(p, to).fifths : null;
+        for (let m = from; m < to; m++) this.touch(p, m);
+        if (afterKey !== null) this.touch(p, to);
+        // Key signatures: those in the range move; the range starts and ends in its own.
+        for (let m = from; m < to; m++) for (const k of keysIn(ms[m])) setFifths(k, plainKey((Number(text(k, "fifths")) || 0) + delta));
+        if (!keysIn(ms[from]).length) addKey(ms[from], plainKey(startKey + delta));
+        if (afterKey !== null && !keysIn(ms[to]).length) addKey(ms[to], afterKey);
+        let fifths = plainKey(startKey + delta);
+        for (let m = from; m < to; m++) {
+          const own = keysIn(ms[m]);
+          if (own.length) fifths = Number(text(own[0], "fifths")) || 0;
+          for (const n of Array.from(ms[m].getElementsByTagName("note"))) {
+            const old = readPitch(n);
+            if (!old || old.unpitched) continue;
+            const next: Pitch = transposePitch(old, steps, semitones, fifths);
+            // On a tab staff: the same string where the fret allows.
+            const fret = old.position ? old.position.fret + semitones : -1;
+            if (old.position && fret >= 0 && fret <= 24) next.position = { string: old.position.string, fret };
+            setPitch(n, next);
+            kids(n, "accidental").forEach((a) => a.remove());
+          }
+          for (const h of Array.from(ms[m].getElementsByTagName("harmony"))) {
+            for (const [box, stepTag, alterTag] of [["root", "root-step", "root-alter"], ["bass", "bass-step", "bass-alter"]]) {
+              const b = kid(h, box);
+              if (!b || !kid(b, stepTag)) continue;
+              const q = transposePitch({ step: text(b, stepTag), alter: Number(text(b, alterTag)) || 0, octave: 4 }, steps, semitones, fifths);
+              kid(b, stepTag)!.textContent = q.step;
+              kid(b, alterTag)?.remove();
+              if (q.alter) {
+                const a = b.ownerDocument.createElementNS(null, alterTag);
+                a.textContent = String(q.alter);
+                kid(b, stepTag)!.after(a);
+              }
+            }
+          }
+        }
+      }
+      this.score.refresh();
+      return { from, to: Math.min(count, to + 1), appended: 0 };
+    });
+  }
+
   /** Moves a note up or down, with the notes tied to it. */
   transpose(note: Element, semitones: number): Change {
     const at = this.locate(note);
@@ -1344,3 +1403,27 @@ function eval_(beats: string): number {
 }
 
 export { keyAlter };
+
+function setFifths(key: Element, fifths: number): void {
+  let f = kid(key, "fifths");
+  if (!f) {
+    f = key.ownerDocument.createElementNS(null, "fifths");
+    key.insertBefore(f, key.firstChild);
+  }
+  f.textContent = String(fifths);
+}
+
+/** A key signature at the start of a measure (in its first attributes, after divisions). */
+function addKey(meas: Element, fifths: number): void {
+  const doc = meas.ownerDocument;
+  const first = kids(meas).find((c) => c.tagName !== "print" && c.tagName !== "barline");
+  let attrs = first?.tagName === "attributes" ? first : null;
+  if (!attrs) {
+    attrs = doc.createElementNS(null, "attributes");
+    meas.insertBefore(attrs, first ?? null);
+  }
+  const key = doc.createElementNS(null, "key");
+  setFifths(key, fifths);
+  const div = kid(attrs, "divisions");
+  attrs.insertBefore(key, div ? div.nextSibling : attrs.firstChild);
+}

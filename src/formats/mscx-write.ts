@@ -473,6 +473,7 @@ function writeMeasure(ctx: Ctx, part: number, k: number, staff: number, m: numbe
     voices.set(vi, [...(voices.get(vi) ?? []), ...evs].sort((a, b) => a.pos - b.pos));
   }
   placeDirections(ctx, part, k, m, kept);
+  placeKey(ctx, part, k, m, kept);
   const accidentals = accidentalsFor(score, part, m, k + 1);
   const top = Math.max(-1, ...kept.keys(), ...voices.keys());
   for (let vi = 0; vi <= top; vi++) {
@@ -611,6 +612,46 @@ function placeDirections(ctx: Ctx, part: number, k: number, m: number, kept: Map
     kept.set(vi, list);
   }
   for (const list of kept.values()) list.sort((a, b) => a.pos - b.pos);
+}
+
+/** Concert fifths of the key a part's measure starts with on staff k (own: in its attributes at the start, else null). */
+function keyOf(ctx: Ctx, part: number, k: number, m: number, own: boolean): number | null {
+  const els = own
+    ? read(ctx.score.measures[part][m]).others.filter((o) => o.el.tagName === "attributes" && o.pos <= 0).flatMap((o) => kids(o.el, "key"))
+    : ctx.score.attributesAt(part, m).filter((e) => e.tagName === "key");
+  const key = els.find((e) => !e.getAttribute("number") || Number(e.getAttribute("number")) === k + 1);
+  if (!key) return null;
+  const { chromatic, diatonic } = ctx.link.transpose[part];
+  return (Number(text(key, "fifths")) || 0) + (chromatic ? 7 * chromatic - 12 * diatonic : 0);
+}
+
+/** The key signature a measure starts with, from the score; the file's own when it says the same. */
+function placeKey(ctx: Ctx, part: number, k: number, m: number, kept: Map<number, Kept[]>): void {
+  let orig: { vi: number; at: number; item: Kept } | null = null;
+  for (const [vi, list] of kept) {
+    const at = list.findIndex((it) => it.el.tagName === "KeySig" && it.pos <= 1e-9);
+    if (at >= 0 && !orig) orig = { vi, at, item: list[at] };
+    if (at >= 0) list.splice(at, 1);
+  }
+  const want = keyOf(ctx, part, k, m, true);
+  if (want === null) return;
+  const before = m > 0 ? (keyOf(ctx, part, k, m, false) ?? 0) : 0;
+  const was = orig ? Number(text(orig.item.el, "concertKey") || text(orig.item.el, "accidental") || text(orig.item.el, "key")) || 0 : null;
+  // Only where the file had one, or the key changes there.
+  if (!orig && before === want) return;
+  let el: Element;
+  if (orig && was === want) el = orig.item.el;
+  else {
+    el = ctx.doc.createElementNS(null, "KeySig");
+    add(el, ctx.v4 ? "concertKey" : "accidental", want);
+  }
+  const vi = orig?.vi ?? 0;
+  const list = kept.get(vi) ?? [];
+  // Where the file had it, else after a clef at the start.
+  let at = orig?.at ?? 0;
+  if (!orig) while (at < list.length && list[at].pos <= 1e-9 && list[at].el.tagName === "Clef") at++;
+  list.splice(at, 0, { pos: 0, el });
+  kept.set(vi, list);
 }
 
 /** A MuseScore element for a direction the file does not have. */

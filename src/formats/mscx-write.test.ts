@@ -102,6 +102,23 @@ describe("Saving back into MuseScore files", () => {
     expect(noteList(loadScore(strToU8(saved)).score)).toEqual(noteList(loaded.score));
   });
 
+  it("writes transposed keys: the whole score, or a range with the old key back after it", () => {
+    const whole = loadScore(strToU8(source));
+    new ScoreEditor(whole.score).transposeRange(null, 0, 3, 1, 2);
+    const a = strFromU8(whole.save!().bytes);
+    const [a1, a2] = measureOffsets(a).staves[0].map((r) => a.slice(...r));
+    expect(a1).toContain("<KeySig><concertKey>2</concertKey></KeySig>");
+    expect(a1).toContain("<pitch>62</pitch><tpc>16</tpc>");
+    expect(a2).not.toContain("<KeySig>");
+    const part = loadScore(strToU8(source));
+    new ScoreEditor(part.score).transposeRange(null, 2, 3, -2, -3);
+    const b = strFromU8(part.save!().bytes);
+    const [b1, , b3] = measureOffsets(b).staves[0].map((r) => b.slice(...r));
+    expect(b1).toBe(source.slice(...measureOffsets(source).staves[0][0]));
+    expect(b3).toContain("<KeySig><concertKey>3</concertKey></KeySig>");
+    expect(noteList(loadScore(strToU8(b)).score)).toEqual(noteList(part.score));
+  });
+
   it("keeps each kind of breath mark and caesura", () => {
     const symbols = ["breathMarkComma", "breathMarkTick", "breathMarkUpbow", "breathMarkSalzedo", "caesura", "caesuraThick", "caesuraShort", "caesuraCurved", "caesuraSingleStroke"];
     const src = file(symbols.map((sym, i) => (i ? "" : TS) + chord("whole", 72, 14) + `<Breath><symbol>${sym}</symbol></Breath>`));

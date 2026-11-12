@@ -1,5 +1,6 @@
 import { ScoreEditor, type Caret, type Change, type Clip } from "../edit/editor";
 import { tempoOf, type TextKind } from "../edit/directions";
+import { INTERVALS, intervalToKey } from "../edit/transpose";
 import { readMeasure, voiceKey, type Event } from "../edit/measure";
 import { ornamentAccidental, techValue, bendsOf, fingeringOf, type Bend, keyAlter, lyricsOf, marksOf, midiOf, readPitch, spellMidi, tremoloOf, type Pitch } from "../edit/notes";
 import type { ScoreDoc } from "../model/score";
@@ -56,6 +57,7 @@ const ICONS = {
   staffText: svg('<polyline points="6 8 6 5 18 5 18 8"/><line x1="12" x2="12" y1="5" y2="19"/><line x1="9" x2="15" y1="19" y2="19"/>'),
   expression: svg('<path d="M9 19 L13 5 L17 5"/><line x1="8" x2="15" y1="11" y2="11"/>'),
   tempoMark: svg('<ellipse cx="7" cy="17" rx="3" ry="2.2" fill="currentColor"/><line x1="10" x2="10" y1="17" y2="5"/><line x1="13" x2="20" y1="10" y2="10"/><line x1="13" x2="20" y1="14" y2="14"/>'),
+  scoreTools: svg('<rect x="4" y="4" width="16" height="16" rx="2"/><line x1="4" x2="20" y1="9" y2="9"/><line x1="4" x2="20" y1="13" y2="13"/><line x1="4" x2="20" y1="17" y2="17"/>'),
   rehearsal: svg('<rect x="5" y="5" width="14" height="14" rx="1.5"/><path d="M9 16 L12 8 L15 16 M10.2 13 H13.8"/>'),
   accent: svg('<polyline points="5 7 19 12 5 17"/>'),
   staccato: svg('<circle cx="12" cy="12" r="3" fill="currentColor"/>'),
@@ -240,7 +242,10 @@ export function createEditing(host: EditingHost): Editing {
   const row4 = document.createElement("div");
   row4.className = "sv-pal-row sv-pal-marks";
   row4.hidden = true;
-  rows.append(row1, row2, row3, row4);
+  const row5 = document.createElement("div");
+  row5.className = "sv-pal-row sv-pal-marks sv-pal-score";
+  row5.hidden = true;
+  rows.append(row1, row2, row3, row4, row5);
   // Lyrics are typed in a field that moves along the notes.
   const lyricBar = document.createElement("div");
   lyricBar.className = "sv-lyric-bar";
@@ -284,17 +289,38 @@ export function createEditing(host: EditingHost): Editing {
     sync();
   });
   const doneBtn = button(ICONS.done, t("done"), () => host.done(), "sv-pal-done");
-  const marksBtn = button(ICONS.marks, t("marks"), () => {
-    row3.hidden = !row3.hidden;
-    row4.hidden = true;
+  // One of the extra rows at a time: marks, dynamics and text, or the score's own tools.
+  const openRow = (row: HTMLElement) => {
+    const show = row.hidden;
+    for (const r of [row3, row4, row5]) r.hidden = true;
+    row.hidden = !show;
     sync();
-  });
-  const textBtn = button(ICONS.textMarks, t("textMarks"), () => {
-    row4.hidden = !row4.hidden;
-    row3.hidden = true;
-    sync();
-  });
-  row2.append(...accBtns, voiceBtn, insertBtn, delBtn, undoBtn, redoBtn, keysBtn, marksBtn, textBtn, doneBtn);
+  };
+  const marksBtn = button(ICONS.marks, t("marks"), () => openRow(row3));
+  const textBtn = button(ICONS.textMarks, t("textMarks"), () => openRow(row4));
+  const scoreBtn = button(ICONS.scoreTools, t("scoreTools"), () => openRow(row5));
+  row2.append(...accBtns, voiceBtn, insertBtn, delBtn, undoBtn, redoBtn, keysBtn, marksBtn, textBtn, scoreBtn, doneBtn);
+  // Transpose: by an interval or to a key, up, down or the nearer way; the selection, else the whole score.
+  const pick = (label: string, options: [string, string][]) => {
+    const box = document.createElement("select");
+    box.className = "sv-pick";
+    box.setAttribute("aria-label", label);
+    for (const [v, text] of options) box.add(new Option(text, v));
+    return box;
+  };
+  const modePick = pick(t("transposeBy"), [["interval", t("byInterval")], ["key", t("toKey")]]);
+  const intervalPick = pick(t("interval"), Object.keys(INTERVALS).map((k) => [k, t(`int_${k}`)]));
+  intervalPick.value = "M2";
+  const keyPick = pick(t("toKey"), Array.from({ length: 15 }, (_, i) => i - 7).map((f) => [String(f), keyName(f)]));
+  keyPick.value = "0";
+  const dirPick = pick(t("direction"), [["up", t("up")], ["down", t("down")], ["closest", t("closest")]]);
+  const transposeBtn = document.createElement("button");
+  transposeBtn.type = "button";
+  transposeBtn.className = "sv-pal-text-btn";
+  transposeBtn.textContent = t("transpose");
+  transposeBtn.addEventListener("click", () => transposeNow());
+  modePick.addEventListener("change", () => sync());
+  row5.append(modePick, intervalPick, keyPick, dirPick, transposeBtn);
   // Dynamics (the usual ones, "more" for the rest), hairpins, then the kinds of text.
   const dynBtn = (v: string) => button(`<span class="sv-dyn">${v}</span>`, v, () => dynamic(v));
   const DYN_MAIN = ["pp", "p", "mp", "mf", "f", "ff"];
@@ -429,6 +455,13 @@ export function createEditing(host: EditingHost): Editing {
     pressed(keysBtn, !strip.hidden);
     pressed(marksBtn, !row3.hidden);
     pressed(textBtn, !row4.hidden);
+    pressed(scoreBtn, !row5.hidden);
+    intervalPick.hidden = modePick.value !== "interval";
+    keyPick.hidden = modePick.value !== "key";
+    const closest = dirPick.querySelector<HTMLOptionElement>('option[value="closest"]')!;
+    closest.hidden = closest.disabled = modePick.value !== "key";
+    if (modePick.value === "interval" && dirPick.value === "closest") dirPick.value = "up";
+    transposeBtn.title = t(sel?.end ? "transposeSelection" : "transposeScore");
     pressed(moreDynBtn, moreDyn);
     const dirs = sel ? editor.directions(sel.at) : [];
     for (const [v, b] of dynBtns) {
@@ -761,6 +794,25 @@ export function createEditing(host: EditingHost): Editing {
       openField(fieldMode, false);
     }
   });
+
+  /** Transposes the selected bars and parts, or the whole score. */
+  function transposeNow(): void {
+    const range = sel?.end ? [sel.at, sel.end].sort((a, b) => a.measure - b.measure) : null;
+    const from = range ? range[0].measure : 0;
+    const to = range ? range[1].measure + 1 : editor.score.measureCount;
+    const shown = host.shown();
+    let parts: number[] | null = null;
+    if (range) {
+      const lo = Math.min(range[0].part, range[1].part);
+      const hi = Math.max(range[0].part, range[1].part);
+      parts = editor.score.parts.map((_, p) => p).filter((p) => p >= lo && p <= hi && (!shown || shown.includes(p)));
+    } else if (shown) parts = shown;
+    const dir = dirPick.value as "up" | "down" | "closest";
+    let [steps, semis] = INTERVALS[intervalPick.value];
+    if (modePick.value === "key") [steps, semis] = intervalToKey(editor.info(parts?.[0] ?? 0, from).fifths, Number(keyPick.value), dir);
+    else if (dir === "down") [steps, semis] = [-steps, -semis];
+    landed(editor.transposeRange(parts, from, to, steps, semis));
+  }
 
   /** A dynamic at the selected note (pressing the one already there takes it off). */
   function dynamic(value: string): void {
@@ -1166,4 +1218,13 @@ export function createEditing(host: EditingHost): Editing {
       sync();
     },
   };
+}
+
+/** A key's name, major and minor: "D major / B minor". */
+function keyName(fifths: number): string {
+  const names = t("noteNames").split(" ");
+  const MAJOR = ["C♭", "G♭", "D♭", "A♭", "E♭", "B♭", "F", "C", "G", "D", "A", "E", "B", "F♯", "C♯"];
+  const MINOR = ["A♭", "E♭", "B♭", "F", "C", "G", "D", "A", "E", "B", "F♯", "C♯", "G♯", "D♯", "A♯"];
+  const local = (n: string) => (names[("CDEFGAB".indexOf(n[0]))] ?? n[0]) + n.slice(1);
+  return t("keyName").replace("{0}", local(MAJOR[fifths + 7])).replace("{1}", local(MINOR[fifths + 7]));
 }

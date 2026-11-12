@@ -341,3 +341,43 @@ describe("Dynamics, hairpins, text and tempo", () => {
     expect(ed.directions(at(0, 0)).filter((d) => d.kind === "text")).toHaveLength(2);
   });
 });
+
+describe("Transposing", () => {
+  const keyOf = (s: ScoreDoc, m: number) => Array.from(s.measures[0][m].getElementsByTagName("fifths")).map((f) => Number(f.textContent));
+
+  it("moves the notes by an interval, spelled by it, and the key with them", () => {
+    const s = score(note("C", 1, "quarter") + note("E", 1, "quarter") + note("F", 1, "quarter", "<accidental>sharp</accidental>").replace("<step>F</step>", "<step>F</step><alter>1</alter>") + note("B", 1, "quarter"), note("G", 4, "whole"));
+    const ed = new ScoreEditor(s);
+    ed.transposeRange(null, 0, 2, 1, 2); // a major 2nd up
+    expect(show(s, 0)).toBe("D4:1 F#4:1 G#4:1 C#5:1");
+    expect(show(s, 1)).toBe("A4:4");
+    expect(keyOf(s, 0)).toEqual([2]);
+    ed.undo();
+    expect(show(s, 0)).toBe("C4:1 E4:1 F#4:1 B4:1");
+    expect(keyOf(s, 0)).toEqual([0]);
+  });
+
+  it("gives a range inside the score its own key, and the old one back after it", () => {
+    const s = score(note("C", 4, "whole"), note("D", 4, "whole"), note("E", 4, "whole"));
+    const ed = new ScoreEditor(s);
+    ed.transposeRange(null, 1, 2, -2, -3); // a minor 3rd down
+    expect(show(s, 1)).toBe("B3:4");
+    expect(keyOf(s, 0)).toEqual([0]);
+    expect(keyOf(s, 1)).toEqual([3]); // A major
+    expect(keyOf(s, 2)).toEqual([0]);
+    expect(show(s, 2)).toBe("E4:4");
+  });
+
+  it("finds the interval to a key, and moves chord symbols", async () => {
+    const { intervalToKey, plainKey } = await import("./transpose");
+    expect(intervalToKey(0, -3, "closest")).toEqual([2, 3]); // C to E flat: a minor 3rd up
+    expect(intervalToKey(0, 3, "closest")).toEqual([-2, -3]); // C to A: a minor 3rd down
+    expect(intervalToKey(0, 3, "up")).toEqual([5, 9]);
+    expect(intervalToKey(7, -5, "closest")).toEqual([1, 0]); // C sharp to D flat: spelled anew
+    expect(plainKey(9)).toBe(-3);
+    const s = score(`<harmony><root><root-step>F</root-step></root><kind>major</kind><bass><bass-step>A</bass-step></bass></harmony>` + note("F", 4, "whole"));
+    new ScoreEditor(s).transposeRange(null, 0, 1, 4, 7); // a fifth up
+    const h = s.measures[0][0].getElementsByTagName("harmony")[0];
+    expect([text(h, "root"), text(h, "bass")].map((x) => x.replace(/\s/g, ""))).toEqual(["C", "E"]);
+  });
+});
