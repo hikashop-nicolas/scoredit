@@ -2,7 +2,7 @@ import WebAudioTinySynth from "../vendor/tinysynth.js";
 import { PLUCKED, Pluck } from "./pluck";
 import { Sampler } from "./sampler";
 import type { SoundDownloads } from "./sounds";
-import { quarterToSec, type MeasureSpan, type NoteEvent, type Timeline } from "./timeline";
+import { quarterToSec, type ControlEvent, type MeasureSpan, type NoteEvent, type Timeline } from "./timeline";
 
 export interface PlayPosition {
   /** Seconds into the piece (in played order). */
@@ -84,10 +84,14 @@ export class Player {
   private speed = 1;
   private sounding: NoteEvent[] = [];
 
+  private pedal = pedalSpans([]);
+
   constructor(
     private timeline: Timeline,
     private opts: PlayerOptions = {},
-  ) {}
+  ) {
+    this.pedal = pedalSpans(timeline.controls);
+  }
 
   get isPlaying(): boolean {
     return this.playing;
@@ -108,6 +112,7 @@ export class Player {
     const was = this.playing;
     this.pause();
     this.timeline = tl;
+    this.pedal = pedalSpans(tl.controls);
     this.offset = Math.min(this.offset, tl.duration);
     if (was) this.play();
   }
@@ -230,9 +235,11 @@ export class Player {
       const on = this.startAt + e.time / this.speed;
       const off = on + Math.max(0.05, e.dur / this.speed - 0.01);
       const program = e.program;
+      // Recorded and plucked notes ring on while the pedal is down (the synth does it itself).
+      const held = this.startAt + heldUntil(this.pedal, e.channel, (off - this.startAt) * this.speed) / this.speed;
       // The recorded instrument once its note is ready; the string model or the synth until then.
-      if (program !== undefined && samplerReady?.has(program) && samplerReady.play(program, e.midi, on, off - on, e.velocity, e.bend)) continue;
-      if (program !== undefined && PLUCKED.has(program)) pluck().play(program, e.midi, on, off - on, e.velocity, e.bend);
+      if (program !== undefined && samplerReady?.has(program) && samplerReady.play(program, e.midi, on, held - on, e.velocity, e.bend)) continue;
+      if (program !== undefined && PLUCKED.has(program)) pluck().play(program, e.midi, on, held - on, e.velocity, e.bend);
       else {
         s.send([0x90 | e.channel, e.midi, e.velocity], on);
         s.send([0x80 | e.channel, e.midi, 0], off);
@@ -271,6 +278,33 @@ export class Player {
   private report(): void {
     this.opts.onPosition?.(positionAt(this.timeline.spans, this.time));
   }
+}
+
+/** Per channel, the [down, up] times of the sustain pedal (CC 64). */
+export function pedalSpans(controls: ControlEvent[]): Map<number, [number, number][]> {
+  const spans = new Map<number, [number, number][]>();
+  const down = new Map<number, number>();
+  for (const c of controls) {
+    if (c.cc !== 64) continue;
+    const at = down.get(c.channel);
+    if (c.value >= 64 && at === undefined) down.set(c.channel, c.time);
+    else if (c.value < 64 && at !== undefined) {
+      if (!spans.has(c.channel)) spans.set(c.channel, []);
+      spans.get(c.channel)!.push([at, c.time]);
+      down.delete(c.channel);
+    }
+  }
+  for (const [ch, at] of down) {
+    if (!spans.has(ch)) spans.set(ch, []);
+    spans.get(ch)!.push([at, Infinity]);
+  }
+  return spans;
+}
+
+/** When a note released at piece time t stops sounding: at the pedal's release if it is down. */
+export function heldUntil(spans: Map<number, [number, number][]>, channel: number, t: number): number {
+  for (const [a, b] of spans.get(channel) ?? []) if (a <= t && t < b) return Number.isFinite(b) ? b : t + 4;
+  return t;
 }
 
 /** Where in the score piece time `t` falls. */
