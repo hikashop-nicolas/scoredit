@@ -2,12 +2,12 @@ import { CLEFS, DRUM_KIT, INSTRUMENTS } from "../model/instruments";
 import { splitLength, spellMidi, writtenFor } from "../edit/notes";
 import { t } from "../ui/i18n";
 
-// Standard MIDI files (type 0 and 1) read as a MusicXML score: notes quantised to a grid of
-// 32nds and triplets, cut at bar lines with ties, chords from notes starting together, at
-// most two voices a staff, keyboards on two staves, channel 10 as a drum kit.
+// Standard MIDI files (type 0 and 1) read as a MusicXML score: each beat quantised to the subdivision
+// that fits it (32nds, triplets, quintuplets, sextuplets), ties at bar lines, chords, up to four
+// voices a staff, keyboards on two staves, channel 10 as a drum kit.
 
-/** Steps per quarter: 32nds (3), 16ths (6), triplet eighths (8) and 16ths (4) all fit. */
-const Q = 24;
+/** Steps per quarter: 32nds (15), triplet (40, 20, 10) and quintuplet (24, 12) values all fit. */
+const Q = 120;
 
 interface RawNote {
   track: number;
@@ -117,10 +117,12 @@ export function parseSmf(bytes: Uint8Array): Smf {
     o += 8 + len;
   }
   if (out.names.size && tracks > 1 && !out.notes.some((n) => n.track === 0)) out.title = out.names.get(0) ?? "";
+  for (const list of [out.tempos, out.times, out.keys]) list.sort((a, b) => a.tick - b.tick);
   return out;
 }
 
-// ---- Quantising: each time to the nearest place a simple value can start, straight or triplet.
+// ---- Quantising. A lone time goes to the nearest place a simple value can start, straight
+// or triplet; the onsets of a beat together pick the subdivision of that beat.
 
 const GRIDS: [step: number, cost: number][] = [
   [Q, 0],
@@ -131,15 +133,80 @@ const GRIDS: [step: number, cost: number][] = [
   [Q / 6, 0.08],
 ];
 
-function snap(steps: number): number {
+function snap(steps: number, grids = GRIDS): number {
   let best = Math.round(steps);
   let bestScore = Infinity;
-  for (const [g, cost] of GRIDS) {
+  for (const [g, cost] of grids) {
     const v = Math.round(steps / g) * g;
     const score = Math.abs(steps - v) / Q + cost;
     if (score < bestScore) [bestScore, best] = [score, v];
   }
   return best;
+}
+
+// Subdivisions of a beat and what each costs, against the squared error (in quarters) it leaves.
+const SUBDIVS: [div: number, cost: number][] = [
+  [1, 0],
+  [2, 0],
+  [4, 0.0003],
+  [3, 0.0006],
+  [8, 0.002],
+  [6, 0.0025],
+  [5, 0.003],
+  [12, 0.005],
+  [10, 0.006],
+];
+
+const STRAIGHT_GRIDS = GRIDS.filter(([g]) => [1, 2, 4, 8].includes(Q / g));
+
+/** Snaps times (in quarters) to steps, beat by beat on the subdivision the onsets fit best. */
+function beatQuantizer(onsets: number[]): { start: (q: number) => number; end: (q: number) => number } {
+  const byBeat = new Map<number, number[]>();
+  for (const q of onsets) {
+    const b = Math.floor(q + 1e-6);
+    const x = q - b;
+    if (x < 0.02 || x > 0.98) continue; // on a beat: fits any subdivision
+    (byBeat.get(b) ?? byBeat.set(b, []).get(b)!).push(x);
+  }
+  const div = new Map<number, number>();
+  for (const [b, xs] of byBeat) {
+    xs.sort((p, q) => p - q);
+    const pts = xs.filter((x, i) => i === 0 || x - xs[i - 1] > 0.015);
+    let best = 8;
+    let bestCost = Infinity;
+    for (const [d, cost] of SUBDIVS) {
+      let c = cost;
+      let prev = -1;
+      let prevX = -1;
+      for (const x of pts) {
+        const k = Math.round(x * d);
+        c += (x - k / d) ** 2;
+        // Two clearly apart onsets on one place: this subdivision is too coarse.
+        if (k === prev && x - prevX > 0.06) c += 0.01;
+        prev = k;
+        prevX = x;
+      }
+      if (c < bestCost) [bestCost, best] = [c, d];
+    }
+    div.set(b, best);
+  }
+  return {
+    start: (q: number) => {
+      const b = Math.floor(q + 1e-6);
+      const d = div.get(b);
+      if (d === undefined) return snap(q * Q);
+      return b * Q + Math.round((q - b) * d) * (Q / d);
+    },
+    // Ends on the finer grid of the same family: a short last note keeps its length.
+    end: (q: number) => {
+      const b = Math.floor(q + 1e-6);
+      const d = div.get(b);
+      if (d === undefined) return snap(q * Q);
+      if (d % 3 && d % 5) return snap(q * Q, STRAIGHT_GRIDS);
+      const f = d === 3 ? 6 : d;
+      return b * Q + Math.round((q - b) * f) * (Q / f);
+    },
+  };
 }
 
 interface Ev {
@@ -148,7 +215,7 @@ interface Ev {
   pitches: number[];
 }
 
-/** Notes as chords (same start, about the same end) in at most two voices: a chord that overlaps the first voice goes to the second, else it cuts the one before short. */
+/** Notes as chords (same start, about the same end) in up to four voices: a chord goes to the first voice free by then, or one whose last chord it barely overlaps (cut short), else to a new voice. */
 function voicesOf(notes: { start: number; end: number; pitch: number }[]): Ev[][] {
   const byStart = new Map<number, { end: number; pitch: number }[]>();
   for (const n of notes) {
@@ -174,15 +241,25 @@ function voicesOf(notes: { start: number; end: number; pitch: number }[]): Ev[][
   }
   // In time order, the higher chord first.
   evs.sort((a, b) => a.start - b.start || b.pitches[b.pitches.length - 1] - a.pitches[a.pitches.length - 1]);
-  const voices: Ev[][] = [[], []];
+  const voices: Ev[][] = [[]];
   const last = (v: Ev[]) => v[v.length - 1];
+  // Held a little past the next start (legato playing), not a line of its own.
+  const barely = (p: Ev, start: number) => p.end - start <= Math.min(Q / 4, (p.end - p.start) / 4);
+  const mid = (e: Ev) => e.pitches.reduce((a, b) => a + b, 0) / e.pitches.length;
+  // Of the voices that can take a chord, the one whose last chord is nearest in pitch.
+  const nearest = (list: Ev[][], ev: Ev) => {
+    let best: Ev[] | undefined;
+    for (const x of list) if (!best || (last(x) && Math.abs(mid(last(x)) - mid(ev)) < Math.abs(mid(last(best)) - mid(ev)))) best = x;
+    return best;
+  };
   for (const ev of evs) {
-    if (!last(voices[0]) || last(voices[0]).end <= ev.start) voices[0].push(ev);
-    else if (!last(voices[1]) || last(voices[1]).end <= ev.start) voices[1].push(ev);
-    else {
-      last(voices[0]).end = ev.start;
-      voices[0].push(ev);
+    let v = voices[0].length ? nearest(voices.filter((x) => last(x).end <= ev.start), ev) ?? nearest(voices.filter((x) => barely(last(x), ev.start)), ev) : voices[0];
+    if (!v) {
+      if (voices.length < 4) voices.push((v = []));
+      else v = voices[0];
     }
+    if (last(v) && last(v).end > ev.start) last(v).end = ev.start;
+    v.push(ev);
   }
   // A chord cut to nothing is dropped.
   return voices.map((v) => legato(v.filter((e) => e.end > e.start))).filter((v) => v.length);
@@ -200,7 +277,9 @@ function legato(v: Ev[]): Ev[] {
   for (let i = 0; i + 1 < v.length; i++) {
     const next = v[i + 1].start;
     const gap = next - v[i].end;
-    if (gap > 0 && (gap <= Q / 8 || (detached && next - v[i].start <= 2 * Q))) v[i].end = next;
+    // A detached note only grows into a value that starts on its own grid (no syncopation made up).
+    const ioi = next - v[i].start;
+    if (gap > 0 && (gap <= Q / 8 || (detached && ioi <= 2 * Q && v[i].start % ioi === 0))) v[i].end = next;
   }
   return v;
 }
@@ -250,7 +329,12 @@ export function midiToMusicXml(bytes: Uint8Array): string {
       const known = drums ? INSTRUMENTS.find((i) => i.drums) : INSTRUMENTS.find((i) => i.program === program && !i.drums);
       const named = smf.names.get(track);
       const name = named && !(channelsOf.get(track)!.size > 1) ? named : known ? t(`inst_${known.key}`) : named || `Track ${track + 1}`;
-      const notes: Note[] = list.map((n) => ({ start: toSteps(n.start), end: Math.max(toSteps(n.start) + Q / 8, toSteps(n.end)), pitch: n.pitch }));
+      const plain = (q: number) => snap(q * Q);
+      const qz = drums ? { start: plain, end: plain } : beatQuantizer(list.map((n) => n.start / smf.ppq));
+      const notes: Note[] = list.map((n) => {
+        const start = qz.start(n.start / smf.ppq);
+        return { start, end: Math.max(start + Q / 8, qz.end(n.end / smf.ppq)), pitch: n.pitch };
+      });
       return { track, channel, drums, program, name, notes, clefs: known?.clefs };
     })
     .sort((a, b) => a.track - b.track || a.channel - b.channel);
@@ -297,11 +381,16 @@ export function midiToMusicXml(bytes: Uint8Array): string {
       });
     else parts.push({ name, program, drums, staves: [staff(notes, clefs)] });
   }
+  // Keys and tempos in steps, once: a long file has hundreds of them.
+  const keySteps = smf.keys.map((k) => ({ step: toSteps(k.tick), fifths: k.fifths }));
   const keyAt = (step: number) => {
     let f = 0;
-    for (const k of smf.keys) if (toSteps(k.tick) <= step) f = k.fifths;
+    for (const k of keySteps) if (k.step <= step) f = k.fifths;
+    else break;
     return f;
   };
+  const tempoSteps = smf.tempos.slice(1).map((tm) => ({ step: toSteps(tm.tick), bpm: tm.bpm }));
+  let tempoAt = 0;
 
   const out: string[] = [];
   out.push(`<?xml version="1.0" encoding="UTF-8"?>\n<score-partwise version="4.0">`);
@@ -342,11 +431,11 @@ export function midiToMusicXml(bytes: Uint8Array): string {
         const bpm = smf.tempos[0].bpm;
         out.push(`<direction placement="above"><direction-type><metronome><beat-unit>quarter</beat-unit><per-minute>${bpm}</per-minute></metronome></direction-type><sound tempo="${bpm}"/></direction>`);
       }
-      if (pi === 0)
-        for (const tm of smf.tempos.slice(1)) {
-          const s = toSteps(tm.tick);
-          if (s >= bar.start && s < bar.start + bar.len) out.push(`<direction><direction-type><words> </words></direction-type><offset>${s - bar.start}</offset><sound tempo="${tm.bpm}"/></direction>`);
-        }
+      if (pi === 0) {
+        if (b === 0) tempoAt = 0;
+        while (tempoAt < tempoSteps.length && tempoSteps[tempoAt].step < bar.start) tempoAt++;
+        for (let i = tempoAt; i < tempoSteps.length && tempoSteps[i].step < bar.start + bar.len; i++) out.push(`<direction><direction-type><words> </words></direction-type><offset>${tempoSteps[i].step - bar.start}</offset><sound tempo="${tempoSteps[i].bpm}"/></direction>`);
+      }
       let first = true;
       p.staves.forEach((staff, k) => {
         const voices = staff.voices.length ? staff.voices : [[]];
@@ -383,24 +472,47 @@ interface Seg {
   tieOut: boolean;
 }
 
-/** One voice of one bar: notes and rests, cut at triplet beats, in notatable pieces. */
+/** How a beat is written: straight, or as a tuplet of `actual` notes in the time of `normal`. */
+interface BeatKind {
+  /** Grid step inside the beat, in steps. */
+  step: number;
+  actual: number;
+  normal: number;
+}
+const STRAIGHT: BeatKind = { step: Q / 8, actual: 1, normal: 1 };
+const KINDS: BeatKind[] = [STRAIGHT, { step: Q / 12, actual: 3, normal: 2 }, { step: Q / 10, actual: 5, normal: 4 }];
+
+/** One voice of one bar: notes and rests, cut at tuplet beats, in notatable pieces. */
 function barVoice(evs: Ev[], bar: { start: number; len: number }, o: { voice: number; staff: number; drums: boolean; part: string; fifths: number; compound: boolean; first: boolean }): string {
   const barEnd = bar.start + bar.len;
   const beatOf = (x: number) => bar.start + Math.floor((x - bar.start) / Q) * Q;
-  // Beats written as triplets: more places on the triplet grid than on the straight one.
-  const triplet = new Set<number>();
+  // Each beat written the way most of its times fit: straight, triplets (or sextuplets), quintuplets.
+  const kinds = new Map<number, BeatKind>();
   for (let b = bar.start; b + Q <= barEnd; b += Q) {
-    const marks = evs.flatMap((e) => [e.start, e.end]).filter((x) => x > b && x < b + Q).map((x) => x - b);
-    const tri = marks.filter((x) => x % 4 === 0 && x % 3 !== 0).length;
-    const straight = marks.filter((x) => x % 3 === 0 && x % 4 !== 0).length;
-    if (tri > straight) triplet.add(b);
+    const marks: number[] = [];
+    for (const e of evs) {
+      if (e.start > b && e.start < b + Q) marks.push(e.start - b);
+      if (e.end > b && e.end < b + Q) marks.push(e.end - b);
+    }
+    if (!marks.length) continue;
+    let best = STRAIGHT;
+    let fit = -1;
+    for (const k of KINDS) {
+      const n = marks.filter((x) => x % k.step === 0).length;
+      if (n > fit) [best, fit] = [k, n];
+    }
+    if (best === STRAIGHT) continue;
+    // Six to a beat when the triplet is mostly sixteenths, not eighths.
+    const starts = new Set(evs.filter((e) => e.start > b && e.start < b + Q).map((e) => e.start)).size;
+    kinds.set(b, best.actual === 3 && starts >= 4 && marks.some((x) => x % (Q / 3) !== 0) ? { step: best.step, actual: 6, normal: 4 } : best);
   }
-  // Every time onto its beat's grid: triplet 16ths, or 32nds.
+  const kindOf = (b: number) => kinds.get(b) ?? STRAIGHT;
+  // Every time onto its beat's grid.
   const fix = (x: number) => {
     if (x <= bar.start) return bar.start;
     if (x >= barEnd) return barEnd;
     const b = beatOf(x);
-    const g = triplet.has(b) ? 4 : 3;
+    const g = kindOf(b).step;
     return Math.min(barEnd, b + Math.round((x - b) / g) * g);
   };
   const segs: Seg[] = [];
@@ -414,14 +526,14 @@ function barVoice(evs: Ev[], bar: { start: number; len: number }, o: { voice: nu
     at = en;
   }
   if (at < barEnd) segs.push({ start: at, len: barEnd - at, pitches: null, tieIn: false, tieOut: false });
-  // Cut at beats written as triplets, and at beats a note crosses off the beat.
+  // Cut at beats written as tuplets, and at beats a note crosses off the beat.
   const cut: Seg[] = [];
   for (const s of segs) {
     let cur = { ...s };
     for (let b = bar.start; b < barEnd; b += Q) {
       const inside = b > cur.start && b < cur.start + cur.len;
       if (!inside) continue;
-      const needs = triplet.has(b) || triplet.has(b - Q) || (cur.pitches && (cur.start - bar.start) % Q !== 0);
+      const needs = kinds.has(b) || kinds.has(b - Q) || (cur.pitches && (cur.start - bar.start) % Q !== 0);
       if (!needs) continue;
       const head = { ...cur, len: b - cur.start, tieOut: !!cur.pitches };
       cut.push(head);
@@ -431,19 +543,20 @@ function barVoice(evs: Ev[], bar: { start: number; len: number }, o: { voice: nu
   }
   const items: Item[] = [];
   for (const s of cut) {
-    const tri = triplet.has(beatOf(s.start)) && s.len < Q;
+    const k = s.len < Q ? kindOf(beatOf(s.start)) : STRAIGHT;
+    const tup = k.actual > 1 ? k : null;
     // A whole-bar rest.
     if (!s.pitches && s.start === bar.start && s.len === bar.len && o.first) {
       items.push({ pitches: null, at: s.start, duration: s.len, type: null, dots: 0, tieIn: false, tieOut: false, tuplet: null });
       continue;
     }
-    // In a triplet beat, each length is written as 3:2 of a plain value.
-    const unit = tri ? (s.len * 3) / 2 : s.len;
-    const pieces = s.pitches ? splitLength(Math.round(unit), Q) : restPieces(s.start - bar.start, Math.round(unit), tri);
+    // In a tuplet beat, each length is written as actual:normal of a plain value.
+    const unit = tup ? (s.len * tup.actual) / tup.normal : s.len;
+    const pieces = s.pitches ? pieceValues(Math.round(unit)) : restPieces(s.start - bar.start, Math.round(unit), !!tup);
     let pos = s.start - beatOf(s.start);
     pieces.forEach((w, i) => {
-      const dur = tri ? (w.divs * 2) / 3 : w.divs;
-      const tuplet = tri ? (pos === 0 ? "start" : pos + dur >= Q ? "stop" : "in") : null;
+      const dur = tup ? (w.divs * tup.normal) / tup.actual : w.divs;
+      const tuplet = tup ? { kind: tup, type: pos === 0 ? "start" : pos + dur >= Q ? "stop" : "in" } : null;
       items.push({ pitches: s.pitches, at: beatOf(s.start) + pos, duration: dur, type: w.type, dots: w.dots, tieIn: (i > 0 || s.tieIn) && !!s.pitches, tieOut: (i < pieces.length - 1 || s.tieOut) && !!s.pitches, tuplet });
       pos += dur;
     });
@@ -469,8 +582,16 @@ interface Item {
   dots: number;
   tieIn: boolean;
   tieOut: boolean;
-  tuplet: string | null;
+  tuplet: { kind: BeatKind; type: string } | null;
   beam?: string;
+}
+
+// Written values for a length, worked out once per length: a long file asks thousands of times.
+const pieceCache = new Map<number, ReturnType<typeof splitLength>>();
+function pieceValues(len: number): ReturnType<typeof splitLength> {
+  let v = pieceCache.get(len);
+  if (!v) pieceCache.set(len, (v = splitLength(len, Q)));
+  return v;
 }
 
 /** Rests: plain values, each starting on a multiple of its length. */
@@ -512,7 +633,7 @@ function noteXml(w: Item, o: { voice: number; staff: number; drums: boolean; par
       parts.push(`<voice>${o.voice}</voice>`);
       if (w.type) parts.push(`<type>${w.type}</type>`);
       for (let d = 0; d < w.dots; d++) parts.push("<dot/>");
-      if (tuplet) parts.push("<time-modification><actual-notes>3</actual-notes><normal-notes>2</normal-notes></time-modification>");
+      if (tuplet) parts.push(`<time-modification><actual-notes>${tuplet.kind.actual}</actual-notes><normal-notes>${tuplet.kind.normal}</normal-notes></time-modification>`);
       if (p !== null && o.drums) {
         const head = DRUM_KIT.find((k) => k.pitch === p)?.head;
         const xml = ({ cross: "x", diamond: "diamond", "circle-x": "circle-x", triangle: "triangle" } as Record<string, string>)[head ?? ""];
@@ -523,7 +644,7 @@ function noteXml(w: Item, o: { voice: number; staff: number; drums: boolean; par
       const nots: string[] = [];
       if (tieIn) nots.push('<tied type="stop"/>');
       if (tieOut) nots.push('<tied type="start"/>');
-      if (i === 0 && (tuplet === "start" || tuplet === "stop")) nots.push(`<tuplet type="${tuplet}"/>`);
+      if (i === 0 && (tuplet?.type === "start" || tuplet?.type === "stop")) nots.push(`<tuplet type="${tuplet.type}"/>`);
       if (nots.length) parts.push(`<notations>${nots.join("")}</notations>`);
       parts.push("</note>");
       return parts.join("");
