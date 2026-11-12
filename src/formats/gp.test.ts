@@ -7,7 +7,8 @@ import { ScoreEditor } from "../edit/editor";
 import { kid, kids, text } from "../model/xml";
 import { buildTimeline } from "../play/timeline";
 import { detectFormat } from "./detect";
-import { readGuitarPro, songToMusicXml } from "./gp";
+import { harmonicAt, harmonicFret, readGuitarPro, songToMusicXml } from "./gp";
+import { writeGuitarPro } from "./gp-write";
 import { loadScore } from "./load";
 
 const file = (): Uint8Array => gpFile();
@@ -225,6 +226,13 @@ describe("Guitar Pro files guitarpro-parser refuses or misreads", () => {
     expect(drums(readGuitarPro(file).doc)).toBe(drums(readGuitarPro(gpFile()).doc) - 1);
   });
 
+  it("keeps a drum note that names no drum on its own key, as MuseScore does", () => {
+    const file = gp7(gpif().replace(/(<Note id="\d+">)<InstrumentArticulation>0<\/InstrumentArticulation><Properties>/, '$1<InstrumentArticulation>-1</InstrumentArticulation><Properties><Property name="Midi"><Number>39</Number></Property>'));
+    const doc = readGuitarPro(file).doc;
+    expect(all(doc, "unpitched").length).toBe(all(readGuitarPro(gpFile()).doc, "unpitched").length);
+    expect(all(doc, "midi-unpitched").map((e) => e.textContent)).toContain("40");
+  });
+
   it("fills a bar marked to repeat the bar before", () => {
     const [a, b] = measures(readGuitarPro(gp7(mini([{ beats: [[0, 0], [0, 1], [0, 2], [0, 3]] }, { beats: [], simile: "Simple" }]))).doc);
     const pitches = (m: Element) => sounding(m).map((n) => `${text(kid(n, "pitch"), "step")}${text(kid(n, "pitch"), "alter")}`);
@@ -286,5 +294,54 @@ describe("Guitar Pro files guitarpro-parser refuses or misreads", () => {
     const d = readGuitarPro(gp7(mini([{ beats: q, repeat: `<Repeat start="true" end="false" count="0"/>` }, { beats: q, endings: "1 2 3", repeat: end }, { beats: q, endings: "4", repeat: end }, { beats: q, endings: "1 2 3 5" }]))).doc;
     const starts = all(d, "ending").filter((e) => e.getAttribute("type") === "start");
     expect(starts.map((e) => e.getAttribute("number"))).toEqual(["1,2,3", "4", "5"]);
+  });
+});
+
+describe("Guitar Pro harmonics", () => {
+  // The fixture's first note as a harmonic of a kind, touched at a fret.
+  const harmonic = (type: string, fret: number) =>
+    gp7(gpif().replace(/(<Note id="0">[\s\S]*?<Properties>)/, `$1<Property name="HarmonicType"><HType>${type}</HType></Property><Property name="HarmonicFret"><HFret>${fret}</HFret></Property>`));
+  const first = (bytes: Uint8Array) => {
+    const t = parseGuitarPro(bytes).tracks[0];
+    if (t.kind !== "stringed") throw new Error("not fretted");
+    return t.bars.flatMap((b) => b.voices[0].beats).flatMap((b) => b.notes).find((n) => n.harmonic)!;
+  };
+
+  it("knows the harmonic each touch fret sounds, and the fret back", () => {
+    expect([12, 7, 19, 5, 24, 4, 9, 3.2, 5.8, 2.7, 2.4, 10, 0].map(harmonicAt)).toEqual([2, 3, 3, 4, 4, 5, 5, 6, 7, 7, 8, null, null]);
+    expect([harmonicFret(false, 19, 3), harmonicFret(true, 19, 19), harmonicFret(true, 19, 7), harmonicFret(true, 28, 4), harmonicFret(false, 23, 0)]).toEqual([7, 19, 7, 4, null]);
+  });
+
+  for (const [type, fret, above] of [["Artificial", 7, 19], ["Pinch", 12, 12], ["Tap", 5, 24]] as const)
+    it(`sounds a ${type.toLowerCase()} harmonic ${above} semitones above its fret, and saves its touch fret`, () => {
+      const bytes = harmonic(type, fret);
+      const n = first(bytes);
+      const score = loadScore(bytes).score;
+      const played = buildTimeline(score, { straight: true }).events.filter((e) => e.string === n.string + 1 && e.fret === n.fret);
+      // The first note on that fret is the harmonic, sounding once.
+      expect(played.filter((e) => e.time === played[0].time).map((e) => e.midi)).toEqual([n.midi + above]);
+      expect(first(writeGuitarPro(score).bytes)).toMatchObject({ midi: n.midi, string: n.string, fret: n.fret, harmonic: { type: type.toLowerCase(), fret } });
+    });
+
+  it("sounds a natural harmonic from its open string", () => {
+    const bytes = harmonic("Natural", 7);
+    const n = first(bytes);
+    const score = loadScore(bytes).score;
+    expect(buildTimeline(score, { straight: true }).events.some((e) => e.midi === n.midi - n.fret + 19)).toBe(true);
+  });
+});
+
+describe("Guitar Pro drum tracks", () => {
+  it("plays a track on the drum channel as drums, whatever its instrument type", () => {
+    const xml = gpif()
+      .replace("<Type>drumKit</Type>", "<Type>acousticPiano</Type>")
+      .replace(/<Type>drum<\/Type>/g, "<Type>pitched</Type>")
+      .replace('<GeneralMidi table="Percussion">', "<MidiConnection><PrimaryChannel>9</PrimaryChannel></MidiConnection><GeneralMidi>")
+      .replace(/(<InstrumentArticulation>(\d)<\/InstrumentArticulation><Properties>)/g, (_, tag: string, i: string) => `${tag}<Property name="Midi"><Number>${[36, 38, 42][Number(i)]}</Number></Property>`);
+    expect(parseGuitarPro(gp7(xml)).tracks[1].kind).toBe("pitched");
+    const doc = readGuitarPro(gp7(xml)).doc;
+    const ours = readGuitarPro(gpFile()).doc;
+    expect(all(doc, "unpitched").length).toBe(all(ours, "unpitched").length);
+    expect(all(doc, "midi-unpitched").map((e) => e.textContent)).toEqual(all(ours, "midi-unpitched").map((e) => e.textContent));
   });
 });

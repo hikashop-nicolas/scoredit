@@ -59,7 +59,17 @@ const spell = (midi: number, fifths: number) => {
 const divs = (ticks: number) => Math.round((ticks * DIV) / TICKS_PER_QUARTER);
 const exactLength = (r: Rhythm) => (NOTE_VALUE_TICKS[r.value] * (r.dots === 2 ? 1.75 : r.dots === 1 ? 1.5 : 1) * (r.tuplet ? r.tuplet.den / r.tuplet.num : 1) * DIV) / TICKS_PER_QUARTER;
 const lengthOf = (r: Rhythm) => Math.max(1, Math.round(exactLength(r)));
-const drumOf = (midi: number) => DRUM_KIT.find((d) => d.pitch === midi) ?? { pitch: midi, line: 3, head: "normal", name: `Drum ${midi}`, up: true };
+// General MIDI drums as MuseScore shows a Guitar Pro file's: key, place on the staff, notehead (x: cross), name.
+const GM_DRUMS =
+  "27 C5 - High Q|28 C5 - Slap|29 C5 - Scratch Push|30 C5 - Scratch Pull|31 C5 x Sticks|32 C5 - Square Click|33 C5 x Metronome Click|34 C5 - Metronome Bell|35 E4 - Acoustic Bass Drum|36 F4 - Bass Drum 1|37 C5 x Side Stick|38 C5 - Acoustic Snare|39 C5 - Hand Clap|40 C5 - Electric Snare|41 G4 - Low Floor Tom|42 G5 x Closed Hi-Hat|43 G4 - High Floor Tom|44 D4 x Pedal Hi-Hat|45 A4 - Low Tom|46 G5 circle-x Open Hi-Hat|47 B4 - Low-Mid Tom|48 D5 - Hi-Mid Tom|49 A5 x Crash Cymbal 1|50 E5 - High Tom|51 F5 x Ride Cymbal 1|52 B5 - Chinese Cymbal|53 F5 diamond Ride Bell|54 D5 x Tambourine|55 A5 x Splash Cymbal|56 F5 - Cowbell|57 B5 x Crash Cymbal 2|58 C5 - Vibraslap|59 D5 x Ride Cymbal 2|60 E4 - Hi Bongo|61 D4 - Low Bongo|62 A4 x Mute Hi Conga|63 B4 x Open Hi Conga|64 G4 x Low Conga|65 E4 x High Timbale|66 D4 x Low Timbale|67 C5 - High Agogo|68 C5 - Low Agogo|69 C5 - Cabasa|70 C5 - Maracas|71 C5 - Short Whistle|72 C5 - Long Whistle|73 C5 - Short Güiro|74 C5 - Long Güiro|75 C5 - Claves|76 C5 - Hi Wood Block|77 C5 - Low Wood Block|78 C5 - Mute Cuica|79 C5 - Open Cuica|80 C5 - Mute Triangle|81 C5 - Open Triangle|82 C5 - Shaker|83 C5 - Sleigh Bell|84 C5 - Mark Tree|85 C5 - Castanets|86 C5 - Mute Surdo|87 C5 - Open Surdo"
+    .split("|")
+    .map((d) => {
+      const [key, at, head, ...name] = d.split(" ");
+      // Lines count half spaces down from the top line, F5.
+      const line = 5 * 7 + 3 - (Number(at[1]) * 7 + "CDEFGAB".indexOf(at[0]));
+      return { pitch: Number(key), line, head: (head === "x" ? "cross" : head === "-" ? "normal" : head) as (typeof DRUM_KIT)[number]["head"], name: name.join(" "), up: line < 6 };
+    });
+const drumOf = (midi: number) => GM_DRUMS.find((d) => d.pitch === midi) ?? DRUM_KIT.find((d) => d.pitch === midi) ?? { pitch: midi, line: 3, head: "normal", name: `Drum ${midi}`, up: true };
 
 /** A Guitar Pro file as MusicXML. */
 export function readGuitarPro(bytes: Uint8Array, opts: GuitarProOptions = {}): { doc: Document; fretted: boolean; tab: boolean } {
@@ -68,33 +78,178 @@ export function readGuitarPro(bytes: Uint8Array, opts: GuitarProOptions = {}): {
 
 /** guitarpro-parser's song, after mending what it refuses in files Guitar Pro itself opens. */
 export function parseSong(bytes: Uint8Array): Song {
-  const magic = String.fromCharCode(...bytes.subarray(0, 4));
-  // GP6 and GP7 keep the score in score.gpif.
-  let gpif: string | null = null;
-  try {
-    if (magic === "BCFZ" || magic === "BCFS") gpif = bcfsEntry(magic === "BCFZ" ? bcfz(bytes) : bytes.subarray(4), "score.gpif");
-    else if (magic === "PK\x03\x04") gpif = strFromU8(unzipSync(bytes, { filter: (f) => f.name === "Content/score.gpif" })["Content/score.gpif"] ?? new Uint8Array()) || null;
-  } catch {
-    gpif = null;
-  }
+  const gpif = gpifOf(bytes);
   let song: Song;
   try {
     song = parseGuitarPro(bytes);
   } catch (e) {
     // GP3 to GP5: zero padding after the last bar.
     const pad = /(\d+) bytes follow the last bar/.exec(e instanceof Error ? e.message : "");
-    if (pad && bytes.subarray(bytes.length - Number(pad[1])).every((b) => b === 0)) return parseGuitarPro(bytes.subarray(0, bytes.length - Number(pad[1])));
-    if (!gpif) throw e;
+    if (pad && bytes.subarray(bytes.length - Number(pad[1])).every((b) => b === 0)) song = parseGuitarPro(bytes.subarray(0, bytes.length - Number(pad[1])));
+    else if (!gpif) throw e;
     // GP6 and GP7: the mended score.gpif, read from a plain zip.
-    song = parseGuitarPro(zipSync({ "Content/score.gpif": strToU8(mendGpif(gpif)) }));
+    else song = parseGuitarPro(zipSync({ "Content/score.gpif": strToU8(mendGpif(gpif)) }));
   }
   if (gpif) readExtras(song, gpif);
+  else {
+    legacyHarmonics(song, /v5\./.test(strFromU8(bytes.subarray(1, 31))));
+    legacyDrumKeys(song, bytes);
+  }
   return song;
+}
+
+/** A GP3 to GP5 file read by guitarpro-parser, past zero padding after the last bar. */
+function parseLegacy(bytes: Uint8Array): Song {
+  try {
+    return parseGuitarPro(bytes);
+  } catch (e) {
+    const pad = /(\d+) bytes follow the last bar/.exec(e instanceof Error ? e.message : "");
+    if (pad && bytes.subarray(bytes.length - Number(pad[1])).every((b) => b === 0)) return parseGuitarPro(bytes.subarray(0, bytes.length - Number(pad[1])));
+    throw e;
+  }
+}
+
+/**
+ * GP3 to GP5 drum notes on the keys the file gives (guitarpro-parser moves some to other General
+ * MIDI keys): the file read again with its drum tracks marked fretted, where the fret is the key.
+ */
+function legacyDrumKeys(song: Song, bytes: Uint8Array): void {
+  const drums = song.tracks.filter((t) => t.kind === "percussion");
+  if (!drums.length) return;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const i32 = (at: number) => (at + 4 <= bytes.length ? view.getInt32(at, true) : -1);
+  const latin1 = (from: number, n: number) => String.fromCharCode(...bytes.subarray(from, from + n));
+  // A track header: flags, name (byte-size string in 40 bytes), strings, 7 tunings, port, channel...
+  const header = (o: number, name: string) => {
+    const len = bytes[o + 1];
+    const strings = i32(o + 42);
+    if (len > 40 || strings < 1 || strings > 7) return false;
+    for (let s = 0; s < strings; s++) if (i32(o + 46 + 4 * s) < 0 || i32(o + 46 + 4 * s) > 127) return false;
+    const channel = i32(o + 78);
+    if (channel < 1 || channel > 64 || i32(o + 86) < 0 || i32(o + 86) > 100 || i32(o + 90) < 0 || i32(o + 90) > 100) return false;
+    return !/^[\x20-\x7e]*$/.test(name) || latin1(o + 2, len) === name;
+  };
+  const patched = bytes.slice();
+  let at = 0;
+  for (const t of song.tracks) {
+    while (at < bytes.length - 94 && !header(at, t.name)) at++;
+    if (at >= bytes.length - 94) return;
+    if (t.kind === "percussion") {
+      patched[at] &= ~1;
+      const channel = i32(at + 78);
+      if ((channel - 1) % 16 === 9) new DataView(patched.buffer).setInt32(at + 78, channel - 1, true);
+    }
+    at += 94;
+  }
+  let fretted: Song;
+  try {
+    fretted = parseLegacy(patched);
+  } catch {
+    return;
+  }
+  song.tracks.forEach((t, ti) => {
+    const f = fretted.tracks[ti];
+    if (t.kind !== "percussion" || f?.kind !== "stringed") return;
+    const keys: [PercussionNote, number][] = [];
+    for (let b = 0; b < t.bars.length; b++)
+      for (let v = 0; v < t.bars[b].voices.length; v++) {
+        const ours = t.bars[b].voices[v].beats;
+        const theirs = f.bars[b]?.voices[v]?.beats;
+        if (!theirs || theirs.length !== ours.length) return;
+        for (let i = 0; i < ours.length; i++) {
+          if (ours[i].notes.length !== theirs[i].notes.length) return;
+          ours[i].notes.forEach((n, k) => keys.push([n, theirs[i].notes[k].fret]));
+        }
+      }
+    for (const [n, key] of keys) if (key >= 0 && key <= 127) n.midi = key;
+  });
+}
+
+// Harmonic k sounds these semitones above its string; a fret touching the string at j/k of its length gives it.
+const HARMONIC_SEMIS = [0, 0, 12, 19, 24, 28, 31, 34, 36];
+// The touch fret Guitar Pro writes for harmonic k, counted from the fretted note.
+const HARMONIC_FRETS = [0, 0, 12, 7, 5, 4, 3.2, 2.7, 2.4];
+
+/** The harmonic a fret sounds (2 to 8), null when it touches no node. */
+export function harmonicAt(fret: number): number | null {
+  const x = 1 - 2 ** (-fret / 12);
+  for (let k = 2; k <= 8; k++) if (Math.round(x * k) >= 1 && Math.abs(x - Math.round(x * k) / k) < 0.008) return k;
+  return null;
+}
+
+/** Where a fretted note sounds: harmonics at their harmonic's pitch, from the touch fret as GP6 and GP7 store it. */
+export function soundingMidi(n: FrettedNote): number {
+  const h = n.harmonic;
+  if (!h) return n.midi;
+  const k = harmonicAt(h.fret);
+  if (!k) return n.midi;
+  // A natural harmonic counts from the open string; the others from the fretted note.
+  return (h.type === "natural" ? n.midi - n.fret : n.midi) + HARMONIC_SEMIS[k];
+}
+
+/** GP3 to GP5 harmonics as GP7 stores them: artificial ones a distance in semitones, a GP5 tap its fret. */
+function legacyHarmonics(song: Song, gp5: boolean): void {
+  for (const t of song.tracks) {
+    if (t.kind !== "stringed") continue;
+    for (const b of t.bars)
+      for (const v of b.voices)
+        for (const beat of v.beats)
+          for (const n of beat.notes) {
+            const h = n.harmonic;
+            if (!h || h.type === "natural") continue;
+            let fret = 12;
+            if (h.type === "artificial") {
+              const k = HARMONIC_SEMIS.reduce((best, s, i) => (i >= 2 && Math.abs(s - h.fret) < Math.abs(HARMONIC_SEMIS[best] - h.fret) ? i : best), 2);
+              fret = HARMONIC_FRETS[k];
+            } else if (h.type === "tap" && gp5 && h.fret > n.fret) fret = h.fret - n.fret;
+            n.harmonic = { ...h, fret };
+          }
+  }
+}
+
+/** The touch fret Guitar Pro stores for a harmonic sounding `semis` above its open string (natural) or note. */
+export function harmonicFret(natural: boolean, semis: number, fret: number): number | null {
+  const k = HARMONIC_SEMIS.indexOf(semis);
+  if (k < 2) return null;
+  if (!natural) return HARMONIC_FRETS[k];
+  // The node of harmonic k nearest the fret played.
+  let best: number | null = null;
+  for (let j = 1; j < k; j++) {
+    const f = -12 * Math.log2(1 - j / k);
+    if (gcdOf(j, k) === 1 && (best === null || Math.abs(f - fret) < Math.abs(best - fret))) best = f;
+  }
+  if (best === null) return null;
+  return Math.abs(best - Math.round(best)) < 0.15 ? Math.round(best) : Math.round(best * 10) / 10;
+}
+const gcdOf = (a: number, b: number): number => (b ? gcdOf(b, a % b) : a);
+
+/** A GP6 or GP7 file's score.gpif, null for other files. */
+export function gpifOf(bytes: Uint8Array): string | null {
+  const magic = String.fromCharCode(...bytes.subarray(0, 4));
+  try {
+    if (magic === "BCFZ" || magic === "BCFS") return bcfsEntry(magic === "BCFZ" ? bcfz(bytes) : bytes.subarray(4), "score.gpif");
+    if (magic === "PK\x03\x04") return strFromU8(unzipSync(bytes, { filter: (f) => f.name === "Content/score.gpif" })["Content/score.gpif"] ?? new Uint8Array()) || null;
+  } catch {
+    // Not a container this reads.
+  }
+  return null;
 }
 
 // What guitarpro-parser leaves out of GP6 and GP7 files, read from score.gpif: ottava lines
 // on beats, and bars marked to repeat the one or two before (simile marks).
 const OTTAVAS = new WeakMap<object, string>();
+// Pitched tracks of a transposing instrument: sounding minus written, in semitones.
+const TRANSPOSE = new WeakMap<object, number>();
+// GP6 percussion kits other than the drum kit: General MIDI keys by element, then variation.
+const GP6_KITS: Record<string, number[][]> = {
+  cngKit: [[64], [63, 63, 62]],
+  bngKit: [[61], [60]],
+  tmblKit: [[66], [65]],
+  agogoKit: [[67], [68]],
+  whstlKit: [[71], [72]],
+  cuicaKit: [[78], [79]],
+  wdblckKit: [[76], [77]],
+};
 const SIMILES = new WeakMap<object, string>();
 
 function readExtras(song: Song, gpif: string): void {
@@ -103,6 +258,18 @@ function readExtras(song: Song, gpif: string): void {
   const barEls = byId("Bar");
   const voiceEls = byId("Voice");
   const beatEls = byId("Beat");
+  const noteEls = byId("Note");
+  // Each staff's track (a GP6 grand staff track has two staves): its instrument, whether it plays
+  // drums by its MIDI channel or table (guitarpro-parser goes by the instrument type), its transposition.
+  const staves = [...gpif.matchAll(/<Track id="\d+">([\s\S]*?)<\/Track>/g)].flatMap((m) => {
+    const ref = /<Instrument ref="([^"]*)"/.exec(m[1])?.[1] ?? "";
+    const count = (m[1].match(/<Staff>/g) ?? []).length || (ref.endsWith("-gs") ? 2 : 1);
+    const drums = !/name="Tuning"/.test(m[1]) && (/<GeneralMidi table="Percussion"/.test(m[1]) || /<PrimaryChannel>\s*9\s*</.test(m[1]));
+    const chromatic = Number(/<Transpose>\s*<Chromatic>\s*(-?\d+)/.exec(m[1])?.[1] ?? 0);
+    return Array.from({ length: count }, () => ({ ref, drums, chromatic }));
+  });
+  const refs = staves.map((s) => s.ref);
+  const turned = song.tracks.map((t, i) => t.kind !== "percussion" && !!staves[i]?.drums && staves.length === song.tracks.length);
   const lists = [...gpif.matchAll(/<MasterBar>[\s\S]*?<Bars>([^<]*)<\/Bars>/g)].map((m) => m[1].trim().split(/\s+/));
   type AnyBar = { voices: { beats: object[] }[] };
   lists.forEach((barIds, i) =>
@@ -118,6 +285,21 @@ function readExtras(song: Song, gpif: string): void {
         beats.forEach((bid, b) => {
           const ott = /<Ottavia>\s*(\w+)\s*<\/Ottavia>/.exec(beatEls.get(bid) ?? "");
           if (ott) OTTAVAS.set(ours[b], ott[1]);
+          if (song.tracks[t].kind !== "percussion" && !turned[t]) return;
+          // GP6 kits and notes on no drum of a GP7 kit: the note's own key.
+          const nids = ids(beatEls.get(bid), "Notes");
+          const notes = (ours[b] as AnyBeat).notes;
+          if (nids.length !== notes.length) return;
+          nids.forEach((nid, k) => {
+            const body = noteEls.get(nid) ?? "";
+            const art = /<InstrumentArticulation>\s*(-?\d+)/.exec(body)?.[1];
+            const key = /name="Midi">\s*<Number>\s*(\d+)/.exec(body)?.[1];
+            const element = Number(/<Element>\s*(\d+)/.exec(body)?.[1] ?? -1);
+            const variation = Number(/<Variation>\s*(\d+)/.exec(body)?.[1] ?? 0);
+            if (art !== undefined && Number(art) >= 0 && !turned[t]) return;
+            if (key !== undefined) notes[k].midi = Number(key);
+            else if (GP6_KITS[refs[t]]?.[element]) notes[k].midi = GP6_KITS[refs[t]][element][Math.min(variation, GP6_KITS[refs[t]][element].length - 1)];
+          });
         });
       });
       const mark = /<SimileMark>\s*(\w+)\s*<\/SimileMark>/.exec(body ?? "")?.[1];
@@ -128,6 +310,12 @@ function readExtras(song: Song, gpif: string): void {
       SIMILES.set(bar, mark!);
     }),
   );
+  song.tracks.forEach((t, i) => {
+    if (turned[i]) (t as { kind: string }).kind = "percussion";
+    // A transposing instrument (its notes keep their sounding pitch).
+    const c = staves.length === song.tracks.length ? staves[i].chromatic : 0;
+    if (t.kind === "pitched" && c) TRANSPOSE.set(t, c);
+  });
 }
 
 /** A BCFZ container unpacked to its BCFS file system, reading past a stream cut short as zeros. */
@@ -192,8 +380,13 @@ function mendGpif(xml: string): string {
   xml = xml.replace(/\0+$/, "");
   // A Guitar Pro 6 grand staff track ("...-gs" instrument) has two staves but no <Staves>.
   if (!xml.includes("<Staves>")) xml = xml.replace(/(<Instrument ref="[^"]*-gs"\s*\/>)/g, "$1<Staves><Staff><Properties></Properties></Staff><Staff><Properties></Properties></Staff></Staves>");
+  // A note on no drum of the kit: on the first when it has a key of its own (set back after reading), else left out.
   const drop = new Set<string>();
-  for (const m of xml.matchAll(/<Note id="(\d+)">\s*<InstrumentArticulation>\s*-\d+\s*</g)) drop.add(m[1]);
+  xml = xml.replace(/<Note id="(\d+)">(\s*<InstrumentArticulation>)\s*-\d+\s*(<[\s\S]*?<\/Note>)/g, (all, id: string, open: string, rest: string) => {
+    if (/name="Midi">\s*<Number>/.test(rest)) return `<Note id="${id}">${open}0${rest}`;
+    drop.add(id);
+    return all;
+  });
   if (drop.size)
     xml = xml.replace(/<Notes>([^<]*)<\/Notes>/g, (_, ids: string) => {
       const kept = ids.trim().split(/\s+/).filter((id) => id && !drop.has(id));
@@ -340,11 +533,19 @@ export function songToMusicXml(song: Song, opts: GuitarProOptions = {}): { doc: 
     const part = el(root, "part", null, { id });
     const many = p.staves.length > 1;
     const state = p.staves.map(() => ({ dynamic: null as Dynamic | null, pm: false, ring: false, ottava: "" }));
+    // A transposing instrument: written pitch and key, sounding `tr` semitones away.
+    const tr = TRANSPOSE.get(p.track) ?? 0;
+    const writtenKey = (f: number) => {
+      let w = f - 7 * tr;
+      while (w > 7) w -= 12;
+      while (w < -7) w += 12;
+      return w;
+    };
     bars.forEach((mb, m) => {
       const pickup = m === 0 && mb.anacrusis;
       const meas = el(part, "measure", null, pickup ? { number: 0, implicit: "yes" } : { number: bars[0]?.anacrusis ? m : m + 1 });
       const len = divs(mb.durationTicks - (m === 0 ? shift : 0));
-      const fifths = mb.keySignature.accidentals;
+      const fifths = writtenKey(mb.keySignature.accidentals);
       const prev = bars[m - 1];
 
       // Left barline: a repeat's start, a volta's start.
@@ -393,6 +594,12 @@ export function songToMusicXml(song: Song, opts: GuitarProOptions = {}): { doc: 
             });
             if (s.track.capo) el(sd, "capo", s.track.capo);
           });
+          if (tr) {
+            const t = el(attrs, "transpose");
+            const steps = [0, 1, 1, 2, 2, 3, 3, 4, 5, 5, 6, 6];
+            el(t, "diatonic", Math.sign(tr) * (steps[Math.abs(tr) % 12] + 7 * Math.floor(Math.abs(tr) / 12)));
+            el(t, "chromatic", tr);
+          }
         }
       }
 
@@ -621,7 +828,8 @@ export function songToMusicXml(song: Song, opts: GuitarProOptions = {}): { doc: 
           el(un, "display-step", "CDEFGAB"[((at % 7) + 7) % 7]);
           el(un, "display-octave", Math.floor(at / 7));
         } else {
-          const sp = spell(n.midi, fifths);
+          // A harmonic is written where it sounds; the tab keeps the fret played.
+          const sp = spell(s.track.kind === "stringed" ? soundingMidi(n as FrettedNote) : n.midi - tr, fifths);
           const pitch = el(note, "pitch");
           el(pitch, "step", sp.step);
           if (sp.alter) el(pitch, "alter", sp.alter);

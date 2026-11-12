@@ -103,7 +103,8 @@ export function featureScore(): string {
       note({ d: 60, t: "quarter" }) +
       `<barline location="right"><bar-style>light-heavy</bar-style><ending number="1" type="stop"/><repeat direction="backward"/></barline>`,
     `<barline location="left"><ending number="2" type="start">2.</ending></barline>` +
-      [0, 2, 3, 5, 7].map((f, i) => note({ p: ["F#4", "G#4", "A4", "B4", "C#5"][i], d: 12, t: "16th", tm: "5:4", nots: i === 0 ? `<tuplet type="start"/>` : i === 4 ? `<tuplet type="stop"/>` : "", tech: sf(1, f) + (i === 0 ? `<harmonic><artificial/></harmonic><other-technical>P.H.</other-technical>` : "") })).join("") +
+      // The pinch harmonic sounds an octave above its fret.
+      [0, 2, 3, 5, 7].map((f, i) => note({ p: ["F#5", "G#4", "A4", "B4", "C#5"][i], d: 12, t: "16th", tm: "5:4", nots: i === 0 ? `<tuplet type="start"/>` : i === 4 ? `<tuplet type="stop"/>` : "", tech: sf(1, f) + (i === 0 ? `<harmonic><artificial/></harmonic><other-technical>P.H.</other-technical>` : "") })).join("") +
       words("let ring", "", "below") +
       note({ p: "E4", d: 180, t: "half", dots: 1, nots: `<slide type="start" number="1"/>`, tech: sf(2, 3) }) +
       `<barline location="right"><ending number="2" type="discontinue"/></barline>`,
@@ -165,7 +166,7 @@ describe("Guitar Pro writer", () => {
   it("round trips a score of guitar effects, transposition, staves and navigation", () => {
     const score = new ScoreDoc(featureScore());
     const { back, bytes, dropped } = roundTrip(score);
-    expect(dropped).toEqual({ "transposition (written at concert pitch)": 1 });
+    expect(dropped).toEqual({});
     const a = content(score);
     const b = content(back);
     expect(b.notes).toEqual(a.notes);
@@ -207,7 +208,14 @@ describe("Guitar Pro writer", () => {
     const gpif = new TextDecoder().decode(unzipSync(bytes)["Content/score.gpif"]);
     expect(gpif.match(/<SimileMark>\w+<\/SimileMark>/g)).toEqual(["<SimileMark>Simple</SimileMark>", "<SimileMark>Simple</SimileMark>"]);
     expect(gpif.match(/<Ottavia>8va<\/Ottavia>/g)).toHaveLength(2);
-    expect(find(1, 0)[0].harmonic?.type).toBe("pinch");
+    expect(find(1, 0)[0].harmonic).toEqual({ type: "pinch", fret: 12 });
+    expect(gpif).toContain("<MasterTrack><Anacrusis /><Tracks>");
+    // The clarinet stays a B-flat instrument: GP7's track transposition, notes at written pitch.
+    expect(gpif.match(/<Transpose><Chromatic>-?\d+<\/Chromatic><Octave>-?\d+<\/Octave><\/Transpose>/g)?.[1]).toBe("<Transpose><Chromatic>-2</Chromatic><Octave>0</Octave></Transpose>");
+    const cl = back.measures[1];
+    expect(text(cl[0].getElementsByTagName("transpose")[0], "chromatic")).toBe("-2");
+    expect(text(cl[0].getElementsByTagName("key")[0], "fifths")).toBe("2");
+    expect(kids(cl[1], "note").map((n) => text(kid(n, "pitch"), "step"))).toEqual(["D", "E", "F"]);
     expect(song.tempoChanges[1].offsetTick).toBe(960);
   });
 
