@@ -626,6 +626,7 @@ function writeMeasure(ctx: Ctx, part: number, k: number, staff: number, m: numbe
   // Tab and drum staves keep their clefs as the file has them.
   if (staffGroup(ctx, staff) === "pitched") placeClefs(ctx, part, k, m, kept);
   placeKey(ctx, part, k, m, kept);
+  placeTime(ctx, part, m, kept);
   const accidentals = accidentalsFor(score, part, m, k + 1);
   const top = Math.max(-1, ...kept.keys(), ...voices.keys());
   for (let vi = 0; vi <= top; vi++) {
@@ -855,6 +856,35 @@ function placeKey(ctx: Ctx, part: number, k: number, m: number, kept: Map<number
   // Where the file had it, else after a clef at the start.
   let at = orig?.at ?? 0;
   if (!orig) while (at < list.length && list[at].pos <= 1e-9 && list[at].el.tagName === "Clef") at++;
+  list.splice(at, 0, { pos: 0, el });
+  kept.set(vi, list);
+}
+
+/** The time signature a measure starts with, from the score; the file's own when it says the same. */
+function placeTime(ctx: Ctx, part: number, m: number, kept: Map<number, Kept[]>): void {
+  let orig: { vi: number; at: number; item: Kept } | null = null;
+  for (const [vi, list] of kept) {
+    const at = list.findIndex((it) => it.el.tagName === "TimeSig" && it.pos <= 1e-9);
+    if (at >= 0 && !orig) orig = { vi, at, item: list[at] };
+    if (at >= 0) list.splice(at, 1);
+  }
+  const time = read(ctx.score.measures[part][m])
+    .others.filter((o) => o.el.tagName === "attributes" && o.pos <= 0)
+    .flatMap((o) => kids(o.el, "time"))[0];
+  if (!time) return;
+  const [n, d] = [text(time, "beats"), text(time, "beat-type")];
+  let el: Element;
+  if (orig && text(orig.item.el, "sigN") === n && text(orig.item.el, "sigD") === d) el = orig.item.el;
+  else {
+    el = ctx.doc.createElementNS(null, "TimeSig");
+    add(el, "sigN", n);
+    add(el, "sigD", d);
+  }
+  const vi = orig?.vi ?? 0;
+  const list = kept.get(vi) ?? [];
+  // Where the file had it, else after the clef and key at the start.
+  let at = orig?.at ?? 0;
+  if (!orig) while (at < list.length && list[at].pos <= 1e-9 && (list[at].el.tagName === "Clef" || list[at].el.tagName === "KeySig")) at++;
   list.splice(at, 0, { pos: 0, el });
   kept.set(vi, list);
 }

@@ -2,7 +2,7 @@ import type { ScoreDoc } from "../model/score";
 import { kid, kids, text } from "../model/xml";
 import { fifthsOf, plainKey, transposePitch } from "./transpose";
 import { directionOf, directionsAt, makeDirection, type Direction, type TextKind } from "./directions";
-import { isAfterGrace, readMeasure, voiceKey, writeMeasure, type Event, type ReadMeasure } from "./measure";
+import { isAfterGrace, readMeasure, voiceKey, writeMeasure, type Event, type Placed, type ReadMeasure } from "./measure";
 import { TYPES, addOrnamentXml, setOrnamentAccidental, addTechnicalXml, setTechValue, setBends, type Bend, addSpan, removeSpan, setFingering, setTremolo, spansOf, addSlur, defaultPosition, isTied, keepMarksFor, makeGrace, marksOf, placeInNote, removeSlur, setLyric, setMark, setPosition, slursOf, writtenFor, keyAlter, makeNote, midiOf, pieceOf, readPitch, setPitch, setTie, spellMidi, splitLength, type Pitch, type Written } from "./notes";
 
 /** Where the next note goes: a beat in one voice of one staff of a part. */
@@ -1160,6 +1160,155 @@ export class ScoreEditor {
     });
   }
 
+  /**
+   * A time signature from a measure on: the music up to the next time signature (or the end)
+   * flows into bars of the new length, as in MuseScore. Notes cut by a new bar line are tied;
+   * the last bar is filled with rests. Refused (nothing changes) when a repeat, volta or
+   * section start would fall inside a bar, or a tuplet would be cut.
+   */
+  setTime(measure: number, beats: number, beatType: number): { change: Change; refused?: { measure: number; reason: "repeat" | "tuplet" } } {
+    const none = { from: measure, to: measure, appended: 0 };
+    const n = this.score.measureCount;
+    if (measure < 0 || measure >= n || beats < 1 || beatType < 1) return { change: none };
+    for (let p = 0; p < this.score.measures.length; p++) this.makeFine(p);
+    const ownTime = (m: number) => kids(this.score.measures[0][m], "attributes").some((a) => kid(a, "time"));
+    let end = measure + 1;
+    while (end < n && !ownTime(end)) end++;
+    // In each part's own divisions: the old bars' lengths, the new one.
+    const lens = this.score.measures.map((_, p) => Array.from({ length: end - measure }, (_, i) => this.info(p, measure + i).length));
+    const newLen = this.score.measures.map((_, p) => Math.round((beats * 4 * this.info(p, measure).perQuarter) / beatType));
+    const total0 = lens[0].reduce((a, b) => a + b, 0);
+    const count = Math.max(1, Math.ceil(total0 / newLen[0] - 1e-9));
+    // A repeat, volta or new section must still start or end on a bar line.
+    let at = 0;
+    for (let i = 0; i < end - measure - 1; i++) {
+      at += lens[0][i];
+      const m = measure + i;
+      const bar = (meas: Element, loc: string) => kids(meas, "barline").some((b) => b.getAttribute("location") === loc && (kid(b, "repeat") || kid(b, "ending")));
+      const marked = this.score.measures.some((ms) => bar(ms[m], "right") || bar(ms[m + 1], "left")) || this.score.sections.includes(m + 1);
+      if (marked && at % newLen[0] !== 0) return { change: none, refused: { measure: m + 1, reason: "repeat" } };
+    }
+    // Each voice as one stream, and what else the bars hold at its place in the stream.
+    type Stream = { key: string; segs: Seg[] };
+    const plan = this.score.measures.map((ms, p) => {
+      const keys = new Set<string>();
+      for (let m = measure; m < end; m++) for (const k of readMeasure(ms[m]).voices.keys()) keys.add(k);
+      const streams: Stream[] = [...keys].map((key) => ({ key, segs: Array.from({ length: end - measure }, (_, i) => this.segsOf(p, measure + i, key, lens[p][i])).flat() }));
+      const others: { at: number; el: Element; edge?: "left" | "right" }[] = [];
+      let start = 0;
+      for (let i = 0; i < end - measure; i++) {
+        for (const o of readMeasure(ms[measure + i]).others) {
+          if (o.el.tagName === "barline") {
+            const loc = o.el.getAttribute("location");
+            const edge = loc === "left" ? "left" : loc === "right" || !loc ? "right" : undefined;
+            others.push({ at: edge === "left" ? start : edge === "right" ? start + lens[p][i] : start + o.pos, el: o.el, edge });
+          } else others.push({ at: start + Math.max(0, o.pos), el: o.el });
+        }
+        start += lens[p][i];
+      }
+      return { streams, others };
+    });
+    // A tuplet cut by a new bar line: refused.
+    for (const [p, { streams }] of plan.entries())
+      for (const { segs } of streams) {
+        let pos = 0;
+        for (const sg of segs) {
+          const cutAt = Math.ceil((pos + 1) / newLen[p]) * newLen[p];
+          if (sg.tuplet && cutAt > pos && cutAt < pos + sg.len) return { change: none, refused: { measure: measure + Math.floor(pos / newLen[p]) + 1, reason: "tuplet" } };
+          pos += sg.len;
+        }
+      }
+    const change = this.restructure(() => {
+      const old = end - measure;
+      kids(this.score.root, "part").forEach((part, p) => {
+        const ms = kids(part, "measure");
+        const L = newLen[p];
+        // The bars: the old ones reused, more added or the extra ones taken out.
+        const bars = ms.slice(measure, end);
+        while (bars.length < count) {
+          const meas = this.score.doc.createElementNS(null, "measure");
+          part.insertBefore(meas, bars[bars.length - 1].nextSibling);
+          bars.push(meas);
+        }
+        for (const extra of bars.splice(count)) extra.remove();
+        for (const meas of bars) while (meas.firstChild) meas.removeChild(meas.firstChild);
+        // What is not notes, at its place in the new bars; inner bar lines only where one still is.
+        bars.forEach((meas, k) => {
+          const others: Placed[] = [];
+          for (const o of plan[p].others) {
+            if (o.edge === "left" && o.at === 0) {
+              if (k === 0) others.push({ pos: -1, el: o.el });
+              continue;
+            }
+            if (o.edge && o.at === total0Of(p)) {
+              if (k === count - 1) others.push({ pos: Number.MAX_SAFE_INTEGER, el: o.el });
+              continue;
+            }
+            if (o.edge) {
+              if (o.at % L !== 0) continue;
+              const b = o.at / L - (o.edge === "right" ? 1 : 0);
+              if (b === k) others.push({ pos: o.edge === "right" ? Number.MAX_SAFE_INTEGER : -1, el: o.el });
+              continue;
+            }
+            const b = Math.min(count - 1, Math.floor(o.at / L));
+            if (b === k) others.push({ pos: o.at - b * L, el: o.el });
+          }
+          writeMeasure(meas, { voices: new Map(), others });
+        });
+        // The new time at the start of the first bar.
+        const first = bars[0];
+        let attrs = leadingAttributes(first)[0];
+        if (!attrs) {
+          attrs = this.score.doc.createElementNS(null, "attributes");
+          first.insertBefore(attrs, kids(first).find((c) => c.tagName !== "print" && c.tagName !== "barline") ?? null);
+        }
+        for (const t of kids(attrs, "time")) t.remove();
+        const time = this.score.doc.createElementNS(null, "time");
+        for (const [tag, v] of [["beats", beats], ["beat-type", beatType]] as const) {
+          const e = this.score.doc.createElementNS(null, tag);
+          e.textContent = String(v);
+          time.appendChild(e);
+        }
+        placeAttr(attrs, time);
+      });
+      this.score.refresh();
+      this.score.reindex();
+      // Marks of edited bars after the range move with the bars added or taken out.
+      if (count > old) this.shiftMarks(end, count - old);
+      else if (count < old) this.shiftMarks(measure + count, -(old - count));
+      // The voices, poured into the new bars.
+      plan.forEach(({ streams }, p) => {
+        const L = newLen[p];
+        for (const { key, segs } of streams) {
+          let rest = segs;
+          const pad = count * L - total(rest);
+          if (pad > 0) rest = [...rest, { len: pad, notes: null, graces: [], tieIn: false, tieOut: false, intact: null }];
+          const first = [...new Set(streams.map((x) => x.key))].filter((x) => x.split("|")[0] === key.split("|")[0]).sort()[0];
+          for (let k = 0; k < count; k++) {
+            const [chunk, after] = cut(rest, L);
+            rest = after;
+            // A second voice with nothing in a bar is not written there.
+            if (key !== first && chunk.every((x) => !x.notes)) continue;
+            this.writeVoice(p, measure + k, key, chunk, L);
+          }
+          this.fixTies(p, key, measure - 1, measure + count);
+        }
+      });
+      renumber(this.score, measure);
+      const origins = this.score.origins ?? Array.from({ length: n }, (_, i) => i);
+      origins.splice(measure, old, ...Array<number>(count).fill(-1));
+      this.score.origins = origins;
+      this.score.measures.forEach((_, p) => {
+        for (let m = measure; m < measure + count; m++) this.score.changing(p, m);
+      });
+      return { from: measure, to: this.score.measureCount, appended: 0 };
+    });
+    function total0Of(p: number): number {
+      return lens[p].reduce((a, b) => a + b, 0);
+    }
+    return { change };
+  }
+
   /** Hairpin ends whose other end went with the bars taken out go too. */
   private dropLoneHairpins(): void {
     this.score.measures.forEach((ms, p) => {
@@ -1477,11 +1626,12 @@ export class ScoreEditor {
       const prev = seq[i - 1]?.[1];
       for (const n of ev.notes) {
         const p = readPitch(n);
-        if (isTied(n, "start") && !(next && !next.rest && next.notes.some((x) => samePitch(readPitch(x), p)))) {
+        // At the edge of what was looked at, the other side is unknown: left as it is.
+        if (isTied(n, "start") && i + 1 < seq.length && !(next && !next.rest && next.notes.some((x) => samePitch(readPitch(x), p)))) {
           this.touch(part, m);
           setTie(n, "start", false);
         }
-        if (isTied(n, "stop") && !(prev && !prev.rest && prev.notes.some((x) => samePitch(readPitch(x), p) && isTied(x, "start")))) {
+        if (isTied(n, "stop") && i > 0 && !(prev && !prev.rest && prev.notes.some((x) => samePitch(readPitch(x), p) && isTied(x, "start")))) {
           this.touch(part, m);
           setTie(n, "stop", false);
         }

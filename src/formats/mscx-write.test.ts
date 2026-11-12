@@ -174,6 +174,20 @@ describe("Saving back into MuseScore files", () => {
     expect(noteList(loadScore(strToU8(cut)).score)).toEqual(noteList(loaded.score));
   });
 
+  it("writes a time signature change, the music in bars of the new length", () => {
+    const loaded = loadScore(strToU8(source));
+    const ed = new ScoreEditor(loaded.score);
+    expect(ed.setTime(1, 3, 4).refused).toBeUndefined();
+    const saved = strFromU8(loaded.save!().bytes);
+    const bars = measureOffsets(saved).staves[0].map((r) => saved.slice(...r));
+    // 4/4 + 4/4 of music from bar 2 make three bars of 3/4, the last filled with rests.
+    expect(bars).toHaveLength(4);
+    expect(bars[0]).toBe(source.slice(...measureOffsets(source).staves[0][0]));
+    expect(bars[1]).toContain("<TimeSig><sigN>3</sigN><sigD>4</sigD></TimeSig>");
+    expect(bars[2]).not.toContain("<TimeSig>");
+    expect(noteList(loadScore(strToU8(saved)).score)).toEqual(noteList(loaded.score));
+  });
+
   it("keeps each kind of breath mark and caesura", () => {
     const symbols = ["breathMarkComma", "breathMarkTick", "breathMarkUpbow", "breathMarkSalzedo", "caesura", "caesuraThick", "caesuraShort", "caesuraCurved", "caesuraSingleStroke"];
     const src = file(symbols.map((sym, i) => (i ? "" : TS) + chord("whole", 72, 14) + `<Breath><symbol>${sym}</symbol></Breath>`));

@@ -461,3 +461,45 @@ describe("Adding and taking out bars", () => {
     expect(kids(s.measures[0][0], "attributes").flatMap((a) => kids(a)).map((e) => e.tagName)).toEqual(expect.arrayContaining(["divisions", "key", "time", "clef"]));
   });
 });
+
+describe("Time signature changes", () => {
+  const timeOf = (s: ScoreDoc, m: number) => Array.from(s.measures[0][m].getElementsByTagName("time")).map((t) => `${text(t, "beats")}/${text(t, "beat-type")}`);
+  const all = (s: ScoreDoc) => s.measures[0].map((_, m) => show(s, m)).join(" | ");
+
+  it("pours the music into bars of the new length, tying what a bar line cuts", () => {
+    const s = score(note("C", 2, "half") + note("D", 2, "half"), note("E", 4, "whole"), note("F", 4, "whole"));
+    const ed = new ScoreEditor(s);
+    const r = ed.setTime(0, 3, 4);
+    expect(r.refused).toBeUndefined();
+    expect(all(s)).toBe("C4:2 D4:1~ | D4:1 E4:2~ | E4:2 F4:1~ | F4:3");
+    expect(timeOf(s, 0)).toEqual(["3/4"]);
+    expect(s.measures[0].map((m) => m.getAttribute("number"))).toEqual(["1", "2", "3", "4"]);
+    ed.undo();
+    expect(all(s)).toBe("C4:2 D4:2 | E4:4 | F4:4");
+    expect(timeOf(s, 0)).toEqual(["4/4"]);
+  });
+
+  it("stops at the next time signature, and fills the last bar with rests", () => {
+    const s = score(note("C", 4, "whole"), note("D", 4, "whole"), note("E", 4, "whole"));
+    const ed = new ScoreEditor(s);
+    ed.setTime(2, 3, 4);
+    expect(all(s)).toBe("C4:4 | D4:4 | E4:3~ | E4:1 r:1 r:1");
+    // 2/4 at bar 2 runs up to the 3/4 of bar 3 only.
+    ed.setTime(1, 2, 4);
+    expect(all(s)).toBe("C4:4 | D4:2~ | D4:2 | E4:3~ | E4:1 r:1 r:1");
+    expect([1, 3].map((m) => timeOf(s, m))).toEqual([["2/4"], ["3/4"]]);
+  });
+
+  it("is refused when a repeat would fall inside a bar, or a triplet would be cut", () => {
+    const s = score(note("C", 4, "whole"), note("D", 4, "whole") + `<barline location="right"><bar-style>light-heavy</bar-style><repeat direction="backward"/></barline>`, note("E", 4, "whole"));
+    const ed = new ScoreEditor(s);
+    expect(ed.setTime(0, 3, 4).refused).toEqual({ measure: 2, reason: "repeat" });
+    expect(all(s)).toBe("C4:4 | D4:4 | E4:4");
+    // 2/4 keeps it on a bar line.
+    expect(ed.setTime(0, 2, 4).refused).toBeUndefined();
+    const t = score(note("C", 1, "quarter") + ["D", "E", "F"].map((x) => note(x, 1, "quarter").replace("<duration>1</duration>", "<duration>1</duration>")).join("") );
+    const e2 = new ScoreEditor(t);
+    e2.tuplet({ part: 0, measure: 0, staff: 1, voice: "1", pos: 2 }, 2);
+    expect(e2.setTime(0, 5, 8).refused?.reason).toBe("tuplet");
+  });
+});

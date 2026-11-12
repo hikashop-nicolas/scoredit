@@ -349,6 +349,24 @@ export function createEditing(host: EditingHost): Editing {
     ["alto", { sign: "C", line: 3 }],
     ["tenor", { sign: "C", line: 4 }],
   ];
+  const TIMES = ["2/4", "3/4", "4/4", "5/4", "6/4", "2/2", "3/2", "3/8", "5/8", "6/8", "7/8", "9/8", "12/8"];
+  const timeAtPick = pick(t("timeAt"), [["", t("timeAt")], ...TIMES.map((x) => [x, x] as [string, string])]);
+  // Why a change was refused, until the next one.
+  const scoreNote = document.createElement("span");
+  scoreNote.className = "sv-pal-note";
+  scoreNote.setAttribute("role", "status");
+  timeAtPick.addEventListener("change", () => {
+    const [n, d] = timeAtPick.value.split("/").map(Number);
+    timeAtPick.value = "";
+    if (!n || !d) return;
+    const r = editor.setTime(sel?.at.measure ?? 0, n, d);
+    scoreNote.textContent = r.refused ? t(r.refused.reason === "repeat" ? "timeRefusedRepeat" : "timeRefusedTuplet").replace("{0}", String(r.refused.measure + 1)) : "";
+    if (!r.refused) {
+      sel = null;
+      caret = null;
+    }
+    landed(r.change);
+  });
   const clefAtPick = pick(t("clefAt"), [["", t("clefAt")], ...CLEFS.map(([n]) => [n, t(`clef_${n}`)] as [string, string])]);
   keyAtPick.addEventListener("change", () => {
     if (keyAtPick.value === "") return;
@@ -390,7 +408,7 @@ export function createEditing(host: EditingHost): Editing {
   });
   const sep2 = document.createElement("span");
   sep2.className = "sv-pal-sep";
-  row5.append(modePick, intervalPick, keyPick, dirPick, transposeBtn, sep, keyAtPick, clefAtPick, sep2, barBefore, barAfter, barEnd, barDelete);
+  row5.append(modePick, intervalPick, keyPick, dirPick, transposeBtn, sep, keyAtPick, timeAtPick, clefAtPick, sep2, barBefore, barAfter, barEnd, barDelete, scoreNote);
   // Dynamics (the usual ones, "more" for the rest), hairpins, then the kinds of text.
   const dynBtn = (v: string) => button(`<span class="sv-dyn">${v}</span>`, v, () => dynamic(v));
   const DYN_MAIN = ["pp", "p", "mp", "mf", "f", "ff"];
