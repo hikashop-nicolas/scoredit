@@ -239,13 +239,25 @@ export function createEditing(host: EditingHost): Editing {
   const row3 = document.createElement("div");
   row3.className = "sv-pal-row sv-pal-marks";
   row3.hidden = true;
-  const row4 = document.createElement("div");
-  row4.className = "sv-pal-row sv-pal-marks";
-  row4.hidden = true;
+  const dynRow = document.createElement("div");
+  dynRow.className = "sv-pal-row sv-pal-marks";
+  dynRow.hidden = true;
+  const textRow = document.createElement("div");
+  textRow.className = "sv-pal-row sv-pal-marks";
+  textRow.hidden = true;
   const row5 = document.createElement("div");
   row5.className = "sv-pal-row sv-pal-marks sv-pal-score";
   row5.hidden = true;
-  rows.append(row1, row2, row3, row4, row5);
+  rows.append(row1, row2, row5);
+  // What changes the selected notes floats over them (as pdfcraft's selection bar): accidentals,
+  // marks, dynamics, text, delete; a group opens on a second line.
+  const floatBar = document.createElement("div");
+  floatBar.className = "sv-float";
+  floatBar.hidden = true;
+  const floatMain = document.createElement("div");
+  floatMain.className = "sv-float-main";
+  floatBar.append(floatMain, row3, dynRow, textRow);
+  floatBar.addEventListener("pointerdown", (e) => e.stopPropagation());
   // Lyrics are typed in a field that moves along the notes.
   const lyricBar = document.createElement("div");
   lyricBar.className = "sv-lyric-bar";
@@ -290,16 +302,22 @@ export function createEditing(host: EditingHost): Editing {
   });
   const doneBtn = button(ICONS.done, t("done"), () => host.done(), "sv-pal-done");
   // One of the extra rows at a time: marks, dynamics and text, or the score's own tools.
-  const openRow = (row: HTMLElement) => {
+  // One group of the floating bar open at a time.
+  const openGroup = (row: HTMLElement) => {
     const show = row.hidden;
-    for (const r of [row3, row4, row5]) r.hidden = true;
+    for (const r of [row3, dynRow, textRow]) r.hidden = true;
     row.hidden = !show;
     sync();
   };
-  const marksBtn = button(ICONS.marks, t("marks"), () => openRow(row3));
-  const textBtn = button(ICONS.textMarks, t("textMarks"), () => openRow(row4));
-  const scoreBtn = button(ICONS.scoreTools, t("scoreTools"), () => openRow(row5));
-  row2.append(...accBtns, voiceBtn, insertBtn, delBtn, undoBtn, redoBtn, keysBtn, marksBtn, textBtn, scoreBtn, doneBtn);
+  const marksBtn = button(ICONS.marks, t("marks"), () => openGroup(row3));
+  const dynGroupBtn = button('<span class="sv-dyn">mf</span>', t("dynamics"), () => openGroup(dynRow));
+  const textBtn = button(ICONS.textMarks, t("text"), () => openGroup(textRow));
+  const scoreBtn = button(ICONS.scoreTools, t("scoreTools"), () => {
+    row5.hidden = !row5.hidden;
+    sync();
+  });
+  row2.append(voiceBtn, insertBtn, undoBtn, redoBtn, keysBtn, scoreBtn, doneBtn);
+  floatMain.append(...accBtns, marksBtn, dynGroupBtn, textBtn, delBtn);
   // Transpose: by an interval or to a key, up, down or the nearer way; the selection, else the whole score.
   const pick = (label: string, options: [string, string][]) => {
     const box = document.createElement("select");
@@ -364,7 +382,7 @@ export function createEditing(host: EditingHost): Editing {
   const exprBtn = button(ICONS.expression, t("expressionText"), () => openField("expression", lyricBar.hidden !== false || fieldMode !== "expression"));
   const tempoBtn = button(ICONS.tempoMark, t("tempoMark"), () => openField("tempo", lyricBar.hidden !== false || fieldMode !== "tempo"));
   const rehearsalBtn = button(ICONS.rehearsal, t("rehearsalMark"), () => openField("rehearsal", lyricBar.hidden !== false || fieldMode !== "rehearsal"));
-  row4.append(...dynBtns.map(([, b]) => b), moreDynBtn, crescBtn, dimBtn, staffTextBtn, exprBtn, tempoBtn, rehearsalBtn);
+  dynRow.append(...dynBtns.map(([, b]) => b), moreDynBtn, crescBtn, dimBtn);
   const MARKS: [mark: string, icon: string, label: string][] = [
     ["accent", ICONS.accent, "accent"],
     ["staccato", ICONS.staccato, "staccato"],
@@ -422,7 +440,8 @@ export function createEditing(host: EditingHost): Editing {
     allMarks = !allMarks;
     sync();
   });
-  row3.append(...markBtns, slurBtn, graceBtn, lyricsBtn, arpBtn, tremBtn, glissBtn, trillLineBtn, fingerBtn, upBowBtn, downBowBtn, hammerBtn, pullBtn, bendBtn, pluckBtn, holeBtn, arrowBtn, ornAccBtn, allBtn);
+  row3.append(...markBtns, slurBtn, graceBtn, arpBtn, tremBtn, glissBtn, trillLineBtn, upBowBtn, downBowBtn, hammerBtn, pullBtn, bendBtn, pluckBtn, holeBtn, arrowBtn, ornAccBtn, allBtn);
+  textRow.append(staffTextBtn, exprBtn, tempoBtn, rehearsalBtn, lyricsBtn, fingerBtn);
   const MELODIC: PartFamily[] = ["keys", "guitar", "bass", "strings", "winds", "brass", "voice", "other"];
   const ORNATE: PartFamily[] = ["keys", "guitar", "strings", "winds", "brass", "voice", "other"];
   const FRETTED: PartFamily[] = ["guitar", "bass", "other"];
@@ -472,7 +491,36 @@ export function createEditing(host: EditingHost): Editing {
     return [...ev.notes].sort((a, b) => midiOf(readPitch(a) ?? { step: "C", alter: 0, octave: 4 }) - midiOf(readPitch(b) ?? { step: "C", alter: 0, octave: 4 }));
   }
 
+  /** The floating bar over the selected notes (above, else below), inside the score's area. */
+  let floatQueued = false;
+  function placeFloat(): void {
+    floatQueued = false;
+    const notes = view && active && sel ? Array.from(view.root.querySelectorAll(".sv-sel")) : [];
+    const rects = notes.map((n) => n.getBoundingClientRect()).filter((r) => r.width || r.height);
+    const area = view?.root.getBoundingClientRect();
+    if (!rects.length || !area) return void (floatBar.hidden = true);
+    const box = { left: Math.min(...rects.map((r) => r.left)), right: Math.max(...rects.map((r) => r.right)), top: Math.min(...rects.map((r) => r.top)), bottom: Math.max(...rects.map((r) => r.bottom)) };
+    // Scrolled out of sight: no bar.
+    if (box.bottom < area.top || box.top > area.bottom) return void (floatBar.hidden = true);
+    floatBar.hidden = false;
+    const w = floatBar.offsetWidth;
+    const h = floatBar.offsetHeight;
+    const gap = 10;
+    let top = box.top - h - gap;
+    if (top < area.top + 4) top = box.bottom + gap;
+    top = Math.max(area.top + 4, Math.min(top, area.bottom - h - 4));
+    const left = Math.max(area.left + 4, Math.min((box.left + box.right) / 2 - w / 2, area.right - w - 4));
+    floatBar.style.left = `${left}px`;
+    floatBar.style.top = `${top}px`;
+  }
+  const queueFloat = () => {
+    if (floatQueued) return;
+    floatQueued = true;
+    requestAnimationFrame(placeFloat);
+  };
+
   function sync(): void {
+    queueFloat();
     const pressed = (b: HTMLButtonElement, on: boolean) => {
       b.classList.toggle("is-on", on);
       b.setAttribute("aria-pressed", String(on));
@@ -481,7 +529,8 @@ export function createEditing(host: EditingHost): Editing {
     pressed(insertBtn, insert);
     pressed(keysBtn, !strip.hidden);
     pressed(marksBtn, !row3.hidden);
-    pressed(textBtn, !row4.hidden);
+    pressed(dynGroupBtn, !dynRow.hidden);
+    pressed(textBtn, !textRow.hidden);
     pressed(scoreBtn, !row5.hidden);
     intervalPick.hidden = modePick.value !== "interval";
     keyPick.hidden = modePick.value !== "key";
@@ -1104,6 +1153,7 @@ export function createEditing(host: EditingHost): Editing {
       view.root.removeEventListener("touchmove", onTouchMove);
       view.root.removeEventListener("touchstart", onTouchStart);
       view.root.removeEventListener("contextmenu", onMenu);
+      view.root.removeEventListener("scroll", queueFloat);
       view.root.classList.remove("sv-inputting");
     }
     view = v;
@@ -1115,6 +1165,7 @@ export function createEditing(host: EditingHost): Editing {
     v.root.addEventListener("touchmove", onTouchMove, { passive: false });
     v.root.addEventListener("touchstart", onTouchStart, { passive: true });
     v.root.addEventListener("contextmenu", onMenu);
+    v.root.addEventListener("scroll", queueFloat, { passive: true });
     if (active) requestAnimationFrame(sync);
   }
 
@@ -1223,6 +1274,8 @@ export function createEditing(host: EditingHost): Editing {
       active = true;
       el.hidden = false;
       document.body.append(bubble);
+      (el.closest(".sv-shell") ?? document.body).append(floatBar);
+      window.addEventListener("resize", queueFloat);
       sync();
     },
     stop() {
@@ -1233,6 +1286,8 @@ export function createEditing(host: EditingHost): Editing {
       lyricBar.hidden = true;
       view?.root.classList.remove("sv-inputting");
       bubble.remove();
+      floatBar.remove();
+      window.removeEventListener("resize", queueFloat);
       view?.showCaret(null);
       view?.select([]);
     },
