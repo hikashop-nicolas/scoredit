@@ -370,7 +370,41 @@ interface Pitch {
   alter: number;
   /** An accidental written before it. */
   shown?: string;
+  /** The note as written (accidental, letter, octave marks), for a drum map. */
+  abc?: string;
 }
+
+/** %%MIDI and %%percmap settings, for the whole tune or one voice. */
+interface MidiSettings {
+  channel?: number;
+  program?: number;
+  /** Written note (see Pitch.abc) to General MIDI drum key, and its notehead. */
+  drums: Map<string, number>;
+  heads: Map<string, string>;
+}
+
+const newMidi = (): MidiSettings => ({ drums: new Map(), heads: new Map() });
+
+/** A written ABC note as a drum-map key: accidental, letter and octave, whatever the bar says. */
+function abcNoteKey(note: string): string | null {
+  const m = /^(\^\^|\^|__|_|=)?([A-Ga-g])([',]*)$/.exec(note.trim());
+  if (!m) return null;
+  let octave = m[2] === m[2].toUpperCase() ? 4 : 5;
+  for (const c of m[3]) octave += c === "'" ? 1 : -1;
+  const alter = m[1] === "^" ? 1 : m[1] === "^^" ? 2 : m[1] === "_" ? -1 : m[1] === "__" ? -2 : 0;
+  return `${alter}${m[2].toUpperCase()}${octave}`;
+}
+
+// General MIDI percussion keys 35-81, by the names %%percmap uses.
+const GM_DRUMS = "acoustic-bass-drum bass-drum-1 side-stick acoustic-snare hand-clap electric-snare low-floor-tom closed-hi-hat high-floor-tom pedal-hi-hat low-tom open-hi-hat low-mid-tom hi-mid-tom crash-cymbal-1 high-tom ride-cymbal-1 chinese-cymbal ride-bell tambourine splash-cymbal cowbell crash-cymbal-2 vibraslap ride-cymbal-2 hi-bongo low-bongo mute-hi-conga open-hi-conga low-conga high-timbale low-timbale high-agogo low-agogo cabasa maracas short-whistle long-whistle short-guiro long-guiro claves hi-wood-block low-wood-block mute-cuica open-cuica mute-triangle open-triangle".split(" ");
+const drumKey = (s: string): number | undefined => {
+  if (/^\d+$/.test(s)) return Number(s);
+  const k = GM_DRUMS.indexOf(s.toLowerCase());
+  return k < 0 ? undefined : k + 35;
+};
+const drumName = (key: number) => (GM_DRUMS[key - 35] ?? `drum ${key}`).replace(/-/g, " ").replace(/^./, (c) => c.toUpperCase());
+// Noteheads MusicXML knows, as %%percmap may name them.
+const HEADS = new Set(["x", "circle-x", "triangle", "diamond", "slash", "square", "cross", "normal", "circle-dot", "left-triangle", "inverted triangle", "do", "re", "mi"]);
 
 interface NoteEvent {
   kind: "note";
@@ -450,6 +484,9 @@ interface Voice {
   /** Where a (& overlay starts. */
   overlayStart: { at: number; offset: number } | null;
 }
+
+/** A voice played on drums: the percussion clef, or MIDI channel 10. */
+const isDrums = (v: Voice, midi: MidiSettings) => midi.channel === 10 || v.props.clef?.sign === "percussion" || v.clefNow?.sign === "percussion";
 
 const newMeasure = (): Measure => ({ events: [], layers: [], after: [] });
 
@@ -545,6 +582,37 @@ export function readAbc(text: string, opts: AbcOptions = {}): Document {
   let inBody = false;
   let lastField = "";
   let continued = false;
+  const midiAll = newMidi();
+  const midiVoice = new Map<string, MidiSettings>();
+  let headerVoice: string | null = null;
+  /** The settings in force for a voice: its own over the tune's. */
+  const midiOf = (v: Voice): MidiSettings => {
+    const own = midiVoice.get(v.id);
+    return { channel: own?.channel ?? midiAll.channel, program: own?.program ?? midiAll.program, drums: new Map([...midiAll.drums, ...(own?.drums ?? [])]), heads: new Map([...midiAll.heads, ...(own?.heads ?? [])]) };
+  };
+  /** %%MIDI channel/program/drummap and %%percmap: for the voice being read, or the whole tune. */
+  const midiDirective = (name: string, value: string) => {
+    const target = inBody ? current?.id : headerVoice;
+    const m = target ? (midiVoice.get(target) ?? midiVoice.set(target, newMidi()).get(target)!) : midiAll;
+    const w = value.trim().split(/\s+/);
+    if (name === "percmap") {
+      const note = abcNoteKey(w[0] ?? "");
+      const k = drumKey(w[1] ?? "");
+      if (note && k !== undefined) m.drums.set(note, k);
+      if (note && w[2] && HEADS.has(w[2])) m.heads.set(note, w[2]);
+      return;
+    }
+    const nums = w.slice(1).map(Number);
+    if (w[0] === "channel" && nums[0] >= 1 && nums[0] <= 16) m.channel = nums[0];
+    else if (w[0] === "program" && w.length > 1) {
+      // program [channel] number
+      const prog = nums.length > 1 ? nums[1] : nums[0];
+      if (prog >= 0 && prog <= 127) m.program = prog;
+    } else if (w[0] === "drummap") {
+      const note = abcNoteKey(w[1] ?? "");
+      if (note && nums[1] >= 0 && nums[1] <= 127) m.drums.set(note, nums[1]);
+    }
+  };
 
   const voiceOf = (id: string): Voice => {
     let v = voices.get(id);
@@ -654,6 +722,7 @@ export function readAbc(text: string, opts: AbcOptions = {}): Document {
           break;
         }
         voiceDefs.set(m[1], { ...voiceDefs.get(m[1]), ...props });
+        if (!inBody) headerVoice = m[1];
         if (inBody) {
           const known = voices.has(m[1]);
           current = voiceOf(m[1]);
@@ -679,6 +748,8 @@ export function readAbc(text: string, opts: AbcOptions = {}): Document {
       case "I": {
         const d = /^\s*(score|staves)\s+(.*)$/.exec(value);
         if (d) directive(d[1], d[2]);
+        const md = /^\s*(MIDI|percmap)\s+(.*)$/.exec(value);
+        if (md) midiDirective(md[1], md[2]);
         break;
       }
     }
@@ -689,6 +760,11 @@ export function readAbc(text: string, opts: AbcOptions = {}): Document {
     const dir = /^%%\s*(score|staves)\b(.*)$/.exec(line);
     if (dir) {
       directive(dir[1], dir[2]);
+      continue;
+    }
+    const md = /^%%\s*(MIDI|percmap)\s+(.*)$/.exec(line);
+    if (md) {
+      midiDirective(md[1], md[2]);
       continue;
     }
     if (/^%%/.test(line)) continue;
@@ -718,7 +794,7 @@ export function readAbc(text: string, opts: AbcOptions = {}): Document {
   if (!order.length) order.push(voiceOf("1"));
   // A one-letter header P: is a label, not an order; the order needs parts marked in the body.
   const play = partOrder.length > 1 && partAt.size ? partOrder : [];
-  return build({ title, composer, tempo, key, meter: headerMeter, plan: planParts(order, layout), parts: partAt, play });
+  return build({ title, composer, tempo, key, meter: headerMeter, plan: planParts(order, layout), parts: partAt, play, midiOf });
 
   /** One line of music for a voice. */
   function music(v: Voice, line: string, onField: (name: string, value: string) => void): void {
@@ -740,6 +816,7 @@ export function readAbc(text: string, opts: AbcOptions = {}): Document {
       const step = m[2].toUpperCase();
       let octave = m[2] === step ? 4 : 5;
       for (const c of m[3]) octave += c === "'" ? 1 : -1;
+      const abc = `${m[1] === "^" ? 1 : m[1] === "^^" ? 2 : m[1] === "_" ? -1 : m[1] === "__" ? -2 : 0}${step}${octave}`;
       const where = `${step}${octave}`;
       const alters = v.overlay ? v.overlay.alters : v.barAlters;
       let alter: number;
@@ -751,7 +828,7 @@ export function readAbc(text: string, opts: AbcOptions = {}): Document {
       } else alter = alters.get(where) ?? v.key.alters[step] ?? 0;
       // octave= and a +8/-8 clef move the notes (MusicXML pitches are as heard).
       octave += (v.props.octave ?? 0) + (v.clefNow?.octave ?? 0) + (v.clefNow?.shift ?? 0);
-      return { step, octave, alter, shown };
+      return { step, octave, alter, shown, abc };
     };
     const readLength = (): number => {
       const m = /^(\d*)(\/*)(\d*)/.exec(text.slice(i));
@@ -1266,7 +1343,7 @@ function planParts(order: Voice[], layout: Layout | null): Plan {
 
 // ---- MusicXML
 
-function build(o: { title: string; composer: string; tempo: Tempo | null; key: Key; meter: Meter; plan: Plan; parts: Map<number, string>; play: string[] }): Document {
+function build(o: { title: string; composer: string; tempo: Tempo | null; key: Key; meter: Meter; plan: Plan; parts: Map<number, string>; play: string[]; midiOf: (v: Voice) => MidiSettings }): Document {
   const doc = parseXml('<score-partwise version="4.0"/>');
   const root = doc.documentElement;
   const el = (parent: Element, tag: string, value?: string | number | null, attrs?: Record<string, string | number>) => {
@@ -1284,6 +1361,8 @@ function build(o: { title: string; composer: string; tempo: Tempo | null; key: K
     if (o.play.length) el(el(id, "miscellaneous"), "miscellaneous-field", o.play.join(" "), { name: "play-order" });
   }
   const list = el(root, "part-list");
+  /** Per part, how a voice's notes name their drum (null: pitched). */
+  const instruments = new Map<number, (v: Voice) => ((p: Pitch) => { id: string; head?: string }) | null>();
   const all = o.plan.parts.flat(2);
   const count = Math.max(1, ...all.map((v) => v.measures.length));
   const lead = all[0];
@@ -1307,10 +1386,43 @@ function build(o: { title: string; composer: string; tempo: Tempo | null; key: K
     el(sp, "part-name", named?.props.name ?? (o.plan.parts.length > 1 ? `Voice ${voices[0].id}` : ""));
     const sub = voices.find((v) => v.props.subname)?.props.subname;
     if (sub) el(sp, "part-abbreviation", sub);
+    instruments.set(n, writeInstruments(sp, id, voices));
     for (let k = groups.length - 1; k >= 0; k--) if (groups[k].last === n) el(list, "part-group", null, { type: "stop", number: groupOpen.get(k) ?? 1 });
     writePart(el(root, "part", null, { id }), staves, n);
   });
   return doc;
+
+  /** The part's instruments: one per drum its percussion voices play, or its MIDI program. */
+  function writeInstruments(sp: Element, id: string, voices: Voice[]) {
+    const drumsOf = new Map<Voice, MidiSettings>();
+    for (const v of voices) {
+      const m = o.midiOf(v);
+      if (isDrums(v, m)) drumsOf.set(v, m);
+    }
+    const keyOf = (m: MidiSettings, p: Pitch) => m.drums.get(p.abc ?? "") ?? Math.max(0, Math.min(127, 12 * (p.octave + 1) + "C D EF G A B".indexOf(p.step) + p.alter));
+    const used = new Set<number>();
+    for (const [v, m] of drumsOf) for (const ms of v.measures) for (const ev of [...ms.events, ...ms.layers.flat()]) for (const p of [...(ev.pitches ?? []), ...ev.graces.flatMap((g) => g.pitches ?? [])]) used.add(keyOf(m, p));
+    const keys = [...used].sort((a, b) => a - b);
+    const iid = (k: number) => `${id}-I${k + 1}`;
+    for (const k of keys) el(el(sp, "score-instrument", null, { id: iid(k) }), "instrument-name", drumName(k));
+    for (const k of keys) {
+      const mi = el(sp, "midi-instrument", null, { id: iid(k) });
+      el(mi, "midi-channel", 10);
+      el(mi, "midi-unpitched", k + 1);
+    }
+    const pitched = voices.find((v) => !drumsOf.has(v));
+    const program = pitched ? o.midiOf(pitched).program : undefined;
+    if (!keys.length && program !== undefined) {
+      el(el(sp, "score-instrument", null, { id: `${id}-I1` }), "instrument-name", sp.querySelector("part-name")?.textContent || "Instrument");
+      const mi = el(sp, "midi-instrument", null, { id: `${id}-I1` });
+      el(mi, "midi-program", program + 1);
+    }
+    return (v: Voice) => {
+      const m = drumsOf.get(v);
+      if (!m) return null;
+      return (p: Pitch) => ({ id: iid(keyOf(m, p)), head: m.heads.get(p.abc ?? "") });
+    };
+  }
 
   function writePart(part: Element, staves: Voice[][], n: number): void {
     const head = staves[0][0];
@@ -1328,8 +1440,11 @@ function build(o: { title: string; composer: string; tempo: Tempo | null; key: K
     let key = o.key;
     let meter = o.meter;
     const tieOpen = new Map<number, Pitch[]>();
+    // Staff lines in force per voice, for where drum notes are drawn.
+    const linesNow = new Map(staves.flat().map((v) => [v, v.props.stafflines ?? 5] as const));
     for (let m = 0; m < count; m++) {
       const at = (v: Voice) => v.measures[m] ?? newMeasure();
+      for (const v of linesNow.keys()) if (at(v).stafflines !== undefined) linesNow.set(v, at(v).stafflines!);
       const src = at(head);
       const meas = el(part, "measure", null, pickup && m === 0 ? { number: 0, implicit: "yes" } : { number: pickup ? m : m + 1 });
       if (src.forward || src.ending?.some((e) => e.type === "start")) {
@@ -1414,7 +1529,7 @@ function build(o: { title: string; composer: string; tempo: Tempo | null; key: K
           if (pos > 0) el(el(meas, "backup"), "duration", pos);
           pos = 0;
           const beams = beamsOf(l.events);
-          const where = { voice: l.voice, staff: many ? s + 1 : 0, stem };
+          const where = { voice: l.voice, staff: many ? s + 1 : 0, stem, drum: instruments.get(n)?.(l.v) ?? undefined, lines: linesNow.get(l.v) ?? 5 };
           l.events.forEach((ev, k) => {
             if (ev.spacer) {
               const fw = el(meas, "forward");
@@ -1462,7 +1577,7 @@ function build(o: { title: string; composer: string; tempo: Tempo | null; key: K
   }
 
   /** One note (or chord, or rest); returns the pitches tied on to the next one and its duration. */
-  function note(meas: Element, ev: NoteEvent, grace: boolean, slash: boolean, beam: string[] | null, tiedIn: Pitch[], where: { voice: number; staff: number; stem?: string }): { tied: Pitch[]; duration: number } {
+  function note(meas: Element, ev: NoteEvent, grace: boolean, slash: boolean, beam: string[] | null, tiedIn: Pitch[], where: { voice: number; staff: number; stem?: string; drum?: (p: Pitch) => { id: string; head?: string }; lines?: number }): { tied: Pitch[]; duration: number } {
     const ratio = ev.tuplet ? ev.tuplet.p / ev.tuplet.q : 1;
     const written = ev.quarters * ratio;
     const pieces = grace ? [splitValue(written)[0]] : ev.measureRest ? [["whole", 0, written] as [string, number, number]] : splitValue(written);
@@ -1478,7 +1593,14 @@ function build(o: { title: string; composer: string; tempo: Tempo | null; key: K
         if (grace) el(n, "grace", null, slash ? { slash: "yes" } : undefined);
         if (ci > 0) el(n, "chord");
         if (!p) el(n, "rest", null, ev.measureRest ? { measure: "yes" } : undefined);
-        else {
+        else if (where.drum) {
+          // A drum: drawn where it is written, played by its instrument. ABC centres a staff of
+          // fewer lines on the middle line; MusicXML builds it up from the bottom line (E4).
+          const at = p.octave * 7 + "CDEFGAB".indexOf(p.step) + (where.lines ?? 5) - 5;
+          const u = el(n, "unpitched");
+          el(u, "display-step", "CDEFGAB"[((at % 7) + 7) % 7]);
+          el(u, "display-octave", Math.floor(at / 7));
+        } else {
           const pitch = el(n, "pitch");
           el(pitch, "step", p.step);
           if (p.alter) el(pitch, "alter", p.alter);
@@ -1489,16 +1611,19 @@ function build(o: { title: string; composer: string; tempo: Tempo | null; key: K
         const tiedOn = !!p && (!lastPiece || ev.tie);
         if (tiedFrom) el(n, "tie", null, { type: "stop" });
         if (tiedOn) el(n, "tie", null, { type: "start" });
+        const drum = p && where.drum ? where.drum(p) : null;
+        if (drum) el(n, "instrument", null, { id: drum.id });
         el(n, "voice", where.voice);
         if (!ev.measureRest) el(n, "type", type);
         for (let dd = 0; dd < dots; dd++) el(n, "dot");
-        if (p?.shown && firstPiece) el(n, "accidental", p.shown);
+        if (p?.shown && firstPiece && !drum) el(n, "accidental", p.shown);
         if (ev.tuplet && !grace) {
           const tm = el(n, "time-modification");
           el(tm, "actual-notes", ev.tuplet.p);
           el(tm, "normal-notes", ev.tuplet.q);
         }
         if (p && where.stem) el(n, "stem", where.stem);
+        if (drum?.head) el(n, "notehead", drum.head);
         if (where.staff) el(n, "staff", where.staff);
         if (ci === 0 && beam && pieces.length === 1) beam.forEach((b, lvl) => b && el(n, "beam", b, { number: lvl + 1 }));
         // Notations: ties, slurs, tuplet bracket, marks.

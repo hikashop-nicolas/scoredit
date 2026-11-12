@@ -4,7 +4,7 @@ import { kid, kids, text } from "../model/xml";
 import { detectFormat } from "./detect";
 import { loadScore } from "./load";
 import { ScoreDoc } from "../model/score";
-import { playOrder } from "../play/timeline";
+import { buildTimeline, playOrder } from "../play/timeline";
 import { abcTunes, readAbc } from "./abc";
 
 const DIV = 10080;
@@ -677,5 +677,61 @@ describe("ABC P: parts and play order", () => {
       expect(doc.getElementsByTagName("miscellaneous-field").length).toBe(0);
       expect(playOrder(new ScoreDoc(doc))).toEqual([0, 1, 2, 0, 1, 2, 3]);
     }
+  });
+});
+
+describe("ABC percussion and MIDI directives", () => {
+  const drumsOf = (doc: Document) =>
+    notes(measures(doc)[0]).filter((n) => kid(n, "unpitched")).map((n) => {
+      const id = kid(n, "instrument")?.getAttribute("id") ?? "";
+      const mi = [...doc.getElementsByTagName("midi-instrument")].find((m) => m.getAttribute("id") === id);
+      return { shown: `${text(kid(n, "unpitched")!, "display-step")}${text(kid(n, "unpitched")!, "display-octave")}`, key: Number(text(mi!, "midi-unpitched")) - 1, head: text(n, "notehead") };
+    });
+
+  it("maps notes to drums with %%MIDI drummap on channel 10", () => {
+    const doc = readAbc(tune("V:1\nF c ^g z|", "M:4/4\nL:1/4\nV:1\n%%MIDI channel 10\n%%MIDI drummap F 36\n%%MIDI drummap c 38\n%%MIDI drummap ^g 42\nK:C"));
+    expect(drumsOf(doc)).toEqual([
+      { shown: "F4", key: 36, head: "" },
+      { shown: "C5", key: 38, head: "" },
+      { shown: "G5", key: 42, head: "" },
+    ]);
+    expect(doc.getElementsByTagName("pitch").length).toBe(0);
+    expect(text(doc.getElementsByTagName("midi-instrument")[0], "midi-channel")).toBe("10");
+  });
+
+  it("reads %%percmap names and noteheads, and plays an unmapped note at its own key", () => {
+    const doc = readAbc(tune("V:1\nC ^f B z|", "M:4/4\nL:1/4\n%%percmap C bass-drum-1\n%%percmap ^f closed-hi-hat x\nV:1 clef=perc\nK:C"));
+    expect(drumsOf(doc)).toEqual([
+      { shown: "C4", key: 36, head: "" },
+      { shown: "F5", key: 42, head: "x" },
+      { shown: "B4", key: 71, head: "" },
+    ]);
+    expect([...doc.getElementsByTagName("instrument-name")].map((e) => e.textContent)).toContain("Closed hi hat");
+  });
+
+  it("plays the drums as drums", () => {
+    const loaded = loadScore(enc(tune("V:1\nF c F c|", "M:4/4\nL:1/4\nV:1 clef=perc\n%%MIDI drummap F 36\n%%MIDI drummap c 38\nK:C")));
+    const ev = buildTimeline(loaded.score).events;
+    expect(ev.map((e) => [e.midi, e.channel, e.program])).toEqual([
+      [36, 9, 128],
+      [38, 9, 128],
+      [36, 9, 128],
+      [38, 9, 128],
+    ]);
+  });
+
+  it("sets a voice's instrument with %%MIDI program", () => {
+    const doc = readAbc(tune("V:1\nc d e f|\nV:2\nC D E F|", "M:4/4\nL:1/4\nV:1\n%%MIDI program 40\nV:2\n%%MIDI program 1 42\nK:C"));
+    expect([...doc.getElementsByTagName("midi-program")].map((e) => e.textContent)).toEqual(["41", "43"]);
+    expect(doc.getElementsByTagName("unpitched").length).toBe(0);
+  });
+});
+
+describe("ABC drums on fewer staff lines", () => {
+  it("draws the middle-line note on a one-line staff's line", () => {
+    const doc = readAbc(tune("V:1\nB B B B|[V:1 stafflines=3]B d B d|", "M:4/4\nL:1/4\nV:1 clef=perc stafflines=1\nK:C"));
+    const shown = (m: Element) => notes(m).map((n) => `${text(kid(n, "unpitched")!, "display-step")}${text(kid(n, "unpitched")!, "display-octave")}`);
+    expect(shown(measures(doc)[0])).toEqual(["E4", "E4", "E4", "E4"]);
+    expect(shown(measures(doc)[1])).toEqual(["G4", "B4", "G4", "B4"]);
   });
 });
