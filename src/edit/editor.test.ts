@@ -381,3 +381,36 @@ describe("Transposing", () => {
     expect([text(h, "root"), text(h, "bass")].map((x) => x.replace(/\s/g, ""))).toEqual(["C", "E"]);
   });
 });
+
+describe("Key and clef changes", () => {
+  const three = () => score(note("F", 4, "whole"), note("F", 4, "whole"), note("F", 4, "whole"));
+  const keys = (s: ScoreDoc) => s.measures[0].map((m) => Array.from(m.getElementsByTagName("fifths")).map((f) => Number(f.textContent)));
+
+  it("sets a key from a bar on, keeping the pitches, and takes it off again", () => {
+    const s = three();
+    const ed = new ScoreEditor(s);
+    ed.setKey(1, -1);
+    expect(keys(s)).toEqual([[0], [-1], []]);
+    expect(show(s, 1)).toBe("F4:4");
+    ed.setKey(1, 0);
+    expect(keys(s)).toEqual([[0], [], []]);
+    ed.setKey(0, 3);
+    expect(keys(s)).toEqual([[3], [], []]);
+    ed.undo();
+    expect(keys(s)).toEqual([[0], [], []]);
+  });
+
+  it("puts a clef change at the end of the bar before, as MuseScore keeps it", () => {
+    const s = three();
+    const ed = new ScoreEditor(s);
+    ed.setClef(0, 1, 2, { sign: "F", line: 4 });
+    const at = (m: number) => readMeasure(s.measures[0][m]).others.filter((o) => o.el.tagName === "attributes" && o.el.getElementsByTagName("clef").length).map((o) => [o.pos, text(o.el.getElementsByTagName("clef")[0], "sign")]);
+    expect(at(1)).toEqual([[4, "F"]]);
+    expect(s.attributesAt(0, 2).find((e) => e.tagName === "clef")?.textContent).toContain("F");
+    // The clef already in force: nothing drawn; back to G: the change goes.
+    ed.setClef(0, 1, 2, { sign: "G", line: 2 });
+    expect(at(1)).toEqual([]);
+    ed.setClef(0, 1, 0, { sign: "C", line: 3 });
+    expect(text(s.measures[0][0].getElementsByTagName("clef")[0], "sign")).toBe("C");
+  });
+});

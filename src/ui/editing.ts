@@ -320,7 +320,34 @@ export function createEditing(host: EditingHost): Editing {
   transposeBtn.textContent = t("transpose");
   transposeBtn.addEventListener("click", () => transposeNow());
   modePick.addEventListener("change", () => sync());
-  row5.append(modePick, intervalPick, keyPick, dirPick, transposeBtn);
+  // Key and clef from the selected bar on (the first bar when nothing is selected).
+  const keyAtPick = pick(t("keyAt"), [["", t("keyAt")], ...Array.from({ length: 15 }, (_, i) => i - 7).map((f) => [String(f), keyName(f)] as [string, string])]);
+  const CLEFS: [string, { sign: string; line: number; octave?: number }][] = [
+    ["treble", { sign: "G", line: 2 }],
+    ["treble8vb", { sign: "G", line: 2, octave: -1 }],
+    ["treble8va", { sign: "G", line: 2, octave: 1 }],
+    ["bass", { sign: "F", line: 4 }],
+    ["bass8vb", { sign: "F", line: 4, octave: -1 }],
+    ["alto", { sign: "C", line: 3 }],
+    ["tenor", { sign: "C", line: 4 }],
+  ];
+  const clefAtPick = pick(t("clefAt"), [["", t("clefAt")], ...CLEFS.map(([n]) => [n, t(`clef_${n}`)] as [string, string])]);
+  keyAtPick.addEventListener("change", () => {
+    if (keyAtPick.value === "") return;
+    const at = sel?.at;
+    landed(editor.setKey(at?.measure ?? 0, Number(keyAtPick.value), at?.part ?? toFull(0)));
+    keyAtPick.value = "";
+  });
+  clefAtPick.addEventListener("change", () => {
+    const c = CLEFS.find(([n]) => n === clefAtPick.value)?.[1];
+    clefAtPick.value = "";
+    if (!c) return;
+    const at = sel?.at;
+    landed(editor.setClef(at?.part ?? toFull(0), at?.staff ?? 1, at?.measure ?? 0, c));
+  });
+  const sep = document.createElement("span");
+  sep.className = "sv-pal-sep";
+  row5.append(modePick, intervalPick, keyPick, dirPick, transposeBtn, sep, keyAtPick, clefAtPick);
   // Dynamics (the usual ones, "more" for the rest), hairpins, then the kinds of text.
   const dynBtn = (v: string) => button(`<span class="sv-dyn">${v}</span>`, v, () => dynamic(v));
   const DYN_MAIN = ["pp", "p", "mp", "mf", "f", "ff"];

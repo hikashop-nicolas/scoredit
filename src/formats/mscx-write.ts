@@ -473,6 +473,8 @@ function writeMeasure(ctx: Ctx, part: number, k: number, staff: number, m: numbe
     voices.set(vi, [...(voices.get(vi) ?? []), ...evs].sort((a, b) => a.pos - b.pos));
   }
   placeDirections(ctx, part, k, m, kept);
+  // Tab and drum staves keep their clefs as the file has them.
+  if (staffGroup(ctx, staff) === "pitched") placeClefs(ctx, part, k, m, kept);
   placeKey(ctx, part, k, m, kept);
   const accidentals = accidentalsFor(score, part, m, k + 1);
   const top = Math.max(-1, ...kept.keys(), ...voices.keys());
@@ -623,6 +625,60 @@ function keyOf(ctx: Ctx, part: number, k: number, m: number, own: boolean): numb
   if (!key) return null;
   const { chromatic, diatonic } = ctx.link.transpose[part];
   return (Number(text(key, "fifths")) || 0) + (chromatic ? 7 * chromatic - 12 * diatonic : 0);
+}
+
+/** A file staff's kind: pitched, tablature or percussion (its StaffType group). */
+function staffGroup(ctx: Ctx, staff: number): string {
+  const def = Array.from(ctx.link.src.getElementsByTagName("Part"))
+    .flatMap((p) => kids(p, "Staff"))
+    .find((x) => x.getAttribute("id") === String(staff + 1));
+  return (def && kid(def, "StaffType")?.getAttribute("group")) || "pitched";
+}
+
+/** MuseScore's clef types, as MusicXML's sign, line and octave change. */
+const CLEF_TYPES: [string, string, number, number][] = [
+  ["G", "G", 2, 0], ["G8va", "G", 2, 1], ["G15ma", "G", 2, 2], ["G8vb", "G", 2, -1], ["F", "F", 4, 0], ["F8vb", "F", 4, -1], ["F15mb", "F", 4, -2],
+  ["F3", "F", 3, 0], ["F5", "F", 5, 0], ["C1", "C", 1, 0], ["C2", "C", 2, 0], ["C3", "C", 3, 0], ["C4", "C", 4, 0], ["C5", "C", 5, 0],
+];
+const clefSig = (sign: string, line: number, octave: number) => `${sign}${line}/${octave}`;
+/** A MuseScore clef's sign, or null for one written as the file has it (tab, percussion, unknown). */
+function fileClef(c: Element): string | null {
+  const type = text(c, "concertClefType") || text(c, "transposingClefType") || "G";
+  const t = CLEF_TYPES.find(([n]) => n === type) ?? (type === "G8vbo" ? CLEF_TYPES[3] : null);
+  return t ? clefSig(t[1], t[2], t[3]) : null;
+}
+
+/** The clefs of a staff in a measure, from the score; the file's own where they say the same. */
+function placeClefs(ctx: Ctx, part: number, k: number, m: number, kept: Map<number, Kept[]>): void {
+  const per = perQuarter(ctx.score, part, m);
+  const want = read(ctx.score.measures[part][m])
+    .others.filter((o) => o.el.tagName === "attributes")
+    .flatMap((o) =>
+      kids(o.el, "clef")
+        .filter((c) => (Number(c.getAttribute("number")) || 1) === k + 1)
+        .map((c) => ({ pos: Math.max(0, o.pos) / per / 4, sig: clefSig(text(c, "sign"), Number(text(c, "line")) || 0, Number(text(c, "clef-octave-change")) || 0) })),
+    )
+    .filter((c) => CLEF_TYPES.some(([, ...x]) => clefSig(...(x as [string, number, number])) === c.sig));
+  const used = new Set<Kept>();
+  const missing: { pos: number; sig: string }[] = [];
+  for (const w of want) {
+    const hit = [...kept.values()].flat().find((it) => !used.has(it) && it.el.tagName === "Clef" && Math.abs(it.pos - w.pos) < 1e-9 && fileClef(it.el) === w.sig);
+    if (hit) used.add(hit);
+    else missing.push(w);
+  }
+  // The file's clefs no longer in the score go (tab and percussion ones stay).
+  for (const [vi, list] of kept) kept.set(vi, list.filter((it) => it.el.tagName !== "Clef" || used.has(it) || fileClef(it.el) === null));
+  const list = kept.get(0) ?? [];
+  for (const w of missing) {
+    const type = CLEF_TYPES.find(([, ...x]) => clefSig(...(x as [string, number, number])) === w.sig)![0];
+    const el = ctx.doc.createElementNS(null, "Clef");
+    add(el, "concertClefType", type);
+    add(el, "transposingClefType", type);
+    if (m === 0 && w.pos <= 1e-9) add(el, "isHeader", 1);
+    const at = w.pos <= 1e-9 ? 0 : list.findIndex((it) => it.pos > w.pos + 1e-9);
+    list.splice(at < 0 ? list.length : at, 0, { pos: w.pos, el });
+  }
+  kept.set(0, list);
 }
 
 /** The key signature a measure starts with, from the score; the file's own when it says the same. */

@@ -874,6 +874,92 @@ export class ScoreEditor {
     });
   }
 
+  /**
+   * A key signature from a measure on, in every pitched part: fifths as the given part shows
+   * it (other parts get theirs, transposing instruments their written key). Notes keep their
+   * pitches. The same key as before removes the measure's own.
+   */
+  setKey(measure: number, fifths: number, asPart = 0): Change {
+    const none = { from: measure, to: measure, appended: 0 };
+    if (measure >= this.score.measureCount) return none;
+    // A part's written key differs from the concert one by its transposition.
+    const offset = (p: number) => {
+      const tr = this.score.attributesAt(p, measure).find((e) => e.tagName === "transpose");
+      return tr ? -(7 * (Number(text(tr, "chromatic")) || 0) - 12 * (Number(text(tr, "diatonic")) || 0)) : 0;
+    };
+    const concert = fifths - offset(asPart);
+    const keysIn = (meas: Element) => kids(meas, "attributes").flatMap((a) => kids(a, "key"));
+    return this.transact(() => {
+      this.score.measures.forEach((ms, p) => {
+        if (this.isDrums(p)) return;
+        const want = plainKey(concert + offset(p));
+        const prior = measure > 0 ? (this.score.attributesAt(p, measure).filter((e) => e.tagName === "key").map((k) => Number(text(k, "fifths")) || 0)[0] ?? 0) : null;
+        this.touch(p, measure);
+        const own = keysIn(ms[measure]);
+        if (prior === want) for (const k of own) k.remove();
+        else if (own.length) for (const k of own) setFifths(k, want);
+        else addKey(ms[measure], want);
+        for (const a of kids(ms[measure], "attributes")) if (!a.firstElementChild) a.remove();
+      });
+      this.score.refresh();
+      return { from: measure, to: this.score.measureCount, appended: 0 };
+    });
+  }
+
+  /**
+   * A clef for one staff from a measure on (sign, line, octave change), drawn where MuseScore
+   * keeps a change: in the first measure's opening attributes, else at the end of the one before.
+   */
+  setClef(part: number, staff: number, measure: number, clef: { sign: string; line: number; octave?: number }): Change {
+    const none = { from: measure, to: measure, appended: 0 };
+    if (measure >= this.score.measureCount) return none;
+    const multi = this.staves(part) > 1;
+    const forStaff = (e: Element) => e.tagName === "clef" && (Number(e.getAttribute("number")) || 1) === staff;
+    const same = (e: Element | undefined) => !!e && text(e, "sign") === clef.sign && (Number(text(e, "line")) || 0) === clef.line && (Number(text(e, "clef-octave-change")) || 0) === (clef.octave ?? 0);
+    const make = () => {
+      const c = this.score.doc.createElementNS(null, "clef");
+      if (multi) c.setAttribute("number", String(staff));
+      for (const [tag, v] of [["sign", clef.sign], ["line", clef.line], ...(clef.octave ? [["clef-octave-change", clef.octave]] : [])] as [string, string | number][]) {
+        const e = this.score.doc.createElementNS(null, tag);
+        e.textContent = String(v);
+        c.appendChild(e);
+      }
+      return c;
+    };
+    const ms = this.score.measures[part];
+    return this.transact(() => {
+      if (measure === 0) {
+        this.touch(part, 0);
+        const attrs = kids(ms[0], "attributes")[0];
+        const old = attrs ? kids(attrs).find(forStaff) : undefined;
+        if (same(old)) return none;
+        const c = make();
+        if (old) old.replaceWith(c);
+        else if (attrs) placeAttr(attrs, c);
+        return { from: 0, to: this.score.measureCount, appended: 0 };
+      }
+      // Changes already there: at the start of the measure, or at the end of the one before.
+      this.touch(part, measure - 1);
+      this.touch(part, measure);
+      const prev = readMeasure(ms[measure - 1]);
+      const len = this.info(part, measure - 1).length;
+      for (const o of prev.others) if (o.el.tagName === "attributes" && o.pos >= len - 1e-9) for (const c of kids(o.el).filter(forStaff)) c.remove();
+      for (const o of readMeasure(ms[measure]).others) if (o.el.tagName === "attributes" && o.pos <= 0) for (const c of kids(o.el).filter(forStaff)) c.remove();
+      for (const meas of [ms[measure - 1], ms[measure]]) for (const a of kids(meas, "attributes")) if (!a.firstElementChild) a.remove();
+      this.score.refresh();
+      // The clef already in force: nothing to draw.
+      if (!same(this.score.attributesAt(part, measure).find(forStaff))) {
+        const r = readMeasure(ms[measure - 1]);
+        const a = this.score.doc.createElementNS(null, "attributes");
+        a.appendChild(make());
+        r.others.push({ pos: len, el: a });
+        writeMeasure(ms[measure - 1], r);
+        this.score.refresh();
+      }
+      return { from: measure - 1, to: this.score.measureCount, appended: 0 };
+    });
+  }
+
   /** Moves a note up or down, with the notes tied to it. */
   transpose(note: Element, semitones: number): Change {
     const at = this.locate(note);
@@ -1426,4 +1512,12 @@ function addKey(meas: Element, fifths: number): void {
   setFifths(key, fifths);
   const div = kid(attrs, "divisions");
   attrs.insertBefore(key, div ? div.nextSibling : attrs.firstChild);
+}
+
+/** An element put in attributes in MusicXML's order. */
+function placeAttr(attrs: Element, el: Element): void {
+  const ORDER = ["footnote", "level", "divisions", "key", "time", "staves", "part-symbol", "instruments", "clef", "staff-details", "transpose", "for-part", "directive", "measure-style"];
+  const rank = ORDER.indexOf(el.tagName);
+  const after = kids(attrs).find((c) => ORDER.indexOf(c.tagName) > rank);
+  attrs.insertBefore(el, after ?? null);
 }

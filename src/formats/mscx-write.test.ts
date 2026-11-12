@@ -119,6 +119,21 @@ describe("Saving back into MuseScore files", () => {
     expect(noteList(loadScore(strToU8(b)).score)).toEqual(noteList(part.score));
   });
 
+  it("writes key and clef changes where MuseScore keeps them", () => {
+    const loaded = loadScore(strToU8(source));
+    const ed = new ScoreEditor(loaded.score);
+    ed.setKey(1, -2);
+    ed.setClef(0, 1, 2, { sign: "F", line: 4 });
+    const saved = strFromU8(loaded.save!().bytes);
+    const [m1, m2, m3] = measureOffsets(saved).staves[0].map((r) => saved.slice(...r));
+    expect(m1).toBe(source.slice(...measureOffsets(source).staves[0][0]));
+    expect(m2).toMatch(/<voice><KeySig><concertKey>-2<\/concertKey><\/KeySig>/);
+    // The clef change closes the bar before.
+    expect(m2).toMatch(/<\/Rest><Clef><concertClefType>F<\/concertClefType><transposingClefType>F<\/transposingClefType><\/Clef><\/voice>/);
+    expect(m3).not.toContain("<Clef>");
+    expect(noteList(loadScore(strToU8(saved)).score)).toEqual(noteList(loaded.score));
+  });
+
   it("keeps each kind of breath mark and caesura", () => {
     const symbols = ["breathMarkComma", "breathMarkTick", "breathMarkUpbow", "breathMarkSalzedo", "caesura", "caesuraThick", "caesuraShort", "caesuraCurved", "caesuraSingleStroke"];
     const src = file(symbols.map((sym, i) => (i ? "" : TS) + chord("whole", 72, 14) + `<Breath><symbol>${sym}</symbol></Breath>`));
