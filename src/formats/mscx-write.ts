@@ -3,7 +3,7 @@ import { pairEnds, type SlurItem } from "../edit/pairs";
 import { isAfterGrace, readMeasure, voiceKey, type Event } from "../edit/measure";
 import { bendsOf, fingeringOf, lyricsOf, marksOf, midiOf, readPitch, slursOf, spansOf, spellMidi, tremoloOf, type Pitch } from "../edit/notes";
 import type { ScoreDoc } from "../model/score";
-import { kid, kids, text } from "../model/xml";
+import { kid, kids, parseXml, text } from "../model/xml";
 import { BREATH, SYM, marksOfSubtype, plain, type MscxLink } from "./mscx";
 import { DYNAMICS, directionOf, type Direction } from "../edit/directions";
 
@@ -349,8 +349,19 @@ export function writeMuseScore(original: Uint8Array, score: ScoreDoc, link: Mscx
   if (source !== link.source) throw new Error("The file changed since it was opened");
   const { text: out, dropped } = writeMscxText(score, link, dirty, prints, opts);
   if (!files || !name) return { bytes: strToU8(out), dropped };
+  // MuseScore's instrument parts (Excerpts/...) are scores of their own: the same bars are
+  // written into each, or MuseScore would show them as they were.
+  const parts = new Map<string, string>();
+  try {
+    for (const n of Object.keys(files).filter((x) => x.startsWith("Excerpts/") && x.endsWith(".mscx"))) {
+      const sub = excerptLink(link, strFromU8(files[n]));
+      if (sub) parts.set(n, writeText(score, sub, dirty, prints, { fresh: true }, true).text);
+    }
+  } finally {
+    clearCaches(score);
+  }
   const next: Zippable = {};
-  for (const [n, data] of Object.entries(files)) next[n] = n === name ? strToU8(out) : data;
+  for (const [n, data] of Object.entries(files)) next[n] = n === name ? strToU8(out) : parts.has(n) ? strToU8(parts.get(n)!) : data;
   return { bytes: zipSync(next), dropped };
 }
 
@@ -359,24 +370,52 @@ export function writeMscxText(score: ScoreDoc, link: MscxLink, dirty: Set<string
   try {
     return writeText(score, link, dirty, prints, opts);
   } finally {
-    // The caches hold the whole score: let it go once written.
-    runs.delete(score);
-    holderCache.delete(score);
-    byPlace = new Map();
-    reads = new WeakMap();
-    pers = new Map();
-    wedgeCache = new Map();
+    clearCaches(score);
   }
 }
 
-function writeText(score: ScoreDoc, link: MscxLink, dirty: Set<string>, prints: WeakMap<Element, string>, opts: { fresh?: boolean }): { text: string; dropped: Dropped } {
-  if (link.version < 3) throw new Error("Saving MuseScore 2 files is not supported yet");
+/** The caches hold the whole score: let it go once written. */
+function clearCaches(score: ScoreDoc): void {
   runs.delete(score);
   holderCache.delete(score);
   byPlace = new Map();
   reads = new WeakMap();
   pers = new Map();
   wedgeCache = new Map();
+}
+
+/**
+ * A MuseScore part (an excerpt) seen as the score's file: its staves are those of the score
+ * its own staves link to. Null when none of them links to one.
+ */
+function excerptLink(main: MscxLink, source: string): MscxLink | null {
+  const src = parseXml(source);
+  const ms = src.documentElement;
+  const sc = kid(ms, "Score");
+  if (!sc) return null;
+  const defs = (doc: Element) => kids(doc, "Part").flatMap((p) => kids(p, "Staff"));
+  const mainScore = kid(main.src.documentElement, "Score");
+  const mainIds = mainScore ? defs(mainScore).map((st) => text(st, "eid")) : [];
+  // Each staff of the part: the score's staff it is linked to.
+  const toMain = defs(sc).map((st) => mainIds.indexOf(text(st, "linkedTo")));
+  if (!toMain.some((x) => x >= 0)) return null;
+  const toPart = new Map(toMain.map((m, i) => [m, i]));
+  return {
+    ...main,
+    source,
+    src,
+    version: Number(ms.getAttribute("version")) || main.version,
+    measures: kids(sc, "Staff").map((st) => kids(st, "Measure")),
+    staves: main.staves.map((list) => list.map((st) => (st < 0 ? -1 : (toPart.get(st) ?? -1)))),
+    ottavaAt: (st, m, pos) => main.ottavaAt(toMain[st] ?? st, m, pos),
+    chords: new WeakMap(),
+  };
+}
+
+function writeText(score: ScoreDoc, link: MscxLink, dirty: Set<string>, prints: WeakMap<Element, string>, opts: { fresh?: boolean }, warm = false): { text: string; dropped: Dropped } {
+  if (link.version < 3) throw new Error("Saving MuseScore 2 files is not supported yet");
+  // A part written after the score reuses what the score's writing read.
+  if (!warm) clearCaches(score);
   if (/<Tuplet id=/.test(link.source)) throw new Error("This MuseScore file writes tuplets the MuseScore 2 way, which scoredit cannot save yet");
   const ctx: Ctx = { score, link, doc: link.src, prints, dropped: {}, v4: link.version >= 4, fresh: !!opts.fresh };
   const { staves: offsets, staffEnds } = measureOffsets(link.source);
@@ -629,9 +668,8 @@ function keyOf(ctx: Ctx, part: number, k: number, m: number, own: boolean): numb
 
 /** A file staff's kind: pitched, tablature or percussion (its StaffType group). */
 function staffGroup(ctx: Ctx, staff: number): string {
-  const def = Array.from(ctx.link.src.getElementsByTagName("Part"))
-    .flatMap((p) => kids(p, "Staff"))
-    .find((x) => x.getAttribute("id") === String(staff + 1));
+  const sc = kid(ctx.link.src.documentElement, "Score");
+  const def = sc ? kids(sc, "Part").flatMap((p) => kids(p, "Staff"))[staff] : undefined;
   return (def && kid(def, "StaffType")?.getAttribute("group")) || "pitched";
 }
 

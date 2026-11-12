@@ -134,6 +134,23 @@ describe("Saving back into MuseScore files", () => {
     expect(noteList(loadScore(strToU8(saved)).score)).toEqual(noteList(loaded.score));
   });
 
+  it("writes the edited bars into MuseScore's instrument parts too", async () => {
+    const { zipSync, unzipSync } = await import("fflate");
+    const withEid = source.replace('<Staff id="1">\n        <StaffType', '<Staff id="1">\n        <eid>S1</eid><StaffType');
+    const part = withEid.replace("<eid>S1</eid>", "<eid>P1</eid><linkedTo>S1</linkedTo>").replace("<Dynamic><subtype>p</subtype></Dynamic>", "<Dynamic><eid>D1</eid><linkedTo>X</linkedTo><subtype>p</subtype></Dynamic>");
+    const bytes = zipSync({ "score.mscx": strToU8(withEid), "Excerpts/Flute/Flute.mscx": strToU8(part) });
+    const loaded = loadScore(bytes);
+    const ed = new ScoreEditor(loaded.score);
+    ed.enter({ part: 0, measure: 1, staff: 1, voice: "1", pos: 1 }, { pitches: [{ step: "F", alter: 1, octave: 4 }], quarters: 1 });
+    const files = unzipSync(loaded.save!().bytes);
+    const out = strFromU8(files["Excerpts/Flute/Flute.mscx"]);
+    const bars = measureOffsets(out).staves[0].map((r) => out.slice(...r));
+    expect(bars[1]).toContain("<subtype>accidentalSharp</subtype>");
+    // The part's own dynamic, linked to the score's, stays.
+    expect(bars[1]).toContain("<eid>D1</eid><linkedTo>X</linkedTo>");
+    expect(bars[0]).toBe(part.slice(...measureOffsets(part).staves[0][0]));
+  });
+
   it("keeps each kind of breath mark and caesura", () => {
     const symbols = ["breathMarkComma", "breathMarkTick", "breathMarkUpbow", "breathMarkSalzedo", "caesura", "caesuraThick", "caesuraShort", "caesuraCurved", "caesuraSingleStroke"];
     const src = file(symbols.map((sym, i) => (i ? "" : TS) + chord("whole", 72, 14) + `<Breath><symbol>${sym}</symbol></Breath>`));
