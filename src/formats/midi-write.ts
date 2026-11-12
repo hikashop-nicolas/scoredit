@@ -1,7 +1,7 @@
 import { INSTRUMENTS } from "../model/instruments";
 import type { ScoreDoc } from "../model/score";
 import { kid, kids, text } from "../model/xml";
-import { buildTimeline, secToQuarter, type MeasureSpan } from "../play/timeline";
+import { buildTimeline, quarterToSec } from "../play/timeline";
 
 // A score as a Standard MIDI File (type 1): a conductor track with tempo, time and key
 // signatures, rehearsal marks and the title, then one track per part. Notes come from the
@@ -93,26 +93,55 @@ function rehearsals(score: ScoreDoc, p: number, m: number): [number, string][] {
 export function writeMidi(score: ScoreDoc, opts: MidiWriteOptions = {}): Uint8Array {
   const tl = buildTimeline(score, { straight: opts.straight, bpm: opts.bpm ?? 120 });
   const spans = tl.spans;
-  const qStart: number[] = [];
-  let total = 0;
-  for (const s of spans) {
-    qStart.push(total);
-    total += s.quarters;
-  }
-  const endTick = Math.round(total * PPQ);
-  // Seconds to ticks, through the measure being played then.
+  // Time as runs of one tempo: [seconds, tick, seconds a quarter]. A pause gets a bar of ticks
+  // of its own at the tempo that fills it, as MuseScore writes it.
+  const runs: [number, number, number][] = [];
+  let tick = 0;
+  // The bar a pause takes is the measure under it: at a measure's end, the next in score order.
+  const lengthOf = new Map(spans.map((s) => [s.measure, s.quarters]));
+  const barAt = (m: number, len: number) => {
+    const ts = score.measures[0]?.[m] ? timeOf(score, 0, m) : null;
+    return lengthOf.get(m) ?? (ts ? (ts[0] * 4) / ts[1] : len);
+  };
+  spans.forEach((s) => {
+    const cuts: [q: number, spq: number, pause: number][] = [...s.tempo.map(([q, spq]): [number, number, number] => [q, spq, 0]), ...(s.pauses ?? []).map(([q, sec]): [number, number, number] => [q, 0, sec])];
+    // Pauses before the tempo that starts at the same place.
+    cuts.sort((a, b) => a[0] - b[0] || b[2] - a[2]);
+    let q = 0;
+    let spq = s.tempo[0]?.[1] ?? 0.5;
+    let paused = 0;
+    for (const [at, tempo, pause] of cuts) {
+      if (at !== q) paused = 0;
+      tick += (at - q) * PPQ;
+      q = at;
+      if (pause > 0) {
+        const bar = at >= s.quarters ? barAt(s.measure + 1, s.quarters) : barAt(s.measure, s.quarters);
+        runs.push([s.start + quarterToSec(s, at, true) + paused, tick, pause / bar]);
+        paused += pause;
+        tick += bar * PPQ;
+        runs.push([s.start + quarterToSec(s, at, true) + paused, tick, spq]);
+      } else {
+        spq = tempo;
+        runs.push([s.start + quarterToSec(s, at), tick, spq]);
+      }
+    }
+    tick += (s.quarters - q) * PPQ;
+  });
+  // Seconds to ticks, through the run being played then.
   const toTick = (sec: number): number => {
     let lo = 0;
-    let hi = spans.length - 1;
+    let hi = runs.length - 1;
     if (hi < 0) return 0;
     while (lo < hi) {
       const mid = (lo + hi + 1) >> 1;
-      if (spans[mid].start <= sec + 1e-9) lo = mid;
+      if (runs[mid][0] <= sec + 1e-9) lo = mid;
       else hi = mid - 1;
     }
-    const s: MeasureSpan = spans[lo];
-    return Math.max(0, Math.round((qStart[lo] + secToQuarter(s, Math.max(0, sec - s.start))) * PPQ));
+    const [s0, t0, spq] = runs[lo];
+    return Math.max(0, Math.round(t0 + ((sec - s0) / spq) * PPQ));
   };
+  const endTick = Math.round(tick);
+  const qTick = (i: number, q: number) => toTick(spans[i].start + quarterToSec(spans[i], q));
 
   // Conductor track.
   const conductor: TrackEvent[] = [];
@@ -125,14 +154,16 @@ export function writeMidi(score: ScoreDoc, opts: MidiWriteOptions = {}): Uint8Ar
   let lastTempo = -1;
   let lastTime = "";
   let lastKey = "";
+  runs.forEach(([, at, spq], i) => {
+    // A run cut short by another at the same tick (a pause at the bar line) needs no tempo.
+    if (i + 1 < runs.length && Math.round(runs[i + 1][1]) === Math.round(at)) return;
+    const us = Math.min(0xffffff, Math.round(spq * 1e6));
+    if (us === lastTempo) return;
+    lastTempo = us;
+    conductor.push(metaEv(Math.round(at), 0x51, [(us >> 16) & 0xff, (us >> 8) & 0xff, us & 0xff]));
+  });
   spans.forEach((s, i) => {
-    const tick = Math.round(qStart[i] * PPQ);
-    for (const [q, spq] of s.tempo) {
-      const us = Math.min(0xffffff, Math.round(spq * 1e6));
-      if (us === lastTempo) continue;
-      lastTempo = us;
-      conductor.push(metaEv(Math.round((qStart[i] + q) * PPQ), 0x51, [(us >> 16) & 0xff, (us >> 8) & 0xff, us & 0xff]));
-    }
+    const tick = qTick(i, 0);
     const ts = score.measures[0]?.[s.measure] ? timeOf(score, 0, s.measure) : null;
     if (ts) {
       let [n, d] = ts;
@@ -152,7 +183,7 @@ export function writeMidi(score: ScoreDoc, opts: MidiWriteOptions = {}): Uint8Ar
       lastKey = ks.join();
       conductor.push(metaEv(tick, 0x59, [ks[0] & 0xff, ks[1]]));
     }
-    for (const [q, mark] of score.measures[0]?.[s.measure] ? rehearsals(score, 0, s.measure) : []) conductor.push(metaEv(Math.round((qStart[i] + q) * PPQ), 0x06, utf8(mark)));
+    for (const [q, mark] of score.measures[0]?.[s.measure] ? rehearsals(score, 0, s.measure) : []) conductor.push(metaEv(qTick(i, q), 0x06, utf8(mark)));
   });
   if (lastTempo < 0) conductor.push(metaEv(0, 0x51, [0x07, 0xa1, 0x20]));
 

@@ -154,6 +154,27 @@ describe("MIDI writer", () => {
     ]);
   });
 
+  it("slows the tempo under a fermata and gives a pause a bar of its own, as MuseScore does", () => {
+    const ferm = `<notations><fermata type="upright"/></notations>`;
+    const caes = `<notations><articulations><caesura/></articulations></notations>`;
+    const tempo = `<direction><direction-type><metronome><beat-unit>quarter</beat-unit><per-minute>120</per-minute></metronome></direction-type><sound tempo="120"/></direction>`;
+    const at = `<attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type></time></attributes>`;
+    const bars = [`${at}${tempo}${note("C", 5, 1)}${note("D", 5, 1, ferm)}${note("E", 5, 2, caes)}`, `${note("F", 5, 4)}`, `${note("G", 5, 4)}`];
+    // Measure numbers starting again make a new section.
+    const s = score(`<score-part id="P1"><part-name>Flute</part-name></score-part>`, `<part id="P1">${bars.map((b, i) => `<measure number="${[1, 2, 1][i]}">${b}</measure>`).join("")}</part>`);
+    const m = read(writeMidi(s));
+    const tempos = m.metas(0, 0x51).map((e) => [e.tick / 480, Math.round(60000000 / ((e.data[1] << 16) | (e.data[2] << 8) | e.data[3]))]);
+    // 120, 60 under the fermata, the caesura's second over a bar (4 quarters at 240), the section's three seconds (at 80).
+    expect(tempos).toEqual([[0, 120], [1, 60], [2, 120], [4, 240], [8, 120], [12, 80], [16, 120]]);
+    expect(m.notes(1).map(([, p, on, off]) => [p, on / 480, off / 480])).toEqual([
+      [72, 0, 1],
+      [74, 1, 2],
+      [76, 2, 4],
+      [77, 8, 12],
+      [79, 16, 20],
+    ]);
+  });
+
   // Notes as written: pitch, start and length in quarters over the whole score.
   const written = (s: ScoreDoc) => {
     const tl = buildTimeline(s, { straight: true });

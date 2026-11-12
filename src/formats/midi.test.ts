@@ -2,6 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { detectFormat } from "./detect";
 import { loadScore } from "./load";
+import { buildTimeline } from "../play/timeline";
 import { midiToMusicXml } from "./midi";
 
 // A tiny SMF writer: notes in quarters, at 480 ticks a quarter.
@@ -128,6 +129,40 @@ describe("MIDI reader", () => {
     expect(bars(doc)).toEqual([["C4 e/3", "D4 e/3", "E4 e/3", "F4 q", "G4 h"]]);
     const tuplets = [...doc.getElementsByTagName("tuplet")].map((t) => t.getAttribute("type"));
     expect(tuplets).toEqual(["start", "stop"]);
+    checkFull(doc);
+  });
+
+  it("writes tuplets over several beats: quarter and half triplets, quintuplets over a half note", () => {
+    const t = 2 / 3;
+    const mods = (doc: Document) => [...doc.getElementsByTagName("time-modification")].map((m) => `${kid(m, "actual-notes")!.textContent}:${kid(m, "normal-notes")!.textContent}`);
+    const brackets = (doc: Document) => [...doc.getElementsByTagName("tuplet")].map((x) => x.getAttribute("type"));
+    // Quarter triplets over a half note, then a half note; slightly loose.
+    let doc = parse(smf([[...notes(0, [[60, 0, t], [62, t + 0.01, t], [64, 2 * t - 0.01, t], [67, 2, 2]])]]));
+    expect(bars(doc)).toEqual([["C4 q/3", "D4 q/3", "E4 q/3", "G4 h"]]);
+    expect(brackets(doc)).toEqual(["start", "stop"]);
+    expect(new Set(mods(doc))).toEqual(new Set(["3:2"]));
+    checkFull(doc);
+    // Eighth triplets with a quarter across the middle, on the second half of the bar: one bracket.
+    doc = parse(smf([[...notes(0, [[60, 0, 2], [62, 2, t / 2], [64, 2 + t / 2, t / 2], [65, 2 + t, t], [67, 2 + 2 * t, t / 2], [69, 2 + 2.5 * t, t / 2]])]]));
+    expect(bars(doc)).toEqual([["C4 h", "D4 e/3", "E4 e/3", "F4 q/3", "G4 e/3", "A4 e/3"]]);
+    expect(brackets(doc)).toEqual(["start", "stop"]);
+    checkFull(doc);
+    // A rest across the middle is split at the beat, as triplets are written beat by beat.
+    doc = parse(smf([[...notes(0, [[60, 0, 2], [62, 2, t], [65, 2 + 2 * t, t]])]]));
+    expect(bars(doc)).toEqual([["C4 h", "D4 q/3", "r e/3", "r e/3", "F4 q/3"]]);
+    // Half-note triplets over a whole bar.
+    doc = parse(smf([[...notes(0, [[60, 0, 2 * t], [62, 2 * t, 2 * t], [64, 4 * t, 2 * t]])]]));
+    expect(bars(doc)).toEqual([["C4 h/3", "D4 h/3", "E4 h/3"]]);
+    expect(brackets(doc)).toEqual(["start", "stop"]);
+    checkFull(doc);
+    // Five eighths over a half note.
+    doc = parse(smf([[...notes(0, [...[0, 1, 2, 3, 4].map((i) => [60 + i, i * 0.4, 0.4] as [number, number, number]), [72, 2, 2]])]]));
+    expect(bars(doc)).toEqual([["C4 e/5", "C#4 e/5", "D4 e/5", "D#4 e/5", "E4 e/5", "C5 h"]]);
+    expect(brackets(doc)).toEqual(["start", "stop"]);
+    checkFull(doc);
+    // The second beat alone (one onset, a fifth in) reads as a sixteenth; both beats together, as fives.
+    doc = parse(smf([[...notes(0, [[60, 0, 0.4], [61, 0.41, 0.4], [62, 0.79, 0.4], [63, 1.21, 0.8], [72, 2, 2]])]]));
+    expect(bars(doc)).toEqual([["C4 e/5", "C#4 e/5", "D4 e/5", "D#4 q/5", "C5 h"]]);
     checkFull(doc);
   });
 
@@ -273,6 +308,30 @@ describe("MIDI reader", () => {
     const chordDoc = parse(smf([[program(0, 48), ...notes(0, [[60, 0, 4], [64, 0, 4], [67, 0, 4], [72, 0, 1], [74, 1, 1], [76, 2, 2]])]]));
     expect(bars(chordDoc, 0, 2)).toEqual([["C4 w", "+E4 w", "+G4 w"]]);
     expect(bars(chordDoc, 0, 1)).toEqual([["C5 q", "D5 q", "E5 h"]]);
+  });
+
+  it("past four voices, joins a line to the chords of the voice that fits it, tied, without losing a note", () => {
+    // Six lines in one strings track, all sounding at once.
+    const lines: [number, number, number][] = [
+      [48, 0, 4],
+      [55, 0, 2],
+      [57, 2, 2],
+      [64, 0, 3],
+      [65, 3, 1],
+      ...[0, 1, 2, 3].map((i) => [76 + (i % 3), i + 0.5, 0.5] as [number, number, number]),
+      [72, 1, 2],
+      [83, 0.5, 1.5],
+      [86, 2, 2],
+    ];
+    const bytes = smf([[program(0, 48), ...notes(0, lines)]]);
+    const doc = parse(bytes);
+    const voices = new Set([...doc.getElementsByTagName("voice")].map((v) => v.textContent));
+    expect(voices.size).toBe(4);
+    checkFull(doc);
+    // Every note sounds where and as long as it was played.
+    const tl = buildTimeline(loadScore(bytes).score, { straight: true, bpm: 60 });
+    const sounded = tl.events.map((e) => `${e.midi}@${e.onset}+${Math.round(e.dur * 1000) / 1000}`).sort();
+    expect(sounded).toEqual(lines.map(([p, s, l]) => `${p}@${s}+${l}`).sort());
   });
 
   it("reads a long file with many tracks and tempo and key changes quickly", () => {
