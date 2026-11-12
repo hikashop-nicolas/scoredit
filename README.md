@@ -47,6 +47,13 @@ from [scoredit-sounds](https://github.com/hikashop-nicolas/scoredit-sounds) (Mus
 MIT; most instruments are under 0.5 MB, the piano 15 MB), asks the host first through `ask`,
 and keeps them in Cache Storage. scoredit itself never downloads anything.
 
+`exportMp3(score, { sounds, onProgress })` and `exportWav(...)` render the whole score to audio,
+with the same instruments (recorded ones straight through spessasynth, the rest on the built-in
+synth), and give the file bytes; `renderAudio` and `encodeMp3` are the two steps apart. The MP3
+encoder is [rusty_mp3](https://github.com/Remade-With-Rust/remade_ffmpeg_rs) (Apache-2.0),
+compiled to WebAssembly (`scripts/build-mp3-wasm.sh`, from `wasm/mp3`) and loaded only when
+an MP3 is made.
+
 ## Develop
 
 ```sh
