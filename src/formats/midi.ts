@@ -168,27 +168,51 @@ function beatQuantizer(onsets: number[]): { start: (q: number) => number; end: (
     if (x < 0.02 || x > 0.98) continue; // on a beat: fits any subdivision
     (byBeat.get(b) ?? byBeat.set(b, []).get(b)!).push(x);
   }
+  // How badly the onsets of a beat fit d to the beat.
+  const misfit = (pts: number[], d: number) => {
+    let c = 0;
+    let prev = -1;
+    let prevX = -1;
+    for (const x of pts) {
+      const k = Math.round(x * d);
+      c += (x - k / d) ** 2;
+      // Two clearly apart onsets on one place: this subdivision is too coarse.
+      if (k === prev && x - prevX > 0.06) c += 0.01;
+      prev = k;
+      prevX = x;
+    }
+    return c;
+  };
   const div = new Map<number, number>();
+  const pointsOf = new Map<number, number[]>();
+  const costOf = new Map<number, number>();
   for (const [b, xs] of byBeat) {
     xs.sort((p, q) => p - q);
     const pts = xs.filter((x, i) => i === 0 || x - xs[i - 1] > 0.015);
     let best = 8;
     let bestCost = Infinity;
     for (const [d, cost] of SUBDIVS) {
-      let c = cost;
-      let prev = -1;
-      let prevX = -1;
-      for (const x of pts) {
-        const k = Math.round(x * d);
-        c += (x - k / d) ** 2;
-        // Two clearly apart onsets on one place: this subdivision is too coarse.
-        if (k === prev && x - prevX > 0.06) c += 0.01;
-        prev = k;
-        prevX = x;
-      }
+      const c = cost + misfit(pts, d);
       if (c < bestCost) [bestCost, best] = [c, d];
     }
     div.set(b, best);
+    pointsOf.set(b, pts);
+    costOf.set(b, bestCost);
+  }
+  // Two beats in a row that fit triplets or quintuplets better together (a tuplet over both) take them.
+  const paired = new Set<number>();
+  for (const b of [...div.keys()].sort((x, y) => x - y)) {
+    if (paired.has(b) || !div.has(b + 1) || div.get(b) === div.get(b + 1)) continue;
+    let best = 0;
+    let bestCost = costOf.get(b)! + costOf.get(b + 1)!;
+    for (const [d, cost] of SUBDIVS.filter(([d]) => d === 3 || d === 5)) {
+      const c = cost + misfit(pointsOf.get(b)!, d) + misfit(pointsOf.get(b + 1)!, d);
+      if (c < bestCost) [bestCost, best] = [c, d];
+    }
+    if (best) {
+      div.set(b, best).set(b + 1, best);
+      paired.add(b + 1);
+    }
   }
   return {
     start: (q: number) => {
@@ -568,7 +592,26 @@ function barVoice(evs: Ev[], bar: { start: number; len: number }, o: { voice: nu
     const starts = new Set(evs.filter((e) => e.start > b && e.start < b + Q).map((e) => e.start)).size;
     kinds.set(b, best.actual === 3 && starts >= 4 && marks.some((x) => x % (Q / 3) !== 0) ? { step: best.step, actual: 6, normal: 4 } : best);
   }
-  const kindOf = (b: number) => kinds.get(b) ?? STRAIGHT;
+  // Tuplets over two or four beats (quarter or half triplets, eighth quintuplets): where every time
+  // fits the triplet or quintuplet grid, no note crosses the edges and one crosses the middle.
+  const groups: { start: number; len: number; kind: BeatKind }[] = [];
+  const inNote = (x: number) => evs.some((e) => e.start < x && e.end > x);
+  // Only where some time is off the straight grid.
+  const offGrid = evs.some((e) => (e.start - bar.start) % (Q / 8) !== 0 || (e.end - bar.start) % (Q / 8) !== 0);
+  for (const beats of offGrid ? [4, 2] : []) {
+    for (let b = bar.start; b + beats * Q <= barEnd; b += Q) {
+      const end = b + beats * Q;
+      if (groups.some((g) => g.start < end && g.start + g.len > b)) continue;
+      if (inNote(b) || inNote(end) || !inNote(b + (beats / 2) * Q)) continue;
+      const marks = evs.flatMap((e) => [e.start, e.end]).filter((x) => x > b && x < end).map((x) => x - b);
+      const kind = KINDS.slice(1).find((k) => marks.every((x) => x % (k.actual === 3 ? Q / 6 : Q / 10) === 0));
+      if (!kind || marks.every((x) => x % (Q / 2) === 0)) continue;
+      groups.push({ start: b, len: beats * Q, kind });
+      for (let x = b; x < end; x += Q) kinds.delete(x);
+    }
+  }
+  const groupOf = (x: number) => groups.find((g) => x >= g.start && x < g.start + g.len);
+  const kindOf = (b: number) => groupOf(b)?.kind ?? kinds.get(b) ?? STRAIGHT;
   // Every time onto its beat's grid.
   const fix = (x: number) => {
     if (x <= bar.start) return bar.start;
@@ -595,7 +638,9 @@ function barVoice(evs: Ev[], bar: { start: number; len: number }, o: { voice: nu
     for (let b = bar.start; b < barEnd; b += Q) {
       const inside = b > cur.start && b < cur.start + cur.len;
       if (!inside) continue;
-      const needs = kinds.has(b) || kinds.has(b - Q) || (cur.pitches && (cur.start - bar.start) % Q !== 0);
+      const g = groupOf(b);
+      if (g && b > g.start) continue;
+      const needs = !!g || groupOf(b - Q) || kinds.has(b) || kinds.has(b - Q) || (cur.pitches && (cur.start - bar.start) % Q !== 0);
       if (!needs) continue;
       const head = { ...cur, len: b - cur.start, tieOut: !!cur.pitches, outP: undefined };
       cut.push(head);
@@ -605,8 +650,11 @@ function barVoice(evs: Ev[], bar: { start: number; len: number }, o: { voice: nu
   }
   const items: Item[] = [];
   for (const s of cut) {
-    const k = s.len < Q ? kindOf(beatOf(s.start)) : STRAIGHT;
+    const g = groupOf(s.start);
+    const k = g ? g.kind : s.len < Q ? kindOf(beatOf(s.start)) : STRAIGHT;
     const tup = k.actual > 1 ? k : null;
+    const from = g ? g.start : beatOf(s.start);
+    const span = g ? g.len : Q;
     // A whole-bar rest.
     if (!s.pitches && s.start === bar.start && s.len === bar.len && o.first) {
       items.push({ pitches: null, at: s.start, duration: s.len, type: null, dots: 0, tieIn: false, tieOut: false, tuplet: null });
@@ -615,11 +663,11 @@ function barVoice(evs: Ev[], bar: { start: number; len: number }, o: { voice: nu
     // In a tuplet beat, each length is written as actual:normal of a plain value.
     const unit = tup ? (s.len * tup.actual) / tup.normal : s.len;
     const pieces = s.pitches ? pieceValues(Math.round(unit)) : restPieces(s.start - bar.start, Math.round(unit), !!tup);
-    let pos = s.start - beatOf(s.start);
+    let pos = s.start - from;
     pieces.forEach((w, i) => {
       const dur = tup ? (w.divs * tup.normal) / tup.actual : w.divs;
-      const tuplet = tup ? { kind: tup, type: pos === 0 ? "start" : pos + dur >= Q ? "stop" : "in" } : null;
-      items.push({ pitches: s.pitches, at: beatOf(s.start) + pos, duration: dur, type: w.type, dots: w.dots, tieIn: (i > 0 || s.tieIn) && !!s.pitches, tieOut: (i < pieces.length - 1 || s.tieOut) && !!s.pitches, inP: i === 0 ? s.inP : undefined, outP: i === pieces.length - 1 ? s.outP : undefined, tuplet });
+      const tuplet = tup ? { kind: tup, type: pos === 0 ? "start" : pos + dur >= span ? "stop" : "in" } : null;
+      items.push({ pitches: s.pitches, at: from + pos, duration: dur, type: w.type, dots: w.dots, tieIn: (i > 0 || s.tieIn) && !!s.pitches, tieOut: (i < pieces.length - 1 || s.tieOut) && !!s.pitches, inP: i === 0 ? s.inP : undefined, outP: i === pieces.length - 1 ? s.outP : undefined, tuplet });
       pos += dur;
     });
   }

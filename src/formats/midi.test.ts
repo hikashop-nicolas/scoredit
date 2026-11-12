@@ -132,6 +132,40 @@ describe("MIDI reader", () => {
     checkFull(doc);
   });
 
+  it("writes tuplets over several beats: quarter and half triplets, quintuplets over a half note", () => {
+    const t = 2 / 3;
+    const mods = (doc: Document) => [...doc.getElementsByTagName("time-modification")].map((m) => `${kid(m, "actual-notes")!.textContent}:${kid(m, "normal-notes")!.textContent}`);
+    const brackets = (doc: Document) => [...doc.getElementsByTagName("tuplet")].map((x) => x.getAttribute("type"));
+    // Quarter triplets over a half note, then a half note; slightly loose.
+    let doc = parse(smf([[...notes(0, [[60, 0, t], [62, t + 0.01, t], [64, 2 * t - 0.01, t], [67, 2, 2]])]]));
+    expect(bars(doc)).toEqual([["C4 q/3", "D4 q/3", "E4 q/3", "G4 h"]]);
+    expect(brackets(doc)).toEqual(["start", "stop"]);
+    expect(new Set(mods(doc))).toEqual(new Set(["3:2"]));
+    checkFull(doc);
+    // Eighth triplets with a quarter across the middle, on the second half of the bar: one bracket.
+    doc = parse(smf([[...notes(0, [[60, 0, 2], [62, 2, t / 2], [64, 2 + t / 2, t / 2], [65, 2 + t, t], [67, 2 + 2 * t, t / 2], [69, 2 + 2.5 * t, t / 2]])]]));
+    expect(bars(doc)).toEqual([["C4 h", "D4 e/3", "E4 e/3", "F4 q/3", "G4 e/3", "A4 e/3"]]);
+    expect(brackets(doc)).toEqual(["start", "stop"]);
+    checkFull(doc);
+    // A rest across the middle is split at the beat, as triplets are written beat by beat.
+    doc = parse(smf([[...notes(0, [[60, 0, 2], [62, 2, t], [65, 2 + 2 * t, t]])]]));
+    expect(bars(doc)).toEqual([["C4 h", "D4 q/3", "r e/3", "r e/3", "F4 q/3"]]);
+    // Half-note triplets over a whole bar.
+    doc = parse(smf([[...notes(0, [[60, 0, 2 * t], [62, 2 * t, 2 * t], [64, 4 * t, 2 * t]])]]));
+    expect(bars(doc)).toEqual([["C4 h/3", "D4 h/3", "E4 h/3"]]);
+    expect(brackets(doc)).toEqual(["start", "stop"]);
+    checkFull(doc);
+    // Five eighths over a half note.
+    doc = parse(smf([[...notes(0, [...[0, 1, 2, 3, 4].map((i) => [60 + i, i * 0.4, 0.4] as [number, number, number]), [72, 2, 2]])]]));
+    expect(bars(doc)).toEqual([["C4 e/5", "C#4 e/5", "D4 e/5", "D#4 e/5", "E4 e/5", "C5 h"]]);
+    expect(brackets(doc)).toEqual(["start", "stop"]);
+    checkFull(doc);
+    // The second beat alone (one onset, a fifth in) reads as a sixteenth; both beats together, as fives.
+    doc = parse(smf([[...notes(0, [[60, 0, 0.4], [61, 0.41, 0.4], [62, 0.79, 0.4], [63, 1.21, 0.8], [72, 2, 2]])]]));
+    expect(bars(doc)).toEqual([["C4 e/5", "C#4 e/5", "D4 e/5", "D#4 q/5", "C5 h"]]);
+    checkFull(doc);
+  });
+
   it("writes sixteenths and dotted values", () => {
     const doc = parse(smf([[...notes(0, [[60, 0, 1.5], [62, 1.5, 0.25], [64, 1.75, 0.25], [65, 2, 2]])]]));
     expect(bars(doc)).toEqual([["C4 q.", "D4 s", "E4 s", "F4 h"]]);
