@@ -4,6 +4,7 @@ import { detectFormat, type ScoreFormat } from "./detect";
 import { readMscx, readMscz, readMsczExcerpts, type MscxOptions } from "./mscx";
 import { readMxl } from "./mxl";
 import { readGuitarPro } from "./gp";
+import { midiToMusicXml } from "./midi";
 import { rememberMeasure, writeMuseScore, type Dropped } from "./mscx-write";
 
 export interface LoadedScore {
@@ -56,6 +57,9 @@ export function loadScore(bytes: Uint8Array, opts: LoadOptions = {}): LoadedScor
       const { doc, fretted, tab } = readGuitarPro(bytes, { tab: opts.tab });
       return { format, score: new ScoreDoc(doc), fretted, tab };
     }
+    case "midi":
+      // Read-only: no save.
+      return { format, score: new ScoreDoc(midiToMusicXml(bytes)), fretted: false, tab: false };
     default:
       throw new Error("This file is not a score scoredit can read");
   }
