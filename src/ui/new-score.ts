@@ -29,11 +29,13 @@ const PICKUPS = [0, 0.5, 1, 1.5, 2, 3];
 export function createNewScoreForm(o: NewScoreFormOptions = {}): NewScoreForm {
   const el = document.createElement("div");
   el.className = "sv-newscore";
-  el.style.cssText = "display:grid;grid-template-columns:auto 1fr;gap:8px 12px;align-items:center";
+  // A label above each field, so it fits a narrow dialog.
+  el.style.cssText = "display:flex;flex-direction:column;gap:4px";
   const field = <T extends HTMLElement>(label: string, input: T): T => {
     const l = document.createElement("label");
     l.className = o.labelClass ?? "";
     l.textContent = label;
+    l.style.marginTop = "6px";
     const id = `sv-new-${Math.random().toString(36).slice(2, 8)}`;
     input.id = id;
     l.htmlFor = id;
@@ -72,7 +74,7 @@ export function createNewScoreForm(o: NewScoreFormOptions = {}): NewScoreForm {
   const label = document.createElement("span");
   label.className = o.labelClass ?? "";
   label.textContent = t("newInstruments");
-  label.style.alignSelf = "start";
+  label.style.marginTop = "6px";
   const box = document.createElement("div");
   box.style.cssText = "display:flex;flex-direction:column;gap:6px";
   const adder = document.createElement("select");
