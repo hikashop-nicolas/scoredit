@@ -1,5 +1,5 @@
 import { OpenSheetMusicDisplay } from "opensheetmusicdisplay";
-import { patchOsmd } from "./osmd-patches";
+import { patchOsmd, keepRepeatOpen } from "./osmd-patches";
 
 patchOsmd();
 import { breakSystems, systemOf, type SystemRange } from "../layout/systems";
@@ -185,7 +185,9 @@ export function createLineView(score: ScoreDoc, opts: ViewOptions & { fit?: bool
       r.MinSkyBottomDistBetweenStaves = -100;
       r.MinimumStaffLineDistance = gap - 4;
       // No title of its own: none drawn (OSMD would write "Untitled Score").
-      await osmd.load(score.slice(range.start, range.end), "");
+      const xml = score.slice(range.start, range.end);
+      await osmd.load(xml, "");
+      keepRepeatOpen(osmd, xml);
       if (gen !== generation) return;
       // load() resets OSMD's zoom to 1.
       osmd.zoom = zoom;

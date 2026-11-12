@@ -25,3 +25,15 @@ export function patchOsmd(): void {
     }
   };
 }
+
+// OSMD ends a repeat still open at the end of the music with an end-repeat sign. A system
+// cut inside a repeat is not the end, so that made-up sign is taken off again.
+const BACK_JUMP_LINE = 2; // RepetitionInstructionEnum.BackJumpLine
+export function keepRepeatOpen(osmd: OSMD.OpenSheetMusicDisplay, xml: string): void {
+  const tail = xml.slice(xml.lastIndexOf("<measure"));
+  if (/<repeat\s+direction="backward"/.test(tail)) return;
+  const last = osmd.Sheet?.SourceMeasures.at(-1) as { LastRepetitionInstructions?: { type: number }[] } | undefined;
+  const list = last?.LastRepetitionInstructions;
+  if (!list) return;
+  for (let i = list.length - 1; i >= 0; i--) if (list[i].type === BACK_JUMP_LINE) list.splice(i, 1);
+}
