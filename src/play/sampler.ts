@@ -29,6 +29,7 @@ export class Sampler {
     private syn: Processor,
     readonly programs: Set<number>,
     private core: Core,
+    dest: AudioNode = ctx.destination,
   ) {
     // Recorded samples sit lower than the FM synth: lift them, and keep full chords from clipping.
     this.out = ctx.createGain();
@@ -39,16 +40,16 @@ export class Sampler {
     limit.ratio.value = 6;
     limit.attack.value = 0.003;
     limit.release.value = 0.2;
-    this.out.connect(limit).connect(ctx.destination);
+    this.out.connect(limit).connect(dest);
   }
 
   /** An empty sampler; sound files are added with addBank. Null if the synth cannot load. */
-  static async create(ctx: AudioContext, bytes?: ArrayBuffer): Promise<Sampler | null> {
+  static async create(ctx: AudioContext, bytes?: ArrayBuffer, dest?: AudioNode): Promise<Sampler | null> {
     try {
       const core: Core = await import("spessasynth_core");
       await core.BasicSoundBank.ready;
       const syn = new core.SpessaSynthProcessor(ctx.sampleRate, { effectsEnabled: false, eventsEnabled: false });
-      const sampler = new Sampler(ctx, syn, new Set(), core);
+      const sampler = new Sampler(ctx, syn, new Set(), core, dest);
       if (bytes) sampler.addBank(bytes);
       return sampler;
     } catch (e) {

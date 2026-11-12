@@ -6,4 +6,5 @@ export default class WebAudioTinySynth {
   allSoundOff(ch: number): void;
   setMasterVol(v: number): void;
   getAudioContext(): AudioContext;
+  setAudioContext(ctx: AudioContext, dest?: AudioNode): void;
 }

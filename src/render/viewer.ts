@@ -1,7 +1,7 @@
 import type { SystemRange } from "../layout/systems";
 import type { ScoreDoc } from "../model/score";
 import { clampZoom, createBar, type LayoutMode } from "../ui/bar";
-import { Player } from "../play/player";
+import { Player, getVolume, setVolume } from "../play/player";
 import type { SoundDownloads } from "../play/sounds";
 import { buildTimeline, type Timeline } from "../play/timeline";
 import { Fretboard, fretTuning, position } from "../ui/fretboard";
@@ -43,6 +43,8 @@ export interface ScoreViewerOptions {
    * the first choice (indices into score.parts, null for all); `onChange` hears the user's.
    */
   parts?: { show?: number[] | null; onChange?(shown: number[] | null): void };
+  /** Playback volume (0 to 1) and mute as they start; `onChange` hears the user's (to keep them). */
+  volume?: { value?: number; muted?: boolean; onChange?(value: number, muted: boolean): void };
   /** Shows an Edit button: notes can then be entered and changed (on the page layout). */
   editable?: boolean;
   /** The score changed by an edit (the host marks the file modified; score.serialize() has it). */
@@ -112,6 +114,7 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
   let pinching = false;
   let shown = 0;
   let zoomTimer = 0;
+  if (opts.volume) setVolume(opts.volume.value ?? getVolume().volume, opts.volume.muted ?? false);
   const bar = createBar({
     zoom: pageZoom,
     layout: mode,
@@ -123,6 +126,11 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
     },
     onPlay: () => togglePlay(),
     onSpeed: (v) => setSpeed(v),
+    volume: { value: getVolume().volume, muted: getVolume().muted },
+    onVolume: (v, m) => {
+      setVolume(v, m);
+      opts.volume?.onChange?.(v, m);
+    },
     onKeyboard: (on) => showKeyboard(on),
     fretboard: !!fretTuning(shownScore, []),
     onFretboard: (on) => showFretboard(on),

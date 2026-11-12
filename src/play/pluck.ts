@@ -24,10 +24,13 @@ export class Pluck {
   private voices = new Set<Voice>();
   private out: GainNode;
 
-  constructor(private ctx: AudioContext) {
+  constructor(
+    private ctx: AudioContext,
+    dest: AudioNode = ctx.destination,
+  ) {
     this.out = ctx.createGain();
     this.out.gain.value = 0.55;
-    this.out.connect(ctx.destination);
+    this.out.connect(dest);
   }
 
   /** One note: struck at audio time `t`, damped after `dur` seconds. */

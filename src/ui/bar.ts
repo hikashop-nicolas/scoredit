@@ -23,6 +23,8 @@ const ICON_TAB = '<span class="sv-tab-label" aria-hidden="true">TAB</span>';
 const ICON_FRETS = svgIcon('<rect x="2" y="7" width="20" height="10" rx="1"/><line x1="8" x2="8" y1="7" y2="17"/><line x1="14" x2="14" y1="7" y2="17"/><line x1="20" x2="20" y1="7" y2="17"/><line x1="2" x2="22" y1="10.5" y2="10.5"/><line x1="2" x2="22" y1="13.5" y2="13.5"/>');
 const ICON_PARTS = svgIcon('<line x1="9" x2="21" y1="6" y2="6"/><line x1="9" x2="21" y1="12" y2="12"/><line x1="9" x2="21" y1="18" y2="18"/><polyline points="3 6 4.5 7.5 7 4.5"/><polyline points="3 12 4.5 13.5 7 10.5"/><line x1="3" x2="7" y1="18" y2="18"/>');
 const ICON_EDIT = svgIcon('<path d="M4 20h4L19 9l-4-4L4 16z"/><line x1="13.5" x2="17.5" y1="6.5" y2="10.5"/>');
+const ICON_VOL = svgIcon('<path d="M4 9v6h3.5L12 19V5L7.5 9H4z" fill="currentColor"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/>');
+const ICON_MUTED = svgIcon('<path d="M4 9v6h3.5L12 19V5L7.5 9H4z" fill="currentColor"/><line x1="16" x2="21" y1="9.5" y2="14.5"/><line x1="21" x2="16" y1="9.5" y2="14.5"/>');
 const ICON_LINE = svgIcon('<line x1="2" x2="22" y1="9" y2="9"/><line x1="2" x2="22" y1="15" y2="15"/><polyline points="17 5 21 12 17 19"/>');
 
 export interface BarOptions {
@@ -41,6 +43,9 @@ export interface BarOptions {
   onPlay(): void;
   /** Playback speed, 1 = as written. */
   onSpeed(speed: number): void;
+  /** Playback volume (0 to 1) and mute, as they start. */
+  volume?: { value: number; muted: boolean };
+  onVolume?(value: number, muted: boolean): void;
   onFullscreen?(): void;
   /** A tab button, for scores with fretted parts. */
   tab?: { on: boolean; toggle(on: boolean): void };
@@ -60,6 +65,15 @@ export interface Bar {
   /** The parts of the score and those shown (null: all); no button for a single part. */
   setParts(names: string[], shown: number[] | null): void;
   setFretboard(available: boolean): void;
+}
+
+/** Puts a pop-up of the bar over its button, kept inside the bar. */
+function placePop(pop: HTMLElement, anchor: HTMLElement): void {
+  const bar = pop.offsetParent as HTMLElement | null;
+  if (!bar) return;
+  const room = bar.clientWidth - pop.offsetWidth - 8;
+  const left = anchor.offsetLeft + anchor.offsetWidth / 2 - pop.offsetWidth / 2;
+  pop.style.left = `${Math.max(8, Math.min(room, left))}px`;
 }
 
 function button(icon: string, label: string, onClick: () => void): HTMLButtonElement {
@@ -108,10 +122,73 @@ export function createBar(o: BarOptions): Bar {
     speedBtn.setAttribute("aria-expanded", String(!pop.hidden));
     if (!pop.hidden) speedRange.focus();
   });
+  // Volume: the speaker in the bar, its slider in a pop-up above it. With a mouse, hovering
+  // opens it and a click mutes; on touch the tap opens it (there is no hover).
+  const volWrap = document.createElement("span");
+  volWrap.className = "sv-volwrap";
+  const volBtn = button(ICON_VOL, t("mute"), () => {
+    if (!volTouch) {
+      muted = !muted;
+      syncVolume();
+      o.onVolume?.(volume, muted);
+      return;
+    }
+    volPop.hidden = !volPop.hidden;
+    volBtn.setAttribute("aria-expanded", String(!volPop.hidden));
+  });
+  volBtn.setAttribute("aria-expanded", "false");
+  const volPop = document.createElement("div");
+  volPop.className = "sv-pop sv-pop-vol";
+  volPop.hidden = true;
+  const volRange = document.createElement("input");
+  volRange.type = "range";
+  volRange.min = "0";
+  volRange.max = "100";
+  volRange.step = "1";
+  volRange.setAttribute("aria-label", t("volume"));
+  volPop.append(volRange);
+  volWrap.append(volBtn, volPop);
+  let volume = o.volume?.value ?? 1;
+  let muted = o.volume?.muted ?? false;
+  let volTouch = false;
+  const syncVolume = () => {
+    const silent = muted || volume === 0;
+    volBtn.innerHTML = silent ? ICON_MUTED : ICON_VOL;
+    const lbl = t(muted ? "unmute" : "mute");
+    volBtn.title = `${lbl} (${t("volume")} ${Math.round(volume * 100)}%)`;
+    volBtn.setAttribute("aria-label", lbl);
+    volBtn.setAttribute("aria-pressed", String(muted));
+    volRange.value = String(Math.round((muted ? 0 : volume) * 100));
+  };
+  volRange.addEventListener("input", () => {
+    volume = Number(volRange.value) / 100;
+    muted = volume === 0;
+    syncVolume();
+    o.onVolume?.(volume, muted);
+  });
+  volBtn.addEventListener("pointerdown", (e) => (volTouch = e.pointerType !== "mouse"));
+  volBtn.addEventListener("pointerenter", (e) => {
+    if (e.pointerType === "mouse") volPop.hidden = false;
+  });
+  volWrap.addEventListener("pointerleave", (e) => {
+    if (e.pointerType === "mouse") volPop.hidden = true;
+  });
+  // Keyboard: the button mutes, arrows on it change the volume.
+  volBtn.addEventListener("keydown", (e) => {
+    if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+    e.preventDefault();
+    volume = Math.min(1, Math.max(0, volume + (e.key === "ArrowUp" ? 0.05 : -0.05)));
+    muted = false;
+    syncVolume();
+    o.onVolume?.(volume, muted);
+  });
+  syncVolume();
+  volWrap.hidden = !o.onVolume;
   // Parts: a button opening a list of the parts to tick.
   const partsBtn = button(ICON_PARTS, t("parts"), () => {
     partsPop.hidden = !partsPop.hidden;
     partsBtn.setAttribute("aria-expanded", String(!partsPop.hidden));
+    if (!partsPop.hidden) placePop(partsPop, partsBtn);
   });
   partsBtn.setAttribute("aria-expanded", "false");
   partsBtn.hidden = true;
@@ -172,6 +249,10 @@ export function createBar(o: BarOptions): Bar {
       pop.hidden = true;
       speedBtn.setAttribute("aria-expanded", "false");
     }
+    if (!volPop.hidden && !volWrap.contains(e.target as Node)) {
+      volPop.hidden = true;
+      volBtn.setAttribute("aria-expanded", "false");
+    }
     if (!partsPop.hidden && !partsPop.contains(e.target as Node) && !partsBtn.contains(e.target as Node)) {
       partsPop.hidden = true;
       partsBtn.setAttribute("aria-expanded", "false");
@@ -231,7 +312,7 @@ export function createBar(o: BarOptions): Bar {
   slider.addEventListener("change", () => o.onZoomCommit());
   const label = document.createElement("span");
   label.className = "sv-zoom-label";
-  el.append(playBtn, speedBtn, pop, seg, kbdBtn, fretBtn);
+  el.append(playBtn, speedBtn, pop, volWrap, seg, kbdBtn, fretBtn);
   if (o.tab) {
     let tabOn = o.tab.on;
     const tabBtn = button(ICON_TAB, t("tablature"), () => {

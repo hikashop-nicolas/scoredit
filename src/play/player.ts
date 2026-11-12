@@ -26,18 +26,48 @@ const LOOKAHEAD = 0.25;
 const TICK_MS = 25;
 
 let shared: WebAudioTinySynth | null = null;
+// Every sound goes through one gain: the volume control.
+let master: GainNode | null = null;
+let volume = 1;
+let muted = false;
+const level = () => (muted ? 0 : volume);
+
+/** The playback volume, 0 to 1, for the page (all players). */
+export function setVolume(v: number, mute = false): void {
+  volume = Math.min(1, Math.max(0, v));
+  muted = mute;
+  if (master) master.gain.setTargetAtTime(level(), master.context.currentTime, 0.015);
+}
+
+export function getVolume(): { volume: number; muted: boolean } {
+  return { volume, muted };
+}
+
+function output(ctx: AudioContext): GainNode {
+  if (!master) {
+    master = ctx.createGain();
+    master.gain.value = level();
+    master.connect(ctx.destination);
+  }
+  return master;
+}
 let plucked: Pluck | null = null;
 // The recorded instruments, one sampler for the page.
 let sampler: Promise<Sampler | null> | null = null;
 let samplerReady: Sampler | null = null;
 // Plucked instruments play on their own synth, on the same audio clock.
 function pluck(): Pluck {
-  plucked ??= new Pluck(synth().getAudioContext());
+  plucked ??= new Pluck(synth().getAudioContext(), master!);
   return plucked;
 }
 // One synthesizer for the page, created on the first play (a user gesture lets audio start).
 function synth(): WebAudioTinySynth {
-  shared ??= new WebAudioTinySynth({ quality: 1, useReverb: 1, voices: 64 });
+  if (!shared) {
+    shared = new WebAudioTinySynth({ quality: 1, useReverb: 1, voices: 64 });
+    // Its output built again on its own context, into the volume.
+    const ctx = shared.getAudioContext();
+    shared.setAudioContext(ctx, output(ctx));
+  }
   return shared;
 }
 
@@ -180,7 +210,7 @@ export class Player {
     const notes: [number, number, number][] = [];
     for (let i = this.next; i < evs.length; i++) notes.push([evs[i].program, evs[i].midi, evs[i].dur / this.speed]);
     if (!notes.length) return;
-    sampler ??= Sampler.create(synth().getAudioContext());
+    sampler ??= Sampler.create(synth().getAudioContext(), undefined, master!);
     const programs = [...new Set(notes.map(([p]) => p))];
     void sampler.then(async (s) => {
       if (!s) return;
