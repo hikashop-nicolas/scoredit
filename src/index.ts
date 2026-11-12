@@ -7,6 +7,7 @@
 export { detectFormat, type ScoreFormat } from "./formats/detect";
 export { loadScore, type LoadedScore, type LoadOptions } from "./formats/load";
 export { readMxl, writeMxl } from "./formats/mxl";
+export { readAbc, abcTunes, type AbcOptions } from "./formats/abc";
 export type { Dropped } from "./formats/mscx-write";
 export { ScoreDoc, partFamily, PART_FAMILIES, type PartFamily, type PartInfo } from "./model/score";
 export { breakSystems, systemOf, type SystemRange, type BreakOptions } from "./layout/systems";

@@ -1,6 +1,7 @@
 import { unzipSync } from "fflate";
+import { looksLikeAbc } from "./abc";
 
-export type ScoreFormat = "musicxml" | "mxl" | "mscz" | "mscx";
+export type ScoreFormat = "musicxml" | "mxl" | "mscz" | "mscx" | "abc";
 
 const isZip = (b: Uint8Array) => b.length > 4 && b[0] === 0x50 && b[1] === 0x4b && b[2] === 0x03 && b[3] === 0x04;
 
@@ -18,5 +19,6 @@ export function detectFormat(bytes: Uint8Array): ScoreFormat | null {
   const head = new TextDecoder().decode(bytes.subarray(0, 4096));
   if (/<museScore[\s>]/.test(head)) return "mscx";
   if (/<score-(partwise|timewise)[\s>]/.test(head)) return "musicxml";
+  if (looksLikeAbc(head)) return "abc";
   return null;
 }

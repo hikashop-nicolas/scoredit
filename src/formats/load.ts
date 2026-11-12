@@ -1,4 +1,5 @@
 import { ScoreDoc } from "../model/score";
+import { readAbc } from "./abc";
 import { detectFormat, type ScoreFormat } from "./detect";
 import { readMscx, readMscz, readMsczExcerpts, type MscxOptions } from "./mscx";
 import { readMxl } from "./mxl";
@@ -21,6 +22,8 @@ export interface LoadedScore {
 export interface LoadOptions {
   /** Tab staff for fretted MuseScore parts: "auto" where MuseScore had one (default), "always", "never". */
   tab?: MscxOptions["tab"];
+  /** ABC files: the tune to open, by its X: number. */
+  tune?: number;
 }
 
 export function loadScore(bytes: Uint8Array, opts: LoadOptions = {}): LoadedScore {
@@ -45,6 +48,8 @@ export function loadScore(bytes: Uint8Array, opts: LoadOptions = {}): LoadedScor
       const writable = link.version >= 3 && !/<Tuplet id=/.test(link.source);
       return { format, score, fretted, tab, save: writable ? (o) => writeMuseScore(original, score, link, score.dirty, prints, o) : undefined };
     }
+    case "abc":
+      return withTab(format, new ScoreDoc(readAbc(new TextDecoder().decode(bytes), { tune: opts.tune })));
     default:
       throw new Error("This file is not a score scoredit can read");
   }
