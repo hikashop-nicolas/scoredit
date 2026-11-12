@@ -77,6 +77,44 @@ for (const f of TAB) {
   }
   console.log(f);
 }
+// Guitar Pro files (GP3 to GP8): small feature test files from MIT-licensed parsers, pinned to a
+// commit, with MuseScore's own import of each as MusicXML in guitarpro/mscore/ for comparison.
+const GP = [
+  // Songs and files of unknown origin are left out.
+  { repo: "slundi/guitarpro", sha: "d7a716b8993983f4d597c2b427ccf4939c3088e7", dir: "test/", prefix: "", skip: /^(Demo v5|001_Funky_Guy|the-beatles|gp5_duration_byte|gp5_mislabelled|gp3_int_chord|gp3_tremolo_bar_and|gp_string_tuning|gp_repeat_alternative)/ },
+  { repo: "thiagokimo/GTP", sha: "56e75c2beec85233b2cd37ee7a12666235132571", dir: "test/tabs/", prefix: "gtp_" },
+  { repo: "ImmaculatePine/guitar_pro_parser", sha: "ec318433fd2a7b4321210487557da77b84c422ce", dir: "spec/tabs/", prefix: "gpp_" },
+];
+const gpRoot = join(root, "guitarpro");
+mkdirSync(join(gpRoot, "mscore"), { recursive: true });
+const sources = ["# Guitar Pro corpus sources", "", "Fetched by scripts/fetch-corpus.mjs. Local only, never committed.", "", "| File | Source | Licence |", "|---|---|---|"];
+for (const src of GP) {
+  const tree = await (await fetch(`https://api.github.com/repos/${src.repo}/git/trees/${src.sha}?recursive=1`)).json();
+  const licence = (await (await fetch(`https://api.github.com/repos/${src.repo}`)).json()).license?.spdx_id ?? "see repository";
+  for (const { path, type } of tree.tree ?? []) {
+    if (type !== "blob" || !path.startsWith(src.dir) || !/\.(gp[345x]?)$/i.test(path)) continue;
+    const base = basename(path);
+    if (src.skip?.test(base)) continue;
+    const name = src.prefix + base;
+    const file = join(gpRoot, name);
+    const url = `https://raw.githubusercontent.com/${src.repo}/${src.sha}/${path.split("/").map(encodeURIComponent).join("/")}`;
+    if (!existsSync(file)) {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`${res.status} ${url}`);
+      writeFileSync(file, Buffer.from(await res.arrayBuffer()));
+    }
+    sources.push(`| ${name} | ${url} | ${licence} (repository licence) |`);
+    // MusicXML for the notes, .mscz for the tab (MuseScore's MusicXML leaves tab staves out).
+    for (const ext of ["musicxml", "mscz"]) {
+      const out = join(gpRoot, "mscore", `${name}.${ext}`);
+      if (!mscore || existsSync(out)) continue;
+      // MuseScore can hang on a bad file: give it a minute.
+      try { execFileSync("mscore", ["-o", out, file], { stdio: "ignore", timeout: 60_000 }); } catch { console.log(`mscore failed: ${name}.${ext}`); }
+    }
+  }
+  console.log(src.repo);
+}
+writeFileSync(join(gpRoot, "SOURCES.md"), sources.join("\n") + "\n");
 // The full MuseScore General sound bank (MIT), for the sound check page (demo/sounds.html).
 mkdirSync(join(root, "sounds"), { recursive: true });
 const bankPath = join(root, "sounds", "MuseScore_General.sf3");
