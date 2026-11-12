@@ -850,6 +850,9 @@ function placeKey(ctx: Ctx, part: number, k: number, m: number, kept: Map<number
   else {
     el = ctx.doc.createElementNS(null, "KeySig");
     add(el, ctx.v4 ? "concertKey" : "accidental", want);
+    // A transposing staff names its written key too.
+    const { chromatic, diatonic } = ctx.link.transpose[part];
+    if (ctx.v4 && chromatic) add(el, "actualKey", want - (7 * chromatic - 12 * diatonic));
   }
   const vi = orig?.vi ?? 0;
   const list = kept.get(vi) ?? [];

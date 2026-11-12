@@ -448,7 +448,12 @@ export class ScoreEditor {
   /** Whether a part's notes are drums. */
   isDrums(part: number): boolean {
     for (const m of this.score.measures[part] ?? []) if (m.getElementsByTagName("unpitched").length) return true;
-    return false;
+    // An empty drum part: its percussion clef, or the drums its part list names.
+    const first = this.score.measures[part]?.[0];
+    if (first && Array.from(first.getElementsByTagName("sign")).some((x) => x.textContent === "percussion")) return true;
+    const id = kids(this.score.root, "part")[part]?.getAttribute("id");
+    const sp = Array.from(this.score.root.getElementsByTagName("score-part")).find((x) => x.getAttribute("id") === id);
+    return !!sp && sp.getElementsByTagName("midi-unpitched").length > 0;
   }
 
   /** A drum's name, from the part list. */
