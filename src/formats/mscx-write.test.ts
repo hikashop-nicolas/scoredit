@@ -77,6 +77,31 @@ describe("Saving back into MuseScore files", () => {
     expect(strFromU8(bytes)).toContain('<Bend><point time="0" pitch="0" vibrato="0"/><point time="10" pitch="50" vibrato="0"/>');
   });
 
+  it("writes dynamics, hairpins, text and tempo marks", () => {
+    const loaded = loadScore(strToU8(source));
+    const ed = new ScoreEditor(loaded.score);
+    const c = (measure: number, pos: number) => ({ part: 0, measure, staff: 1, voice: "1", pos });
+    ed.dynamic(c(0, 1), "mf");
+    ed.hairpin(c(0, 1), c(0, 3), "crescendo");
+    ed.text(c(0, 2), "expression", "dolce");
+    ed.text(c(0, 3), "staff", "pizz.");
+    ed.tempo(c(0, 0), 72, "Adagio ♩ = 72");
+    // The file's own p in bar 2 goes.
+    ed.dynamic(c(1, 0), null);
+    const saved = strFromU8(loaded.save!().bytes);
+    const [m1, m2, m3] = measureOffsets(saved).staves[0].map((r) => saved.slice(...r));
+    expect(m1).toContain("<Dynamic><subtype>mf</subtype><velocity>80</velocity></Dynamic>");
+    expect(m1).toContain('<Spanner type="HairPin"><HairPin><subtype>0</subtype></HairPin><next><location><measures>1</measures><fractions>-1/4</fractions></location></next></Spanner>');
+    expect(m1).toContain("<Expression><text>dolce</text></Expression>");
+    expect(m1).toContain("<StaffText><text>pizz.</text></StaffText>");
+    expect(m1).toContain("<Tempo><tempo>1.2</tempo><followText>1</followText><text>Adagio <sym>metNoteQuarterUp</sym> = 72</text></Tempo>");
+    // The hairpin ends at the next bar's start; the p is gone from there.
+    expect(m2).toContain('<Spanner type="HairPin"><prev><location><measures>-1</measures><fractions>1/4</fractions></location></prev></Spanner>');
+    expect(m2).not.toContain("<Dynamic>");
+    expect(m3).toBe(source.slice(...measureOffsets(source).staves[0][2]));
+    expect(noteList(loadScore(strToU8(saved)).score)).toEqual(noteList(loaded.score));
+  });
+
   it("keeps each kind of breath mark and caesura", () => {
     const symbols = ["breathMarkComma", "breathMarkTick", "breathMarkUpbow", "breathMarkSalzedo", "caesura", "caesuraThick", "caesuraShort", "caesuraCurved", "caesuraSingleStroke"];
     const src = file(symbols.map((sym, i) => (i ? "" : TS) + chord("whole", 72, 14) + `<Breath><symbol>${sym}</symbol></Breath>`));

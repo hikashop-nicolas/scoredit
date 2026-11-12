@@ -1,5 +1,6 @@
 import type { ScoreDoc } from "../model/score";
 import { kid, kids, text } from "../model/xml";
+import { directionOf, directionsAt, makeDirection, type Direction, type TextKind } from "./directions";
 import { isAfterGrace, readMeasure, voiceKey, writeMeasure, type Event, type ReadMeasure } from "./measure";
 import { TYPES, addOrnamentXml, setOrnamentAccidental, addTechnicalXml, setTechValue, setBends, type Bend, addSpan, removeSpan, setFingering, setTremolo, spansOf, addSlur, defaultPosition, isTied, keepMarksFor, makeGrace, marksOf, placeInNote, removeSlur, setLyric, setMark, setPosition, slursOf, writtenFor, keyAlter, makeNote, midiOf, pieceOf, readPitch, setPitch, setTie, spellMidi, splitLength, type Pitch, type Written } from "./notes";
 
@@ -680,6 +681,126 @@ export class ScoreEditor {
       this.touch(at.part, at.measure);
       grace.remove();
       return { from: at.measure, to: at.measure + 1, appended: 0 };
+    });
+  }
+
+  /** The dynamics, hairpin ends, text and tempo marks at the caret's beat on its staff. */
+  directions(caret: Caret): Direction[] {
+    const ev = this.eventAt(caret);
+    if (!ev) return [];
+    return directionsAt(this.score.measures[caret.part][caret.measure], ev.pos, caret.staff)
+      .map(directionOf)
+      .filter((d): d is Direction => !!d);
+  }
+
+  /** The dynamic at the caret's beat (null takes it off). */
+  dynamic(caret: Caret, value: string | null): Change {
+    return this.setDirection(caret, (d) => d.kind === "dynamic", value ? { kind: "dynamic", value } : null);
+  }
+
+  /** Text of one kind at the caret's beat (empty takes it off). */
+  text(caret: Caret, kind: TextKind, words: string | null): Change {
+    return this.setDirection(caret, (d) => d.kind === "text" && d.text === kind, words ? { kind: "text", text: kind, words } : null);
+  }
+
+  /** A tempo mark at the caret's beat: quarters per minute and its text ("♩ = bpm" when none); null takes it off. */
+  tempo(caret: Caret, bpm: number | null, words = ""): Change {
+    return this.setDirection(caret, (d) => d.kind === "tempo", bpm ? { kind: "tempo", bpm, words: words || `♩ = ${bpm}` } : null);
+  }
+
+  /** Replaces the directions matching at the caret's beat on its staff with one (or none). */
+  private setDirection(caret: Caret, match: (d: Direction) => boolean, dir: Direction | null): Change {
+    const ev = this.eventAt(caret);
+    const none = { from: caret.measure, to: caret.measure, appended: 0 };
+    if (!ev) return none;
+    const meas = this.score.measures[caret.part][caret.measure];
+    const old = directionsAt(meas, ev.pos, caret.staff).filter((d) => {
+      const x = directionOf(d);
+      return !!x && match(x);
+    });
+    if (!old.length && !dir) return none;
+    return this.transact(() => {
+      this.touch(caret.part, caret.measure);
+      for (const d of old) d.remove();
+      if (dir) {
+        const first = ev.graces.find((g) => !isAfterGrace(g)) ?? ev.notes[0];
+        first.parentElement!.insertBefore(makeDirection(this.score.doc, dir, this.staves(caret.part) > 1 ? caret.staff : undefined), first);
+      }
+      return { from: caret.measure, to: caret.measure + 1, appended: 0 };
+    });
+  }
+
+  /**
+   * A hairpin from the event at a to the end of the one at b (a crescendo or diminuendo);
+   * type null takes off the one starting at a.
+   */
+  hairpin(a: Caret, b: Caret | null, type: "crescendo" | "diminuendo" | null): Change {
+    const from = this.eventAt(a);
+    const none = { from: a.measure, to: a.measure, appended: 0 };
+    if (!from) return none;
+    const staffNo = this.staves(a.part) > 1 ? a.staff : undefined;
+    const wedges = (m: number) =>
+      readMeasure(this.score.measures[a.part][m])
+        .others.filter((o) => o.el.tagName === "direction" && (Number(text(o.el, "staff")) || 1) === a.staff)
+        .flatMap((o) => {
+          const d = directionOf(o.el);
+          return d?.kind === "wedge" ? [{ pos: o.pos, el: o.el, d }] : [];
+        });
+    const start = wedges(a.measure).find((w) => Math.abs(w.pos - from.pos) < 1e-9 && w.d.type !== "stop");
+    // The stop of a wedge: the next one of its number on the staff.
+    const stopOf = (w: { pos: number; el: Element; d: Direction & { kind: "wedge" } }) => {
+      for (let m = a.measure; m < this.score.measureCount; m++)
+        for (const x of wedges(m)) if (x.d.type === "stop" && x.d.number === w.d.number && (m > a.measure || x.pos >= w.pos)) return x.el;
+      return null;
+    };
+    if (!type) {
+      if (!start) return none;
+      return this.transact(() => {
+        const stop = stopOf(start);
+        this.touch(a.part, a.measure);
+        start.el.remove();
+        if (stop) {
+          const at = this.locate(stop);
+          if (at) this.touch(at.part, at.measure);
+          stop.remove();
+        }
+        return { from: a.measure, to: this.score.measureCount, appended: 0 };
+      });
+    }
+    const end = b ?? this.nextEvent(a) ?? a;
+    const to = this.eventAt(end);
+    if (!to) return none;
+    return this.transact(() => {
+      this.touch(a.part, a.measure);
+      this.touch(end.part, end.measure);
+      if (start) {
+        const stop = stopOf(start);
+        const at = stop ? this.locate(stop) : null;
+        if (at) this.touch(at.part, at.measure);
+        start.el.remove();
+        stop?.remove();
+      }
+      // A number no hairpin in between uses.
+      const used = new Set<number>();
+      for (let m = a.measure; m <= end.measure; m++) for (const w of wedges(m)) used.add(w.d.number);
+      let number = 1;
+      while (used.has(number) && number < 16) number++;
+      const doc = this.score.doc;
+      const first = from.graces.find((g) => !isAfterGrace(g)) ?? from.notes[0];
+      first.parentElement!.insertBefore(makeDirection(doc, { kind: "wedge", type, number }, staffNo), first);
+      const stop = makeDirection(doc, { kind: "wedge", type: "stop", number }, staffNo);
+      // Ending on a barline: at the start of the next bar, as MuseScore keeps it.
+      const atBar = to.pos + to.dur >= this.info(end.part, end.measure).length - 1e-9 && end.measure + 1 < this.score.measureCount;
+      const next = atBar ? this.eventAt({ ...end, measure: end.measure + 1, pos: 0 }) : null;
+      if (next) {
+        this.touch(end.part, end.measure + 1);
+        const first = next.graces.find((g) => !isAfterGrace(g)) ?? next.notes[0];
+        first.parentElement!.insertBefore(stop, first);
+      } else {
+        const lastEl = [...to.notes, ...to.graces.filter(isAfterGrace)].pop()!;
+        lastEl.parentElement!.insertBefore(stop, lastEl.nextSibling);
+      }
+      return { from: Math.min(a.measure, end.measure), to: Math.max(a.measure, end.measure) + (next ? 2 : 1), appended: 0 };
     });
   }
 

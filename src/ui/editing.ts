@@ -1,4 +1,5 @@
 import { ScoreEditor, type Caret, type Change, type Clip } from "../edit/editor";
+import { tempoOf, type TextKind } from "../edit/directions";
 import { readMeasure, voiceKey, type Event } from "../edit/measure";
 import { ornamentAccidental, techValue, bendsOf, fingeringOf, type Bend, keyAlter, lyricsOf, marksOf, midiOf, readPitch, spellMidi, tremoloOf, type Pitch } from "../edit/notes";
 import type { ScoreDoc } from "../model/score";
@@ -49,6 +50,13 @@ const ICONS = {
   dot: svg('<circle cx="12" cy="12" r="3" fill="currentColor"/>'),
   tie: svg('<path d="M4 11c4 6 12 6 16 0"/>'),
   marks: svg('<polyline points="5 5 12 9 5 13"/><circle cx="16" cy="18" r="2" fill="currentColor"/>'),
+  textMarks: svg('<polyline points="5 7 5 5 15 5 15 7"/><line x1="10" x2="10" y1="5" y2="16"/><path d="M14 19 L20 16.5 L14 14"/>'),
+  crescendo: svg('<polyline points="20 7 4 12 20 17"/>'),
+  diminuendo: svg('<polyline points="4 7 20 12 4 17"/>'),
+  staffText: svg('<polyline points="6 8 6 5 18 5 18 8"/><line x1="12" x2="12" y1="5" y2="19"/><line x1="9" x2="15" y1="19" y2="19"/>'),
+  expression: svg('<path d="M9 19 L13 5 L17 5"/><line x1="8" x2="15" y1="11" y2="11"/>'),
+  tempoMark: svg('<ellipse cx="7" cy="17" rx="3" ry="2.2" fill="currentColor"/><line x1="10" x2="10" y1="17" y2="5"/><line x1="13" x2="20" y1="10" y2="10"/><line x1="13" x2="20" y1="14" y2="14"/>'),
+  rehearsal: svg('<rect x="5" y="5" width="14" height="14" rx="1.5"/><path d="M9 16 L12 8 L15 16 M10.2 13 H13.8"/>'),
   accent: svg('<polyline points="5 7 19 12 5 17"/>'),
   staccato: svg('<circle cx="12" cy="12" r="3" fill="currentColor"/>'),
   tenuto: svg('<line x1="5" x2="19" y1="12" y2="12" stroke-width="3"/>'),
@@ -229,7 +237,10 @@ export function createEditing(host: EditingHost): Editing {
   const row3 = document.createElement("div");
   row3.className = "sv-pal-row sv-pal-marks";
   row3.hidden = true;
-  rows.append(row1, row2, row3);
+  const row4 = document.createElement("div");
+  row4.className = "sv-pal-row sv-pal-marks";
+  row4.hidden = true;
+  rows.append(row1, row2, row3, row4);
   // Lyrics are typed in a field that moves along the notes.
   const lyricBar = document.createElement("div");
   lyricBar.className = "sv-lyric-bar";
@@ -275,9 +286,32 @@ export function createEditing(host: EditingHost): Editing {
   const doneBtn = button(ICONS.done, t("done"), () => host.done(), "sv-pal-done");
   const marksBtn = button(ICONS.marks, t("marks"), () => {
     row3.hidden = !row3.hidden;
+    row4.hidden = true;
     sync();
   });
-  row2.append(...accBtns, voiceBtn, insertBtn, delBtn, undoBtn, redoBtn, keysBtn, marksBtn, doneBtn);
+  const textBtn = button(ICONS.textMarks, t("textMarks"), () => {
+    row4.hidden = !row4.hidden;
+    row3.hidden = true;
+    sync();
+  });
+  row2.append(...accBtns, voiceBtn, insertBtn, delBtn, undoBtn, redoBtn, keysBtn, marksBtn, textBtn, doneBtn);
+  // Dynamics (the usual ones, "more" for the rest), hairpins, then the kinds of text.
+  const dynBtn = (v: string) => button(`<span class="sv-dyn">${v}</span>`, v, () => dynamic(v));
+  const DYN_MAIN = ["pp", "p", "mp", "mf", "f", "ff"];
+  const DYN_MORE = ["ppp", "fff", "sf", "sfz", "sfp", "fp", "rfz"];
+  const dynBtns = [...DYN_MAIN, ...DYN_MORE].map((v) => [v, dynBtn(v)] as const);
+  let moreDyn = false;
+  const moreDynBtn = button(ICONS.more, t("moreDynamics"), () => {
+    moreDyn = !moreDyn;
+    sync();
+  });
+  const crescBtn = button(ICONS.crescendo, t("crescendo"), () => hairpin("crescendo"));
+  const dimBtn = button(ICONS.diminuendo, t("diminuendo"), () => hairpin("diminuendo"));
+  const staffTextBtn = button(ICONS.staffText, t("staffText"), () => openField("staff", lyricBar.hidden !== false || fieldMode !== "staff"));
+  const exprBtn = button(ICONS.expression, t("expressionText"), () => openField("expression", lyricBar.hidden !== false || fieldMode !== "expression"));
+  const tempoBtn = button(ICONS.tempoMark, t("tempoMark"), () => openField("tempo", lyricBar.hidden !== false || fieldMode !== "tempo"));
+  const rehearsalBtn = button(ICONS.rehearsal, t("rehearsalMark"), () => openField("rehearsal", lyricBar.hidden !== false || fieldMode !== "rehearsal"));
+  row4.append(...dynBtns.map(([, b]) => b), moreDynBtn, crescBtn, dimBtn, staffTextBtn, exprBtn, tempoBtn, rehearsalBtn);
   const MARKS: [mark: string, icon: string, label: string][] = [
     ["accent", ICONS.accent, "accent"],
     ["staccato", ICONS.staccato, "staccato"],
@@ -394,6 +428,16 @@ export function createEditing(host: EditingHost): Editing {
     pressed(insertBtn, insert);
     pressed(keysBtn, !strip.hidden);
     pressed(marksBtn, !row3.hidden);
+    pressed(textBtn, !row4.hidden);
+    pressed(moreDynBtn, moreDyn);
+    const dirs = sel ? editor.directions(sel.at) : [];
+    for (const [v, b] of dynBtns) {
+      b.hidden = !moreDyn && !DYN_MAIN.includes(v);
+      pressed(b, dirs.some((d) => d.kind === "dynamic" && d.value === v));
+    }
+    pressed(crescBtn, dirs.some((d) => d.kind === "wedge" && d.type === "crescendo"));
+    pressed(dimBtn, dirs.some((d) => d.kind === "wedge" && d.type === "diminuendo"));
+    for (const [b, mode] of [[staffTextBtn, "staff"], [exprBtn, "expression"], [tempoBtn, "tempo"], [rehearsalBtn, "rehearsal"]] as const) pressed(b, !lyricBar.hidden && fieldMode === mode);
     pressed(allBtn, allMarks);
     const part = (sel?.at ?? caret)?.part ?? toFull(0);
     const family = partFamily(editor.score.parts[part] ?? { id: "", name: "", abbreviation: "", program: null });
@@ -617,10 +661,14 @@ export function createEditing(host: EditingHost): Editing {
   // ---- The text field, for lyrics or fingerings. Lyrics: the selected note's syllable;
   // space or "-" moves to the next note (a hyphen joins a word's syllables). Fingerings: one
   // note at a time, a chord from its lowest note up. Enter moves on too, Escape closes.
-  let fieldMode: "lyrics" | "fingering" = "lyrics";
+  type FieldMode = "lyrics" | "fingering" | TextKind | "tempo";
+  let fieldMode: FieldMode = "lyrics";
   let hyphenBefore = false;
   let fingerIndex = 0;
-  function openField(mode: "lyrics" | "fingering", open: boolean): void {
+  const HINT: Record<FieldMode, [string, string]> = { lyrics: ["lyricsHint", "lyrics"], fingering: ["fingeringHint", "fingering"], staff: ["textHint", "staffText"], expression: ["textHint", "expressionText"], rehearsal: ["textHint", "rehearsalMark"], tempo: ["tempoHint", "tempoMark"] };
+  /** Text marks: one per beat, Enter sets it (empty takes it off) and closes. */
+  const oneShot = (m: FieldMode) => m !== "lyrics" && m !== "fingering";
+  function openField(mode: FieldMode, open: boolean): void {
     if (!open) {
       lyricBar.hidden = true;
       sync();
@@ -630,8 +678,8 @@ export function createEditing(host: EditingHost): Editing {
     if (!sel) return;
     if (input) setInput(false);
     fieldMode = mode;
-    lyricInput.placeholder = t(mode === "lyrics" ? "lyricsHint" : "fingeringHint");
-    lyricInput.setAttribute("aria-label", t(mode === "lyrics" ? "lyrics" : "fingering"));
+    lyricInput.placeholder = t(HINT[mode][0]);
+    lyricInput.setAttribute("aria-label", t(HINT[mode][1]));
     lyricInput.inputMode = mode === "fingering" ? "numeric" : "text";
     lyricBar.hidden = false;
     hyphenBefore = false;
@@ -647,7 +695,10 @@ export function createEditing(host: EditingHost): Editing {
   }
   function showField(): void {
     const ev = sel ? editor.eventAt(sel.at) : null;
-    if (fieldMode === "fingering") {
+    if (oneShot(fieldMode)) {
+      const d = sel ? editor.directions(sel.at).find((x) => (fieldMode === "tempo" ? x.kind === "tempo" : x.kind === "text" && x.text === fieldMode)) : undefined;
+      lyricInput.value = d && (d.kind === "text" || d.kind === "tempo") ? d.words.trim() : "";
+    } else if (fieldMode === "fingering") {
       const n = fingerNote();
       lyricInput.value = n ? fingeringOf(n) : "";
       if (sel) sel = { ...sel, note: n };
@@ -656,6 +707,18 @@ export function createEditing(host: EditingHost): Editing {
   function commitField(hyphen: boolean): void {
     if (!sel) return;
     const words = lyricInput.value.trim();
+    if (fieldMode === "tempo") {
+      const bpm = tempoOf(words);
+      // "Allegro 132" or "Allegro = 132" is drawn as "Allegro ♩ = 132".
+      const m = /^(.*?)\s*=?\s*(\d+(?:\.\d+)?)$/.exec(words);
+      const drawn = m && !/[♩♪𝅗𝅥]/.test(words) ? `${m[1]} ♩ = ${m[2]}`.trim() : words;
+      landed(editor.tempo(sel.at, words ? bpm : null, drawn));
+      return openField(fieldMode, false);
+    }
+    if (oneShot(fieldMode)) {
+      landed(editor.text(sel.at, fieldMode as TextKind, words || null));
+      return openField(fieldMode, false);
+    }
     if (fieldMode === "fingering") {
       const n = fingerNote();
       if (n && words !== fingeringOf(n)) landed(editor.fingering(n, words));
@@ -680,6 +743,16 @@ export function createEditing(host: EditingHost): Editing {
   }
   lyricInput.addEventListener("keydown", (e) => {
     e.stopPropagation();
+    if (oneShot(fieldMode)) {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        commitField(false);
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        openField(fieldMode, false);
+      }
+      return;
+    }
     if (e.key === " " || e.key === "Enter" || (e.key === "-" && fieldMode === "lyrics")) {
       e.preventDefault();
       commitField(e.key === "-");
@@ -688,6 +761,20 @@ export function createEditing(host: EditingHost): Editing {
       openField(fieldMode, false);
     }
   });
+
+  /** A dynamic at the selected note (pressing the one already there takes it off). */
+  function dynamic(value: string): void {
+    if (!sel) return;
+    const now = editor.directions(sel.at).some((d) => d.kind === "dynamic" && d.value === value);
+    landed(editor.dynamic(sel.at, now ? null : value));
+  }
+
+  /** A hairpin over the selected range, else from the selected note to the next (again: off). */
+  function hairpin(type: "crescendo" | "diminuendo"): void {
+    if (!sel) return;
+    const now = editor.directions(sel.at).some((d) => d.kind === "wedge" && d.type === type);
+    landed(editor.hairpin(sel.at, sel.end ?? null, now ? null : type));
+  }
 
   /** A glissando, trill line or two-note tremolo over the selected range, else from the selected note to the next. */
   function span(kind: string, value?: string): void {
@@ -992,6 +1079,12 @@ export function createEditing(host: EditingHost): Editing {
     if (!mod && !e.altKey && !e.shiftKey && (k === "s" || k === "S")) return slur(), true;
     if (!mod && e.code === "Slash") return grace(!e.altKey), true;
     if (mod && !e.altKey && (k === "l" || k === "L")) return openLyrics(true), true;
+    // MuseScore's: staff text, expression, tempo, rehearsal mark, hairpins.
+    if (mod && !e.altKey && (k === "t" || k === "T")) return openField("staff", true), true;
+    if (mod && !e.altKey && (k === "e" || k === "E")) return openField("expression", true), true;
+    if (!mod && e.altKey && e.code === "KeyT") return openField("tempo", true), true;
+    if (mod && !e.altKey && (k === "m" || k === "M")) return openField("rehearsal", true), true;
+    if (!mod && !e.altKey && (k === "<" || k === ">")) return hairpin(k === "<" ? "crescendo" : "diminuendo"), true;
     if (mod && !e.altKey && (k === "z" || k === "Z")) {
       if (e.shiftKey) redo();
       else undo();

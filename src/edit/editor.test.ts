@@ -281,3 +281,63 @@ describe("Entering notes", () => {
     expect(otherOrnaments(notes()[2])).toEqual([]);
   });
 });
+
+describe("Dynamics, hairpins, text and tempo", () => {
+  const four = () => score(note("C", 1, "quarter") + note("D", 1, "quarter") + note("E", 1, "quarter") + note("F", 1, "quarter"), note("G", 4, "whole"));
+
+  it("sets, replaces and takes off a dynamic at a beat", () => {
+    const s = four();
+    const ed = new ScoreEditor(s);
+    ed.dynamic(at(0, 1), "p");
+    expect(ed.directions(at(0, 1))).toEqual([{ kind: "dynamic", value: "p" }]);
+    expect(ed.directions(at(0, 0))).toEqual([]);
+    ed.dynamic(at(0, 1), "ff");
+    expect(ed.directions(at(0, 1))).toEqual([{ kind: "dynamic", value: "ff" }]);
+    // It sounds: playback reads its loudness.
+    expect(s.measures[0][0].getElementsByTagName("sound")[0].getAttribute("dynamics")).toBe("124.44");
+    ed.dynamic(at(0, 1), null);
+    expect(ed.directions(at(0, 1))).toEqual([]);
+    ed.undo();
+    expect(ed.directions(at(0, 1))).toEqual([{ kind: "dynamic", value: "ff" }]);
+    // The notes are untouched.
+    expect(show(s, 0)).toBe("C4:1 D4:1 E4:1 F4:1");
+  });
+
+  it("draws a hairpin across the barline and takes it off", () => {
+    const s = four();
+    const ed = new ScoreEditor(s);
+    ed.hairpin(at(0, 2), at(1, 0), "crescendo");
+    expect(ed.directions(at(0, 2))).toEqual([{ kind: "wedge", type: "crescendo", number: 1 }]);
+    // The stop stands at the end of the last note: the end of bar 2, the last one.
+    const stops = readMeasure(s.measures[0][1]).others.filter((o) => o.el.tagName === "direction");
+    expect(stops.map((o) => o.pos)).toEqual([4]);
+    // Ending on a barline with a bar after: at that bar's start, as MuseScore keeps it.
+    ed.hairpin(at(0, 0), at(0, 3), "diminuendo");
+    expect(ed.directions(at(1, 0))).toEqual([{ kind: "wedge", type: "stop", number: 2 }]);
+    ed.hairpin(at(0, 0), null, null);
+    ed.hairpin(at(0, 2), null, null);
+    expect(s.root.getElementsByTagName("wedge")).toHaveLength(0);
+    ed.undo();
+    expect(s.root.getElementsByTagName("wedge")).toHaveLength(2);
+  });
+
+  it("writes text of each kind and a tempo mark", () => {
+    const s = four();
+    const ed = new ScoreEditor(s);
+    ed.text(at(0, 0), "staff", "pizz.");
+    ed.text(at(0, 0), "expression", "dolce");
+    ed.text(at(0, 0), "rehearsal", "A");
+    ed.tempo(at(0, 0), 72, "Adagio");
+    expect(ed.directions(at(0, 0))).toEqual(
+      expect.arrayContaining([
+        { kind: "text", text: "staff", words: "pizz." },
+        { kind: "text", text: "expression", words: "dolce" },
+        { kind: "text", text: "rehearsal", words: "A" },
+        { kind: "tempo", bpm: 72, words: "Adagio" },
+      ]),
+    );
+    expect(buildTimeline(s).events.length).toBeGreaterThan(0);
+    ed.text(at(0, 0), "expression", null);
+    expect(ed.directions(at(0, 0)).filter((d) => d.kind === "text")).toHaveLength(2);
+  });
+});

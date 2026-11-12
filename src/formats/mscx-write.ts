@@ -4,7 +4,8 @@ import { isAfterGrace, readMeasure, voiceKey, type Event } from "../edit/measure
 import { bendsOf, fingeringOf, lyricsOf, marksOf, midiOf, readPitch, slursOf, spansOf, spellMidi, tremoloOf, type Pitch } from "../edit/notes";
 import type { ScoreDoc } from "../model/score";
 import { kid, kids, text } from "../model/xml";
-import { BREATH, marksOfSubtype, type MscxLink } from "./mscx";
+import { BREATH, SYM, marksOfSubtype, plain, type MscxLink } from "./mscx";
+import { DYNAMICS, directionOf, type Direction } from "../edit/directions";
 
 // Writing an edited score back into its MuseScore file. Only the measures an edit touched are
 // written again; everything else in the file stays byte for byte. In a rewritten measure, a
@@ -364,6 +365,7 @@ export function writeMscxText(score: ScoreDoc, link: MscxLink, dirty: Set<string
     byPlace = new Map();
     reads = new WeakMap();
     pers = new Map();
+    wedgeCache = new Map();
   }
 }
 
@@ -374,6 +376,7 @@ function writeText(score: ScoreDoc, link: MscxLink, dirty: Set<string>, prints: 
   byPlace = new Map();
   reads = new WeakMap();
   pers = new Map();
+  wedgeCache = new Map();
   if (/<Tuplet id=/.test(link.source)) throw new Error("This MuseScore file writes tuplets the MuseScore 2 way, which scoredit cannot save yet");
   const ctx: Ctx = { score, link, doc: link.src, prints, dropped: {}, v4: link.version >= 4, fresh: !!opts.fresh };
   const { staves: offsets, staffEnds } = measureOffsets(link.source);
@@ -469,6 +472,7 @@ function writeMeasure(ctx: Ctx, part: number, k: number, staff: number, m: numbe
     const vi = (((Number(voice) || 1) - 1) % 4 + 4) % 4;
     voices.set(vi, [...(voices.get(vi) ?? []), ...evs].sort((a, b) => a.pos - b.pos));
   }
+  placeDirections(ctx, part, k, m, kept);
   const accidentals = accidentalsFor(score, part, m, k + 1);
   const top = Math.max(-1, ...kept.keys(), ...voices.keys());
   for (let vi = 0; vi <= top; vi++) {
@@ -477,6 +481,185 @@ function writeMeasure(ctx: Ctx, part: number, k: number, staff: number, m: numbe
     writeVoice(ctx, v, part, k, staff, m, per, key, voices.get(vi) ?? [], kept.get(vi) ?? [], accidentals);
   }
   return meas;
+}
+
+// ---- Dynamics, hairpins, text, tempo and rehearsal marks: written from the score's directions,
+// reusing the file's own element where one at the same place says the same.
+
+/** What an original voice element says, when it is one written from the score (else null: kept). */
+function fileDirection(c: Element): Direction | null {
+  const words = () => plain(kid(c, "text"));
+  switch (c.tagName) {
+    case "Dynamic": {
+      if (text(c, "visible") === "0") return null;
+      const sub = text(c, "subtype");
+      // As the reader has it: a dynamic of its own words is expression text.
+      return /^[pmfsrzn]+$/.test(sub) ? { kind: "dynamic", value: sub } : { kind: "text", text: "expression", words: words() || sub };
+    }
+    case "StaffText":
+    case "SystemText":
+      return words() ? { kind: "text", text: text(c, "placement") === "below" ? "expression" : "staff", words: words() } : null;
+    case "Expression":
+      return words() ? { kind: "text", text: "expression", words: words() } : null;
+    case "RehearsalMark":
+      return words() ? { kind: "text", text: "rehearsal", words: words() } : null;
+    case "Tempo":
+      return text(c, "visible") === "0" ? null : { kind: "tempo", bpm: Math.round(Number(text(c, "tempo")) * 60 * 100) / 100, words: words() };
+    case "Spanner": {
+      if (c.getAttribute("type") !== "HairPin") return null;
+      if (!kid(c, "next")) return { kind: "wedge", type: "stop", number: 0 };
+      const sub = Number(text(kid(c, "HairPin"), "subtype"));
+      return { kind: "wedge", type: sub === 1 || sub === 3 ? "diminuendo" : "crescendo", number: 0 };
+    }
+  }
+  return null;
+}
+
+function sameDirection(a: Direction, b: Direction): boolean {
+  if (a.kind !== b.kind) return false;
+  if (a.kind === "dynamic" && b.kind === "dynamic") return a.value === b.value;
+  if (a.kind === "text" && b.kind === "text") return a.text === b.text && a.words.trim() === b.words.trim();
+  if (a.kind === "tempo" && b.kind === "tempo") return Math.abs(a.bpm - b.bpm) < 0.01 && a.words.trim() === b.words.trim();
+  if (a.kind === "wedge" && b.kind === "wedge") return a.type === b.type;
+  return false;
+}
+
+interface Wedge {
+  m: number;
+  /** Whole notes from the measure start. */
+  pos: number;
+  el: Element;
+  partner: Wedge | null;
+}
+
+let wedgeCache = new Map<number, Map<Element, Wedge>>();
+/** A part's hairpin ends, each with the other end (a start, the next stop of its number on its staff). */
+function wedgesOf(score: ScoreDoc, part: number): Map<Element, Wedge> {
+  const hit = wedgeCache.get(part);
+  if (hit) return hit;
+  const out = new Map<Element, Wedge>();
+  const open = new Map<string, Wedge>();
+  score.measures[part].forEach((meas, m) => {
+    const per = perQuarter(score, part, m);
+    const list = read(meas)
+      .others.filter((o) => o.el.tagName === "direction")
+      .flatMap((o) => {
+        const d = directionOf(o.el);
+        return d?.kind === "wedge" ? [{ o, d }] : [];
+      })
+      .sort((a, b) => a.o.pos - b.o.pos || (a.d.type === "stop" ? -1 : 0) - (b.d.type === "stop" ? -1 : 0));
+    for (const { o, d } of list) {
+      if (d.kind !== "wedge") continue;
+      const w: Wedge = { m, pos: Math.max(0, o.pos) / per / 4, el: o.el, partner: null };
+      const key = `${Number(text(o.el, "staff")) || 1}|${d.number}`;
+      out.set(o.el, w);
+      if (d.type === "stop") {
+        const start = open.get(key);
+        if (start) {
+          start.partner = w;
+          w.partner = start;
+          open.delete(key);
+        }
+      } else open.set(key, w);
+    }
+  });
+  wedgeCache.set(part, out);
+  return out;
+}
+
+/** Takes the kept voice items written from the score out, and puts the score's directions in their place. */
+function placeDirections(ctx: Ctx, part: number, k: number, m: number, kept: Map<number, { pos: number; el: Element }[]>): void {
+  const { score, doc } = ctx;
+  const pool: { vi: number; pos: number; el: Element; d: Direction; used?: boolean }[] = [];
+  for (const [vi, list] of kept)
+    kept.set(
+      vi,
+      list.filter((it) => {
+        const d = fileDirection(it.el);
+        if (d) pool.push({ vi, pos: it.pos, el: it.el, d });
+        return !d;
+      }),
+    );
+  const per = perQuarter(score, part, m);
+  const wedges = wedgesOf(score, part);
+  const own = read(score.measures[part][m]).others.filter((o) => o.el.tagName === "direction" && (Number(text(o.el, "staff")) || 1) === k + 1);
+  for (const o of own) {
+    const d = directionOf(o.el);
+    if (!d) continue;
+    const pos = Math.max(0, o.pos) / per / 4;
+    const hit = pool.find((x) => !x.used && Math.abs(x.pos - pos) < 1e-9 && sameDirection(x.d, d));
+    if (hit) hit.used = true;
+    let el: Element;
+    const w = d.kind === "wedge" ? wedges.get(o.el) : undefined;
+    if (d.kind === "wedge" && w?.partner) {
+      el = doc.createElementNS(null, "Spanner");
+      el.setAttribute("type", "HairPin");
+      const start = d.type !== "stop";
+      if (start) {
+        const look = hit ? kid(hit.el, "HairPin") : null;
+        if (look) el.appendChild(look.cloneNode(true));
+        else add(add(el, "HairPin"), "subtype", d.type === "diminuendo" ? 1 : 0);
+      }
+      add(el, start ? "next" : "prev").appendChild(location(doc, m, Math.round(pos * 4 * per), w.partner.m, Math.round(w.partner.pos * 4 * per), per));
+    } else if (hit) el = hit.el;
+    // A hairpin end without its other end, and not in the file: left out.
+    else if (d.kind === "wedge") continue;
+    else el = newDirection(ctx, d);
+    const vi = hit?.vi ?? 0;
+    const list = kept.get(vi) ?? [];
+    list.push({ pos, el });
+    kept.set(vi, list);
+  }
+  for (const list of kept.values()) list.sort((a, b) => a.pos - b.pos);
+}
+
+/** A MuseScore element for a direction the file does not have. */
+function newDirection(ctx: Ctx, d: Direction): Element {
+  const { doc } = ctx;
+  const words = (parent: Element, s: string) => {
+    const t = add(parent, "text");
+    // Note symbols as MuseScore's own (metNoteQuarterUp...).
+    const names = Object.entries(SYM).filter(([n]) => n.startsWith("metNote"));
+    let rest = s;
+    while (rest) {
+      const at = names.map(([n, ch]) => ({ n, ch, i: rest.indexOf(ch) })).filter((x) => x.i >= 0).sort((a, b) => a.i - b.i)[0];
+      if (!at) {
+        t.appendChild(doc.createTextNode(rest));
+        break;
+      }
+      if (at.i) t.appendChild(doc.createTextNode(rest.slice(0, at.i)));
+      add(t, "sym", at.n);
+      rest = rest.slice(at.i + at.ch.length);
+      // A dotted note value ("♩. = 60").
+      if (rest.startsWith(".")) {
+        add(t, "sym", "metAugmentationDot");
+        rest = rest.slice(1);
+      }
+    }
+  };
+  switch (d.kind) {
+    case "dynamic": {
+      const e = doc.createElementNS(null, "Dynamic");
+      add(e, "subtype", d.value);
+      if (DYNAMICS[d.value]) add(e, "velocity", DYNAMICS[d.value]);
+      return e;
+    }
+    case "text": {
+      const tag = d.text === "rehearsal" ? "RehearsalMark" : d.text === "expression" && ctx.v4 ? "Expression" : "StaffText";
+      const e = doc.createElementNS(null, tag);
+      if (tag === "StaffText" && d.text === "expression") add(e, "placement", "below");
+      words(e, d.words);
+      return e;
+    }
+    case "tempo": {
+      const e = doc.createElementNS(null, "Tempo");
+      add(e, "tempo", Math.round((d.bpm / 60) * 1e6) / 1e6);
+      if (/=/.test(d.words)) add(e, "followText", 1);
+      words(e, d.words);
+      return e;
+    }
+  }
+  return doc.createElementNS(null, "StaffText");
 }
 
 const DROP = new Set(["Chord", "Rest", "Tuplet", "endTuplet", "location", "Beam", "Fermata", "Breath", "eid"]);

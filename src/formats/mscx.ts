@@ -211,7 +211,7 @@ function firstClef(measure: Element | undefined): boolean {
 }
 
 // MuseScore's music symbols in text (tempo marks), as characters.
-const SYM: Record<string, string> = {
+export const SYM: Record<string, string> = {
   metNoteWhole: "𝅝",
   metNoteHalfUp: "𝅗𝅥",
   metNoteQuarterUp: "♩",
@@ -236,7 +236,7 @@ const SYM: Record<string, string> = {
 };
 
 // Text content with MuseScore's line breaks (<br/>) as spaces and its symbols as characters.
-const plain = (el: Element | null): string => {
+export const plain = (el: Element | null): string => {
   if (!el) return "";
   const copy = el.cloneNode(true) as Element;
   for (const br of Array.from(copy.getElementsByTagName("br"))) br.replaceWith(" ");
@@ -698,7 +698,7 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
                 const words = plain(kid(c, "text"));
                 if (!words) break;
                 goTo(pos);
-                const dir = el(meas, "direction", null, { placement: c.tagName === "Expression" ? "below" : "above" });
+                const dir = el(meas, "direction", null, { placement: c.tagName === "Expression" || text(c, "placement") === "below" ? "below" : "above" });
                 el(el(dir, "direction-type"), c.tagName === "RehearsalMark" ? "rehearsal" : "words", words);
                 if (p.staves.length > 1) el(dir, "staff", k + 1);
                 break;

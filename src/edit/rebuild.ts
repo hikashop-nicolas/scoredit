@@ -1,6 +1,7 @@
 import { ScoreDoc } from "../model/score";
 import { kid, kids, text } from "../model/xml";
 import { ScoreEditor, type Caret } from "./editor";
+import { directionOf } from "./directions";
 import { isAfterGrace, readMeasure, writeMeasure, type Event } from "./measure";
 import { ORNAMENTS, SPANS, bendsOf, otherOrnaments, otherTechnical, plainOrnaments, fingeringOf, type Bend, lyricsOf, marksOf, midiOf, readPitch, slursOf, spansOf, tremoloOf, type Lyric, type Pitch, type SlurEnd, type SpanEnd } from "./notes";
 import { pairEnds, type SlurItem } from "./pairs";
@@ -268,6 +269,16 @@ export function noteList(score: ScoreDoc): string[] {
         voices.set(key, list);
       }
     });
+    // Dynamics, hairpin ends, text and tempo marks, by staff and beat.
+    ms.forEach((meas, m) => {
+      const per = ed.info(p, m).perQuarter;
+      for (const o of readMeasure(meas).others) {
+        const d = o.el.tagName === "direction" ? directionOf(o.el) : null;
+        if (!d) continue;
+        const what = d.kind === "dynamic" ? `dynamic ${d.value}` : d.kind === "wedge" ? (d.type === "stop" ? "hairpin end" : `hairpin ${d.type}`) : d.kind === "text" ? `${d.text} text "${d.words.trim()}"` : `tempo ${Math.round(d.bpm * 100) / 100} "${d.words.trim()}"`;
+        out.push(`${p}|${m}|${Number(text(o.el, "staff")) || 1}:d|${Math.round((Math.max(0, o.pos) / per) * 10080) / 10080}|direction ${what}`);
+      }
+    });
     const paired = pairedSlurs(voices);
     const spanCounts = pairedSpans(voices);
     // A tab staff drawn from a notation staff shows its marks; only the notes count there.
@@ -341,6 +352,7 @@ export function describeNote(key: string, score: ScoreDoc): string {
   const [p, m, staffVoice, beat, pitch, rest] = key.split("|");
   const where = `${score.parts[Number(p)]?.name || `part ${Number(p) + 1}`}, bar ${Number(m) + 1}, staff ${staffVoice.split(":")[0]}, beat ${+(Number(beat) + 1).toFixed(3)}`;
   const kind = pitch.split(" ")[0];
+  if (kind === "direction") return `${where}: ${pitch.slice(10)}`;
   if (kind === "marks") return `${where}: ${pitch.slice(6).replace(/-/g, " ")}`;
   if (kind === "grace") return `${where}: grace note ${NAMES[Number(pitch.split(" ")[1]) % 12] + (Math.floor(Number(pitch.split(" ")[1]) / 12) - 1)}${pitch.includes("slashed") ? " (slashed)" : ""}`;
   if (kind === "lyric") {
