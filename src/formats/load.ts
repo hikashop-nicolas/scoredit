@@ -3,6 +3,7 @@ import { readAbc } from "./abc";
 import { detectFormat, type ScoreFormat } from "./detect";
 import { readMscx, readMscz, readMsczExcerpts, type MscxOptions } from "./mscx";
 import { readMxl } from "./mxl";
+import { readGuitarPro } from "./gp";
 import { rememberMeasure, writeMuseScore, type Dropped } from "./mscx-write";
 
 export interface LoadedScore {
@@ -50,6 +51,11 @@ export function loadScore(bytes: Uint8Array, opts: LoadOptions = {}): LoadedScor
     }
     case "abc":
       return withTab(format, new ScoreDoc(readAbc(new TextDecoder().decode(bytes), { tune: opts.tune })));
+    case "guitarpro": {
+      // Read only: no `save`.
+      const { doc, fretted, tab } = readGuitarPro(bytes, { tab: opts.tab });
+      return { format, score: new ScoreDoc(doc), fretted, tab };
+    }
     default:
       throw new Error("This file is not a score scoredit can read");
   }
