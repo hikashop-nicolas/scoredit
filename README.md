@@ -62,6 +62,34 @@ an MP3 is made.
 vector PDF (OSMD's paged layout drawn with jsPDF and svg2pdf.js, both MIT, loaded on first use);
 `renderPages` gives the same pages as SVG, for printing.
 
+## Scans and photos (experimental)
+
+```ts
+import { readScanScore } from "scoredit";
+
+const doc = await readScanScore(blobOrImageData, {
+  models: { staff: urlOrBytes, symbols: urlOrBytes, classifiers: urlOrBytes },
+  session: { executionProviders: ["webgpu", "wasm"] },
+});
+```
+
+One page of printed music becomes a MusicXML document. This is a TypeScript port of
+[oemer](https://github.com/BreezeWhite/oemer) (MIT): its two segmentation networks run in
+onnxruntime-web (imported on first use) and its post-processing (staff lines, noteheads,
+beams, rests, clefs, accidentals, deskew) is ported line by line, so on the same network
+output it writes the same notes as oemer. scoredit ships none of the models: the host gives
+each as a URL, bytes or a fetch function. `python scripts/scan-models.py out/` writes them from
+an oemer install: oemer-staff.onnx (71 MB), oemer-symbols.onnx (38 MB) and
+oemer-classifiers.json (5.9 MB); `--int8 page.png` adds a 10 MB int8 copy of the symbols
+network that reads as well. The staff network was trained on CVC-MUSCIMA, a non-commercial
+dataset (CC BY-NC-SA 4.0), and oemer's checkpoints carry no licence of their own: check this
+before shipping them.
+
+It is slow. oemer runs each network on overlapping tiles (about 200 per page each). On a
+2019 laptop that is about 2 minutes with WebGPU and half an hour in single-threaded
+WebAssembly; `step: 256` (tiles without overlap) divides the time by four for a few points
+of accuracy. The post-processing takes 10 to 20 seconds on the main thread: run it in a worker.
+
 ## Develop
 
 ```sh

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # Prepares oemer's models for readScanScore: its four SVM classifiers as one JSON file,
-# and optionally int8 copies of the two networks (about a third of the size).
+# and optionally an int8 copy of the symbols network (a quarter of the size; the staff
+# network loses its staff lines when quantised, so it stays fp32).
 #   pip install oemer==0.1.5 onnx onnxruntime   (oemer downloads its checkpoints on first run)
 #   python scripts/scan-models.py out/ [--int8 calibration.png]
 # Run with numpy < 1.24, or the np.int aliases below cover newer versions.
@@ -48,23 +49,15 @@ for src, (dst, _) in nets.items():
 if "--int8" in sys.argv:
     # Static QDQ quantisation, calibrated on tiles of a printed page.
     import onnx
-    import onnxruntime as ort
     from onnx import version_converter
     from onnxruntime.quantization import CalibrationDataReader, QuantFormat, QuantType, quantize_static
     from PIL import Image
 
     page = np.array(Image.open(sys.argv[sys.argv.index("--int8") + 1]).convert("RGB"))[..., ::-1]
-    for src, (dst, win) in nets.items():
-        m = onnx.load(os.path.join(out, dst + ".onnx"))
-        for t in list(m.graph.input) + list(m.graph.output):
-            t.type.tensor_type.shape.dim[0].dim_value = 1
+    for src, (dst, win) in [("seg_net", nets["seg_net"])]:
+        # Per-channel QDQ needs opset 13; onnxruntime's offline-optimised graph does not load in onnxruntime-web.
         tmp = os.path.join(out, dst + ".tmp.onnx")
-        onnx.save(m, tmp)
-        so = ort.SessionOptions()
-        so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_BASIC
-        so.optimized_model_filepath = tmp
-        ort.InferenceSession(tmp, so, providers=["CPUExecutionProvider"])
-        onnx.save(version_converter.convert_version(onnx.load(tmp), 13), tmp)
+        onnx.save(version_converter.convert_version(onnx.load(os.path.join(out, dst + ".onnx")), 13), tmp)
 
         class Tiles(CalibrationDataReader):
             def __init__(self):
