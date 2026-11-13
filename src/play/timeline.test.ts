@@ -131,6 +131,13 @@ describe("ornaments and pedal", () => {
     expect(new Set(tl.events.map((e) => e.midi))).toEqual(new Set([60]));
   });
 
+  it("repeats a tremolo in a tuplet at the tuplet's speed", () => {
+    // A dotted half in 6:4 lasts two quarters, played as six eighth-note strokes.
+    const tup = `<type>half</type><dot/><time-modification><actual-notes>6</actual-notes><normal-notes>4</normal-notes></time-modification>`;
+    const tl = buildTimeline(new ScoreDoc(score([Q + n("C", 8, tup + orn(`<tremolo type="single">1</tremolo>`))])));
+    expect(tl.events).toHaveLength(6);
+  });
+
   it("alternates the two chords of a two-chord tremolo over both lengths", () => {
     const tl = buildTimeline(new ScoreDoc(score([Q + n("C", 8, orn(`<tremolo type="start">2</tremolo>`)) + n("G", 8, orn(`<tremolo type="stop">2</tremolo>`))])));
     expect(tl.events.map((e) => e.midi)).toEqual([60, 67, 60, 67, 60, 67, 60, 67, 60, 67, 60, 67, 60, 67, 60, 67]);

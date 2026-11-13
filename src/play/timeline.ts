@@ -31,6 +31,7 @@ export interface NoteEvent {
   bend?: Bend;
   string?: number;
   fret?: number;
+  /** A tremolo; quarters is the note's length, or for a single-note one its written value. */
   tremolo?: { type: string; strokes: number; quarters: number };
 }
 
@@ -530,7 +531,10 @@ export function buildTimeline(score: ScoreDoc, opts: { straight?: boolean; bpm?:
               }
             }
             const trem = c.getElementsByTagName("tremolo")[0];
-            if (trem) ev.tremolo = { type: trem.getAttribute("type") ?? "single", strokes: Number(trem.textContent) || 2, quarters: q };
+            const type = trem?.getAttribute("type") ?? "single";
+            // A single-note tremolo divides the written value, so in a tuplet it is as quick as its notes.
+            const written = type === "single" && TYPE_Q[text(c, "type")] ? TYPE_Q[text(c, "type")] * (2 - 2 ** -kids(c, "dot").length) : q;
+            if (trem) ev.tremolo = { type, strokes: Number(trem.textContent) || 2, quarters: written };
             events.push(ev);
             const lo = lastOf.get(`${p}|${vk}`);
             if (lo?.length && lo[0].onset === onset && lo[0].measure === m) lo.push(ev);
