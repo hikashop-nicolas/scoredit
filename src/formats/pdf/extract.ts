@@ -52,6 +52,8 @@ export interface PdfFontInfo {
   name: string;
   /** The embedded font program as pdf.js converted it, when kept. */
   data?: Uint8Array;
+  /** pdf.js's map from a char code to the code point of that glyph in `data`'s cmap. */
+  toFontChar?: Map<number, number | string>;
 }
 
 export interface PdfScore {
@@ -112,13 +114,15 @@ export async function extractPdf(bytes: Uint8Array): Promise<PdfScore> {
     const fontName = (id: string) => {
       let f = fonts.get(id);
       if (!f) {
-        let obj: { name?: string; data?: Uint8Array } | null = null;
+        type FontObj = { name?: string; data?: Uint8Array; toFontChar?: unknown };
+        let obj: FontObj | null = null;
         try {
-          obj = page.commonObjs.get(id) as { name?: string; data?: Uint8Array };
+          obj = page.commonObjs.get(id) as FontObj;
         } catch {
           obj = null;
         }
-        f = { id, name: (obj?.name ?? id).replace(/^[A-Z]{6}\+/, ""), data: obj?.data };
+        const toFontChar = obj?.toFontChar instanceof Map ? obj.toFontChar : undefined;
+        f = { id, name: (obj?.name ?? id).replace(/^[A-Z]{6}\+/, ""), data: obj?.data, toFontChar };
         fonts.set(id, f);
       }
       return f.name;

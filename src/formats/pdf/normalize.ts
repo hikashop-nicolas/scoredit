@@ -1,6 +1,10 @@
 // One vocabulary for every engraver: music symbols as SMuFL code points, words as text runs,
 // thin filled bars as line segments. The notation reader only sees this.
+import { glyphNameLookup } from "./cff";
+import { emmentalerMapper, isEmmentaler } from "./emmentaler";
 import type { PdfFontInfo, PdfGlyph, PdfPage, PdfSegment, PdfShape } from "./extract";
+import { DROP } from "./smufl";
+import { sonataKind, sonataMapper } from "./sonata";
 
 export interface MusicSymbol {
   /** SMuFL code point (U+E000 to U+F8FF): noteheadBlack is 0xE0A4. */
@@ -31,10 +35,13 @@ export interface NormPage {
   images: number;
   /** Music fonts met that no mapping covers (their glyphs are dropped). */
   unknownFonts: string[];
+  /** Glyphs of mapped music fonts that no table knows, dropped: "font char" or "font glyph-name" to count. */
+  unmapped: Record<string, number>;
 }
 
-/** Maps a glyph of a music font to a SMuFL code point, or null when it is not a music symbol. */
+/** Maps a glyph of a music font to a SMuFL code point, null when it is text, DROP when unknown. */
 export type FontMapper = (g: PdfGlyph, font: PdfFontInfo | undefined) => number | null;
+export { DROP };
 
 const isPua = (cp: number) => cp >= 0xe000 && cp <= 0xf8ff;
 const SMUFL_FONTS = /^(Bravura|Leland|Petaluma|Finale ?(Maestro|Broadway|Jazz|Ash|Engraver|Legacy)|Sebastian|Gootville|Leipzig|MuseJazz|Emmentaler-SMuFL|Ekmelos|Golden Age|Academico)/i;
@@ -45,14 +52,19 @@ export const smuflMapper: FontMapper = (g) => {
   return isPua(cp) ? cp : null;
 };
 
+type GlyphLabel = (g: PdfGlyph, font: PdfFontInfo | undefined) => string;
+const charLabel: GlyphLabel = (g) => (g.unicode ? `U+${(g.unicode.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, "0")}` : `code ${g.code}`);
+
 /** Mappers tried in order for a font, by name; the first that knows the font wins. */
-const MAPPERS: { test: (font: string, glyphs: PdfGlyph[]) => boolean; map: FontMapper }[] = [
-  { test: (f, gs) => SMUFL_FONTS.test(f) || gs.filter((g) => isPua(g.unicode.codePointAt(0) ?? 0)).length > gs.length / 2, map: smuflMapper },
+const MAPPERS: { test: (font: string, glyphs: PdfGlyph[]) => boolean; map: FontMapper; label: GlyphLabel }[] = [
+  { test: (f, gs) => SMUFL_FONTS.test(f) || gs.filter((g) => isPua(g.unicode.codePointAt(0) ?? 0)).length > gs.length / 2, map: smuflMapper, label: charLabel },
+  { test: (f) => sonataKind(f) !== null, map: sonataMapper, label: charLabel },
+  { test: (f) => isEmmentaler(f), map: emmentalerMapper, label: (g, f) => glyphNameLookup(f)?.(g.code) ?? `code ${g.code}` },
 ];
 
-/** Adds a mapper for another family of music fonts (Sonata-compatible, Emmentaler...). */
-export function registerFontMapper(test: (font: string, glyphs: PdfGlyph[]) => boolean, map: FontMapper): void {
-  MAPPERS.push({ test, map });
+/** Adds a mapper for another family of music fonts; `label` names a glyph in the unmapped report. */
+export function registerFontMapper(test: (font: string, glyphs: PdfGlyph[]) => boolean, map: FontMapper, label: GlyphLabel = charLabel): void {
+  MAPPERS.push({ test, map, label });
 }
 
 const MUSIC_FONT = /bravura|leland|petaluma|maestro|opus|sonata|petrucci|emmentaler|feta|jazz|engraver|broadway|reprise|helsinki|norfolk|pori|tamburo|golden age|sebastian|gootville|leipzig|ekmelos|musescore|mscore|toccata|november|anastasia|lassus|august|campania/i;
@@ -67,33 +79,59 @@ export function normalizePage(page: PdfPage, fonts: Map<string, PdfFontInfo>): N
   const symbols: MusicSymbol[] = [];
   const textGlyphs: PdfGlyph[] = [];
   const unknownFonts: string[] = [];
+  const unmapped: Record<string, number> = {};
   for (const [font, glyphs] of byFont) {
-    const mapper = MAPPERS.find((m) => m.test(font, glyphs))?.map;
+    const mapper = MAPPERS.find((m) => m.test(font, glyphs));
     if (!mapper) {
-      if (MUSIC_FONT.test(font)) unknownFonts.push(font);
+      // Glyphs without Unicode in an unnamed font (Cairo's "CairoFont-2-0") are symbols, not words.
+      const blank = glyphs.filter((g) => !g.unicode || g.unicode === "\ufffd" || g.unicode < " ").length;
+      if (MUSIC_FONT.test(font) || blank > glyphs.length / 2) unknownFonts.push(font);
       else textGlyphs.push(...glyphs);
       continue;
     }
     for (const g of glyphs) {
-      const cp = mapper(g, fonts.get(g.fontId));
-      if (cp !== null) symbols.push({ cp, x: g.x, y: g.y, size: g.size });
+      const info = fonts.get(g.fontId);
+      const cp = mapper.map(g, info);
+      if (cp === DROP) {
+        const key = `${font} ${mapper.label(g, info)}`;
+        unmapped[key] = (unmapped[key] ?? 0) + 1;
+      } else if (cp !== null) symbols.push({ cp, x: g.x, y: g.y, size: g.size });
       else if (g.unicode.trim()) textGlyphs.push(g);
     }
   }
-  // Thin filled rectangles are lines drawn as shapes (some engravers draw stems that way).
-  const segments = [...page.segments];
+  const { segments, shapes } = lines(page.segments, page.shapes);
+  return { width: page.width, height: page.height, symbols, texts: textRuns(textGlyphs), segments, shapes, images: page.images, unknownFonts, unmapped };
+}
+
+const samePoints = (a: PdfShape, b: PdfShape) => a.points.length === b.points.length && a.points.every((p, i) => Math.abs(p[0] - b.points[i][0]) < 0.01 && Math.abs(p[1] - b.points[i][1]) < 0.01);
+
+/** Thin rectangles drawn as shapes become line segments (stems, staff and ledger lines). */
+export function lines(pageSegments: PdfSegment[], pageShapes: PdfShape[]): { segments: PdfSegment[]; shapes: PdfShape[] } {
+  // Ghostscript (LilyPond) paints a rounded box twice, filled then stroked: one shape.
+  const merged: PdfShape[] = [];
+  for (const s of pageShapes) {
+    const prev = merged[merged.length - 1];
+    if (prev && prev.filled !== s.filled && prev.stroked !== s.stroked && samePoints(prev, s)) {
+      merged[merged.length - 1] = { ...prev, filled: true, stroked: true, width: prev.stroked ? prev.width : s.width };
+    } else merged.push(s);
+  }
+  const segments = [...pageSegments];
   const shapes: PdfShape[] = [];
-  for (const s of page.shapes) {
+  for (const s of merged) {
     const w = s.box.x1 - s.box.x0;
     const h = s.box.y1 - s.box.y0;
-    const thin = Math.min(w, h);
-    if (s.filled && !s.curved && thin > 0 && thin < 1.6 && Math.max(w, h) > 3 * thin && s.points.length <= 5) {
+    // A stroke widens the box by its line width (round joins give the rounded ends).
+    const pen = s.stroked ? s.width : 0;
+    const thin = Math.min(w, h) + pen;
+    const onCorner = (p: [number, number]) => (Math.abs(p[0] - s.box.x0) < 0.01 || Math.abs(p[0] - s.box.x1) < 0.01) && (Math.abs(p[1] - s.box.y0) < 0.01 || Math.abs(p[1] - s.box.y1) < 0.01);
+    const closedBox = s.points.length <= 5 && (s.filled || (s.points.length >= 4 && s.points.every(onCorner)));
+    if (!s.curved && closedBox && thin > 0 && thin < 1.6 && Math.max(w, h) + pen > 3 * thin) {
       const mid = (a: number, b: number) => (a + b) / 2;
-      if (w < h) segments.push({ x0: mid(s.box.x0, s.box.x1), y0: s.box.y0, x1: mid(s.box.x0, s.box.x1), y1: s.box.y1, width: w });
-      else segments.push({ x0: s.box.x0, y0: mid(s.box.y0, s.box.y1), x1: s.box.x1, y1: mid(s.box.y0, s.box.y1), width: h });
+      if (w < h) segments.push({ x0: mid(s.box.x0, s.box.x1), y0: s.box.y0 - pen / 2, x1: mid(s.box.x0, s.box.x1), y1: s.box.y1 + pen / 2, width: thin });
+      else segments.push({ x0: s.box.x0 - pen / 2, y0: mid(s.box.y0, s.box.y1), x1: s.box.x1 + pen / 2, y1: mid(s.box.y0, s.box.y1), width: thin });
     } else shapes.push(s);
   }
-  return { width: page.width, height: page.height, symbols, texts: textRuns(textGlyphs), segments, shapes, images: page.images, unknownFonts };
+  return { segments, shapes };
 }
 
 /** Glyphs of one font on one baseline, side by side, joined into runs of text. */
