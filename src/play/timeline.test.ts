@@ -206,18 +206,18 @@ describe("ornaments and pedal", () => {
     ]);
   });
 
-  it("rolls an arpeggiated chord from the bottom, or from the top", () => {
+  it("rolls an arpeggiated chord from the bottom, or from the top, 1/15 s apart", () => {
     const arp = (d = "") => `<notations><arpeggiate${d}/></notations>`;
     const chord = (extra: string) => n("C", 4, extra) + n("E", 4, "<chord/>") + n("G", 4, "<chord/>");
     const tl = buildTimeline(new ScoreDoc(score([Q + chord(arp()) + chord(arp(' direction="down"'))])));
     const r = (x: number) => Math.round(x * 1000) / 1000;
     expect(tl.events.map((e) => [e.midi, r(e.time)])).toEqual([
       [60, 0],
-      [64, 0.05],
-      [67, 0.1],
+      [64, 0.067],
+      [67, 0.133],
       [67, 0.6],
-      [64, 0.65],
-      [60, 0.7],
+      [64, 0.667],
+      [60, 0.733],
     ]);
   });
 });

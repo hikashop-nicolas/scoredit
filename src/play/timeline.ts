@@ -633,7 +633,7 @@ function neighbour(step: string, oct: number, fifths: number, alter?: number): n
   return (oct + 1) * 12 + STEP[step] + (alter ?? inKey);
 }
 
-// Arpeggiated chords roll from the bottom (or the top), a little apart, within half their length.
+// Arpeggiated chords roll from the bottom (or the top), 1/15 s apart (MuseScore's pace), within half their length.
 function arpeggiate(events: NoteEvent[]): NoteEvent[] {
   // The mark may sit on any note of the chord.
   const arp = new Map<Element, Element | null>();
@@ -656,7 +656,7 @@ function arpeggiate(events: NoteEvent[]): NoteEvent[] {
     if (list.length < 2) continue;
     const down = k.endsWith("down");
     list.sort((a, b) => (down ? b.midi - a.midi : a.midi - b.midi));
-    const step = Math.min(0.05, Math.min(...list.map((e) => e.dur)) / 2 / Math.max(1, list.length - 1));
+    const step = Math.min(1 / 15, Math.min(...list.map((e) => e.dur)) / 2 / Math.max(1, list.length - 1));
     list.forEach((e, k) => {
       e.time += k * step;
       e.dur -= k * step;
