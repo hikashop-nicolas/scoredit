@@ -178,7 +178,8 @@ export function findStaffLines(ink: Uint8Array, w: number, h: number): StaffLine
     const used = new Set<Chain>();
     for (const g of s.groups) {
       let best: Chain | null = null;
-      let bd = d * 1.5;
+      // Under a space: a group one line off (a ledger line taken in) starts its own chain.
+      let bd = d * 0.6;
       for (const c of chains) {
         if (used.has(c)) continue;
         // Predicted from the chain's slope so far, across strips where the staff went unseen.
@@ -205,8 +206,9 @@ export function findStaffLines(ink: Uint8Array, w: number, h: number): StaffLine
     for (const k of kept) {
       const lo = Math.max(c.xs[0], k.xs[0]);
       const hi = Math.min(c.xs[c.xs.length - 1], k.xs[k.xs.length - 1]);
-      const x = lo <= hi ? (lo + hi) / 2 : c.xs[0];
-      const dy = Math.abs(rowAt(c.xs, c.ys.map((g) => g[2]), x) - rowAt(k.xs, k.ys.map((g) => g[2]), x));
+      // Apart along the page: compare both, carried along their slopes, halfway across the gap.
+      const x = (lo + hi) / 2;
+      const dy = Math.abs(midRow(c, x) - midRow(k, x));
       if (dy < d / 2) {
         c.xs.forEach((cx, i) => {
           if (k.xs.includes(cx)) return;
@@ -230,6 +232,17 @@ export function findStaffLines(ink: Uint8Array, w: number, h: number): StaffLine
     .map((c) => ({ xs: c.xs, ys: [0, 1, 2, 3, 4].map((k) => c.ys.map((g) => g[k])) }))
     .sort((a, b) => a.ys[2][0] - b.ys[2][0]);
   return { thickness, spacing, staffs, lines: [] };
+}
+
+/** Middle line of a chain at column x, carried past its ends along the slope of the last samples. */
+function midRow(c: { xs: number[]; ys: number[][] }, x: number): number {
+  const n = c.xs.length;
+  const ys = c.ys.map((g) => g[2]);
+  if (n < 2 || (x >= c.xs[0] && x <= c.xs[n - 1])) return rowAt(c.xs, ys, x);
+  const [i0, i1] = x < c.xs[0] ? [0, Math.min(n - 1, 5)] : [Math.max(0, n - 6), n - 1];
+  const sl = (ys[i1] - ys[i0]) / (c.xs[i1] - c.xs[i0]);
+  const e = x < c.xs[0] ? 0 : n - 1;
+  return ys[e] + sl * (x - c.xs[e]);
 }
 
 /** Row of a sampled line at column x: linear between samples, flat past the ends. */
