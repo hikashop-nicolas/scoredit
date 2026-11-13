@@ -128,6 +128,12 @@ worker imports onnxruntime-web itself, so `ort` is ignored; give `wasmPaths` whe
 bundler does not serve onnxruntime-web's .wasm and .mjs files. Progress reports the network
 tiles (`symbols`, and `staff` with unet_big), then `lines` and `post` as 0 or 1 of 1.
 
+In Chrome with onnxruntime-web 1.31.1, a session created inside a worker with more than one
+WebAssembly thread never finished loading (the same happens with plain onnxruntime-web in a
+module worker, no bundler), so use `threads: 1` or WebGPU with `worker`. One thread in the
+worker read a page with `step: 256` in about 11 minutes, against 2 minutes on the page with
+four threads, which freeze it.
+
 ## Develop
 
 ```sh
