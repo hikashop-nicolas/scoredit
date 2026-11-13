@@ -1,10 +1,11 @@
 // One vocabulary for every engraver: music symbols as SMuFL code points, words as text runs,
 // thin filled bars as line segments. The notation reader only sees this.
 import { glyphNameLookup } from "./cff";
+import { type ChordPiece, chordRuns, width } from "./chords";
 import { emmentalerMapper, isEmmentaler } from "./emmentaler";
 import type { PdfFontInfo, PdfGlyph, PdfPage, PdfSegment, PdfShape } from "./extract";
 import { DROP } from "./smufl";
-import { sonataKind, sonataMapper } from "./sonata";
+import { SONATA_CHORDS, sonataKind, sonataMapper } from "./sonata";
 
 export interface MusicSymbol {
   /** SMuFL code point (U+E000 to U+F8FF): noteheadBlack is 0xE0A4. */
@@ -23,6 +24,10 @@ export interface TextRun {
   font: string;
   bold: boolean;
   italic: boolean;
+  /** "chord" for a chord symbol: str is ASCII chord text ("F#m7b5", "Bbmaj7", "C7(b9)"). */
+  kind?: "chord";
+  /** Ranges [start, end) of str set raised and small (a chord's extensions). */
+  superscript?: [number, number][];
 }
 
 export interface NormPage {
@@ -57,7 +62,11 @@ const charLabel: GlyphLabel = (g) => (g.unicode ? `U+${(g.unicode.codePointAt(0)
 
 /** Mappers tried in order for a font, by name; the first that knows the font wins. */
 const MAPPERS: { test: (font: string, glyphs: PdfGlyph[]) => boolean; map: FontMapper; label: GlyphLabel }[] = [
-  { test: (f, gs) => SMUFL_FONTS.test(f) || gs.filter((g) => isPua(g.unicode.codePointAt(0) ?? 0)).length > gs.length / 2, map: smuflMapper, label: charLabel },
+  {
+    test: (f, gs) => SMUFL_FONTS.test(f) || (sonataKind(f) === null && !isEmmentaler(f) && gs.filter((g) => isPua(g.unicode.codePointAt(0) ?? 0)).length > gs.length / 2),
+    map: smuflMapper,
+    label: charLabel,
+  },
   { test: (f) => sonataKind(f) !== null, map: sonataMapper, label: charLabel },
   { test: (f) => isEmmentaler(f), map: emmentalerMapper, label: (g, f) => glyphNameLookup(f)?.(g.code) ?? `code ${g.code}` },
 ];
@@ -80,7 +89,12 @@ export function normalizePage(page: PdfPage, fonts: Map<string, PdfFontInfo>): N
   const textGlyphs: PdfGlyph[] = [];
   const unknownFonts: string[] = [];
   const unmapped: Record<string, number> = {};
+  const chordGlyphs: { g: PdfGlyph; piece: ChordPiece }[] = [];
   for (const [font, glyphs] of byFont) {
+    if (sonataKind(font) === "chord") {
+      for (const g of glyphs) if (g.unicode.trim()) chordGlyphs.push({ g, piece: { sup: false, ...(SONATA_CHORDS[g.unicode] ?? { text: g.unicode }) } });
+      continue;
+    }
     const mapper = MAPPERS.find((m) => m.test(font, glyphs));
     if (!mapper) {
       // Glyphs without Unicode in an unnamed font (Cairo's "CairoFont-2-0") are symbols, not words.
@@ -99,8 +113,10 @@ export function normalizePage(page: PdfPage, fonts: Map<string, PdfFontInfo>): N
       else if (g.unicode.trim()) textGlyphs.push(g);
     }
   }
+  const chords = chordRuns(chordGlyphs, textGlyphs, symbols);
+  const texts = [...textRuns(textGlyphs.filter((g) => !chords.usedGlyphs.has(g))), ...chords.runs];
   const { segments, shapes } = lines(page.segments, page.shapes);
-  return { width: page.width, height: page.height, symbols, texts: textRuns(textGlyphs), segments, shapes, images: page.images, unknownFonts, unmapped };
+  return { width: page.width, height: page.height, symbols: symbols.filter((s) => !chords.usedSymbols.has(s)), texts, segments, shapes, images: page.images, unknownFonts, unmapped };
 }
 
 const samePoints = (a: PdfShape, b: PdfShape) => a.points.length === b.points.length && a.points.every((p, i) => Math.abs(p[0] - b.points[i][0]) < 0.01 && Math.abs(p[1] - b.points[i][1]) < 0.01);
@@ -143,11 +159,11 @@ function textRuns(glyphs: PdfGlyph[]): TextRun[] {
     if (cur && cur.font === g.font && Math.abs(cur.y - g.y) < g.size * 0.2 && g.x - cur.end < g.size * 0.8 && g.x >= cur.x - 0.5) {
       // A gap wider than a fifth of the size was a space.
       cur.str += (g.x - cur.end > g.size * 0.18 ? " " : "") + g.unicode;
-      cur.end = g.x + g.advance;
+      cur.end = g.x + width(g, 1);
       continue;
     }
     if (cur) runs.push(strip(cur));
-    cur = { str: g.unicode, x: g.x, y: g.y, size: g.size, font: g.font, bold: /bold|black|heavy/i.test(g.font), italic: /italic|oblique/i.test(g.font), end: g.x + g.advance };
+    cur = { str: g.unicode, x: g.x, y: g.y, size: g.size, font: g.font, bold: /bold|black|heavy/i.test(g.font), italic: /italic|oblique/i.test(g.font), end: g.x + width(g, 1) };
   }
   if (cur) runs.push(strip(cur));
   return runs.filter((r) => r.str.trim());

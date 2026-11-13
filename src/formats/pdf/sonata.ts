@@ -15,7 +15,7 @@ export const SONATA: Record<string, string> = {
   "˙": "noteheadHalf", "œ": "noteheadBlack", ".": "augmentationDot", k: "augmentationDot",
   y: "noteheadTriangleUpWhite", "–": "noteheadSquareBlack", "≠": "noteheadSquareWhite",
   "·": "noteheadDiamondWhite", "‚": "noteheadDiamondBlack",
-  "À": "noteheadSlashHorizontalEnds",
+  "À": "noteheadSlashHorizontalEnds", "¿": "noteheadXBlack",
   // Flags; "second" flags stack under the first one for 32nds and shorter.
   j: "flag8thUp", J: "flag8thDown", r: "flag16thUp", R: "flag16thDown", "ê": "flag16thUp", "í": "flag16thDown",
   K: "flagInternalUp", "Ô": "flagInternalDown", "˚": "flagInternalUp", "": "flagInternalDown", "ë": "flagInternalUp", "ì": "flagInternalDown",
@@ -29,7 +29,7 @@ export const SONATA: Record<string, string> = {
   "(": "accidentalParensLeft", ")": "accidentalParensRight",
   // Rests.
   "„": "restDoubleWhole", "∑": "restWhole", "Ó": "restHalf", "Œ": "restQuarter", "‰": "rest8th",
-  "≈": "rest16th", "®": "rest32nd", "Ù": "rest64th", "Â": "rest128th",
+  "≈": "rest16th", "⋲": "rest16th", "®": "rest32nd", "Ù": "rest64th", "Â": "rest128th",
   // Dynamics.
   "Ø": "dynamicPPPP", "∏": "dynamicPPP", "π": "dynamicPP", P: "dynamicMP", p: "dynamicPiano",
   F: "dynamicMF", f: "dynamicForte", "ƒ": "dynamicFF", "Ï": "dynamicFFF", "Î": "dynamicFFFF",
@@ -43,7 +43,7 @@ export const SONATA: Record<string, string> = {
   "-": "articTenutoAbove", "¯": "articTenutoStaccatoAbove", "<": "articTenutoStaccatoBelow",
   "ä": "articTenutoAccentAbove", "â": "articTenutoAccentBelow",
   U: "fermataAbove", u: "fermataBelow",
-  "~": "wiggleTrill", M: "ornamentMordent", m: "ornamentShortTrill", "µ": "ornamentMordent", T: "ornamentTurn",
+  "~": "wiggleTrill", M: "ornamentMordent", m: "ornamentShortTrill", "µ": "ornamentTremblement", T: "ornamentTurn",
   "Ÿ": "ornamentTrill", g: "wiggleArpeggiatoUp",
   "≤": "stringsUpBow", "≥": "stringsDownBow", o: "stringsHarmonic",
   "°": "keyboardPedalPed", "*": "keyboardPedalUp",
@@ -70,15 +70,25 @@ export const SONATA: Record<string, string> = {
 export const SONATA_SPECIAL: Record<string, string> = {
   "{": "brace", "°": "bracketTop", "¢": "bracketBottom",
   "<": "accidentalParensLeft", ">": "accidentalParensRight", "‹": "clef8",
-  // Circled string numbers (read off Sibelius output: not in a published map).
+  // Read off Sibelius output (no published map): string numbers, rhythm dot, grace slash, strum arrow.
   "·": "guitarString1", "‚": "guitarString2", "„": "guitarString3", "‰": "guitarString4", "Â": "guitarString5",
+  "™": "augmentationDot", "\uf0de": "graceNoteSlashStemUp", "∏": "arrowheadBlackDown", "à": "breathMarkTick", B: "noteheadBlack",
+};
+
+/** Sibelius chord fonts: character to chord text, `sup` when the font sets it raised and small. */
+export const SONATA_CHORDS: Record<string, { text: string; sup?: boolean }> = {
+  "‹": { text: "m" }, "©": { text: "♯" }, "¨": { text: "♭" }, "/": { text: "/" },
+  "º": { text: "°", sup: true }, "Ø": { text: "ø", sup: true },
+  "Œ": { text: "m", sup: true }, "„": { text: "a", sup: true }, "Š": { text: "j", sup: true }, "ˆ": { text: "d", sup: true },
+  "“": { text: "sus", sup: true }, "(": { text: "(", sup: true }, ")": { text: ")", sup: true },
+  ..."0123456789".split("").reduce<Record<string, { text: string; sup: boolean }>>((o, d) => ((o[d] = { text: d, sup: true }), o), {}),
 };
 
 /** Sibelius's music-text fonts: dynamics letters, notes for tempo marks, tuplet digits. */
 export const SONATA_TEXT: Record<string, string> = {
   p: "dynamicPiano", m: "dynamicMezzo", f: "dynamicForte", s: "dynamicSforzando", z: "dynamicZ", r: "dynamicRinforzando", n: "dynamicNiente",
   w: "noteWhole", h: "noteHalfUp", H: "noteHalfDown", q: "noteQuarterUp", Q: "noteQuarterDown",
-  e: "note8thUp", E: "note8thDown", x: "note16thUp", X: "note16thDown", ".": "metAugmentationDot",
+  e: "note8thUp", E: "note8thDown", x: "note16thUp", X: "note16thDown", ".": "metAugmentationDot", ":": "tupletColon",
   ..."0123456789".split("").reduce<Record<string, string>>((o, d) => ((o[d] = `tuplet${d}`), o), {}),
 };
 
@@ -86,10 +96,11 @@ const SIBELIUS = "Opus|Inkpen2|Reprise|Repris|Helsinki|Norfolk|Pori|Tamburo";
 const FAMILY = new RegExp(`^(${SIBELIUS}|Maestro|Sonata|Petrucci|Engraver|Jazz|Broadway ?Copyist|November|Toccata|Anastasia)`, "i");
 
 /** Which table a font uses, by its name; null when it is not a Sonata-style font. */
-export function sonataKind(font: string): "main" | "special" | "text" | "plain" | "unknown" | null {
+export function sonataKind(font: string): "main" | "special" | "text" | "chord" | "plain" | "unknown" | null {
   const name = font.replace(/^[A-Z]{6}\+/, "");
   if (!FAMILY.test(name)) return null;
-  if (/chord|times|lyric/i.test(name)) return "plain";
+  if (/chord/i.test(name)) return "chord";
+  if (/times|lyric/i.test(name)) return "plain";
   if (/percussion|metronome|ornament|figured|extra|tab/i.test(name)) return "unknown";
   if (/special/i.test(name)) return "special";
   if (/text/i.test(name)) return new RegExp(`^(${SIBELIUS})`, "i").test(name) ? "text" : "plain";
