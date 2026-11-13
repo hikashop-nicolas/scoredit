@@ -110,6 +110,12 @@ describe("ornaments and pedal", () => {
     expect(tl.events.at(-1)!.time + tl.events.at(-1)!.dur).toBeCloseTo(4 * 0.6, 5);
   });
 
+  it("trills in 64ths when 32nds would be slow", () => {
+    const slow = `<direction><sound tempo="50"/></direction>`;
+    const tl = buildTimeline(new ScoreDoc(score([Q + slow + n("E", 4, orn("<trill-mark/>"))])));
+    expect(tl.events).toHaveLength(16); // a quarter at 50 a minute
+  });
+
   it("starts a trill on the upper note when asked, and follows an accidental on it", () => {
     const tl = buildTimeline(new ScoreDoc(score([Q + n("E", 16, orn(`<trill-mark start-note="upper"/><accidental-mark>natural</accidental-mark>`))])));
     expect(tl.events[0].midi).toBe(65); // F natural, though the key has F#

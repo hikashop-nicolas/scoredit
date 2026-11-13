@@ -686,9 +686,9 @@ function expand(events: NoteEvent[], beats = new Map<NoteEvent, number>()): Note
   for (const e of events) {
     if (used.has(e)) continue;
     if (e.trillUpper !== undefined) {
-      // 32nd notes, as MuseScore plays them; without a tempo, about 0.09 s.
+      // 32nd notes, 64ths in a slow tempo, as MuseScore plays them; without a tempo, about 0.09 s.
       const beat = beats.get(e);
-      const step = beat ? beat / 8 : Math.min(0.12, Math.max(0.06, e.dur / Math.max(1, Math.round(e.dur / 0.09))));
+      const step = beat ? (beat / 8 > 0.12 ? beat / 16 : beat / 8) : Math.min(0.12, Math.max(0.06, e.dur / Math.max(1, Math.round(e.dur / 0.09))));
       const first = e.trillFromUpper ? 0 : 1;
       split(e, step, (k) => (k % 2 === first ? e.trillUpper! : e.midi));
     } else if (e.turn) {
