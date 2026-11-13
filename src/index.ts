@@ -7,6 +7,7 @@
 export { detectFormat, type ScoreFormat } from "./formats/detect";
 export { loadScore, loadScoreAsync, type LoadedScore, type LoadOptions } from "./formats/load";
 export { readPdfScore } from "./formats/pdf/read";
+export { readScanScore, scanToMusicXml, type ModelSource, type ScanModels, type ScanOptions, type ScanResult } from "./formats/scan";
 export { readMxl, writeMxl } from "./formats/mxl";
 export { readAbc, abcTunes, type AbcOptions } from "./formats/abc";
 export { readGuitarPro, type GuitarProOptions } from "./formats/gp";
