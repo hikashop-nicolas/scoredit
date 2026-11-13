@@ -163,6 +163,17 @@ describe("Guitar Pro writer", () => {
     expect(back.serialize()).toBe(score.serialize());
   });
 
+  it("reads a written pickup back as a short first measure", () => {
+    const { doc } = readGuitarPro(writeGuitarPro(new ScoreDoc(featureScore())).bytes);
+    for (const part of Array.from(doc.getElementsByTagName("part"))) {
+      const [m0, m1] = kids(part, "measure");
+      expect([m0.getAttribute("number"), m0.getAttribute("implicit"), m1.getAttribute("number")]).toEqual(["0", "yes", "1"]);
+      // One quarter long, the guitar's note on its first beat.
+      expect(Math.max(...[...readMeasure(m0).voices.values()].flatMap((evs) => evs.map((e) => e.pos + e.dur)))).toBe(10080);
+      expect(kid(m0, "forward")).toBeNull();
+    }
+  });
+
   it("round trips a score of guitar effects, transposition, staves and navigation", () => {
     const score = new ScoreDoc(featureScore());
     const { back, bytes, dropped } = roundTrip(score);
