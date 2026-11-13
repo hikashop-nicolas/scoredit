@@ -424,10 +424,11 @@ export function readPage(page: NormPage): PageResult {
     // A time signature after the notes of a measure starts the next one (its barline is not drawn).
     for (let i = 0; i < raw.length; i++) {
       const m = raw[i];
-      const firsts = m.events.map((evs) => (evs.length ? Math.min(...evs.map((e) => e.x)) : Infinity));
-      const xs = m.attrs.flatMap((as, k) => as.filter((a) => a.time && a.x > firsts[k]).map((a) => a.x));
+      const firsts = m.events.map((evs) => (evs.length ? Math.min(...evs.map((e) => e.x1)) : Infinity));
+      const xs = m.attrs.flatMap((as, k) => as.filter((a) => a.time && a.x > firsts[k] + space * 0.5).map((a) => a.x));
       if (!xs.length) continue;
       const cut = Math.min(...xs) - space * 0.3;
+      if (cut <= m.x0 + space || !m.events.some((evs) => evs.some((e) => (e.x + e.x1) / 2 < cut))) continue;
       const right = newMeasure(cut, m.x1, sys.staves.length, false, m.right);
       m.x1 = cut;
       m.right = undefined;
