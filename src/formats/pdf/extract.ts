@@ -85,6 +85,9 @@ interface PdfJsGlyph {
 /** Everything drawn on every page of a PDF. */
 export async function extractPdf(bytes: Uint8Array): Promise<PdfScore> {
   const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  // No worker: pdf.js parses on this thread with its worker code loaded here.
+  const g = globalThis as { pdfjsWorker?: unknown };
+  if (!g.pdfjsWorker && !pdfjs.GlobalWorkerOptions.workerSrc) g.pdfjsWorker = await import("pdfjs-dist/legacy/build/pdf.worker.mjs");
   const OPS = pdfjs.OPS as Record<string, number>;
   const task = pdfjs.getDocument({ data: bytes.slice(), fontExtraProperties: true, useSystemFonts: false });
   const doc = await task.promise;

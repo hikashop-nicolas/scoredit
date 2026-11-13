@@ -202,6 +202,17 @@ const EMPTY = "whole-bar rest";
 
 export const scenarios = [
   {
+    id: "open-pdf",
+    title: "A score PDF opens as a score",
+    device: "desktop",
+    fixture: "melody.pdf",
+    why: "A PDF printed by notation software holds the music as symbols and lines, so scoredit reads the notes back from it instead of showing a picture.",
+    look: "The same short melody as the melody fixture: four quarter notes, two half notes, a whole note, then a resting bar.",
+    async run(d) {
+      await d.bars({ 1: "C4 quarter, D4 quarter, E4 quarter, F4 quarter", 2: "G4 half, A4 half", 3: "B4 whole", 4: EMPTY });
+    },
+  },
+  {
     id: "palette-desktop",
     title: "On a computer, the edit toolbar fits on one line",
     device: "desktop",

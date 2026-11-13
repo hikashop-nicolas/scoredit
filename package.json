@@ -27,6 +27,7 @@
     "corpus": "node scripts/fetch-corpus.mjs",
     "prepare": "tsc -p tsconfig.json",
     "test:e2e": "node e2e/run.mjs",
+    "test:pdf-corpus": "SCOREDIT_CORPUS=1 NODE_OPTIONS=--max-old-space-size=8192 vitest run src/formats/pdf/pdf-corpus.test.ts",
     "test:rebuild": "node scripts/rebuild-corpus.mjs",
     "test:save": "node scripts/save-corpus.mjs"
   },
