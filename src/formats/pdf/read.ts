@@ -338,10 +338,9 @@ function nameFits(a: string, b: string): boolean {
 /** Onsets: voices one after the other; a voice starting late lines up with the column it stands in. */
 function timeMeasure(m: PMeasure, mlen: number, space: number): void {
   const cols: { x: number; at: number }[] = [];
-  // Unnumbered tuplets, when some voice fits the measure (else the time signature was misread).
+  // Unnumbered tuplets.
   const lines = m.events.flatMap((evs) => [...new Set(evs.map((e) => e.voice))].map((v) => evs.filter((e) => e.voice === v && !e.grace)));
-  const fits = lines.some((l) => l.length && Math.abs(l.reduce((t, e) => t + (e.rest && e.base === 4 && l.length === 1 ? mlen : length(e)), 0) - mlen) < 1e-6);
-  if (fits) for (const l of lines) hiddenTuplets(l, mlen);
+  for (const l of lines) hiddenTuplets(l, mlen);
   for (const pass of [1, 2]) {
     m.events.forEach((evs) => {
       const voices = [...new Set(evs.map((e) => e.voice))];
@@ -370,9 +369,12 @@ function timeMeasure(m: PMeasure, mlen: number, space: number): void {
 function hiddenTuplets(line: PEvent[], mlen: number): void {
   const isRest = (e: PEvent) => e.rest && e.base === 4 && line.length === 1;
   const total = line.reduce((t, e) => t + (isRest(e) ? mlen : length(e)), 0);
-  if (total <= mlen + 1e-6 || line.some((e) => e.tuplet || e.guess)) return;
-  const min = Math.min(...line.map((e) => e.base));
-  const short = line.filter((e) => e.base === min);
+  if (total <= mlen + 1e-6 || line.some((e) => e.guess)) return;
+  // The shortest notes not in a numbered tuplet yet.
+  const free = line.filter((e) => !e.tuplet);
+  if (!free.length) return;
+  const min = Math.min(...free.map((e) => e.base));
+  const short = free.filter((e) => e.base === min);
   const sum = short.reduce((t, e) => t + length(e), 0);
   const r = (sum - (total - mlen)) / sum;
   for (const [actual, normal] of [[3, 2], [5, 4], [6, 4], [7, 4], [9, 8], [7, 8], [5, 2], [10, 8], [11, 8], [12, 8], [13, 8], [15, 8]]) {
