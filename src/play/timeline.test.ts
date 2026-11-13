@@ -106,6 +106,7 @@ describe("ornaments and pedal", () => {
     expect(pitches.length).toBeGreaterThan(8);
     expect(new Set(pitches)).toEqual(new Set([64, 66]));
     expect(pitches[0]).toBe(64);
+    expect(pitches).toHaveLength(32); // a whole note in 32nds
     expect(tl.events.at(-1)!.time + tl.events.at(-1)!.dur).toBeCloseTo(4 * 0.6, 5);
   });
 

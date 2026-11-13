@@ -367,6 +367,8 @@ export function buildTimeline(score: ScoreDoc, opts: { straight?: boolean; bpm?:
 
   // Notes, per pass through each measure.
   const events: NoteEvent[] = [];
+  // Seconds a quarter under each trill, which moves in 32nd notes.
+  const beats = new Map<NoteEvent, number>();
   const velocity = parts.map(() => 80);
   const controls: ControlEvent[] = [];
   // Ties left open at the end of a measure, picked up by the next one played.
@@ -506,6 +508,7 @@ export function buildTimeline(score: ScoreDoc, opts: { straight?: boolean; bpm?:
             if (tm) {
               ev.trillUpper = upperNeighbour(text(pitch, "step"), Number(text(pitch, "octave")), fifths, override) + shift;
               ev.trillFromUpper = tm.getAttribute("start-note") === "upper";
+              beats.set(ev, span.tempo.filter(([from]) => from <= onset).pop()![1]);
             } else if (c.getElementsByTagName("turn").length || c.getElementsByTagName("inverted-turn").length) {
               const up = upperNeighbour(text(pitch, "step"), Number(text(pitch, "octave")), fifths) + shift;
               const down = lowerNeighbour(text(pitch, "step"), Number(text(pitch, "octave")), fifths) + shift;
@@ -552,7 +555,7 @@ export function buildTimeline(score: ScoreDoc, opts: { straight?: boolean; bpm?:
   }
   events.sort((a, b) => a.time - b.time);
   controls.sort((a, b) => a.time - b.time);
-  return { events: expand(dedupe(arpeggiate(events))), controls, spans, duration: t, programs };
+  return { events: expand(dedupe(arpeggiate(events)), beats), controls, spans, duration: t, programs };
 }
 
 /** Seconds from the start of a measure to quarter offset q in it: after a pause there, or before it for the end of a note. */
@@ -664,7 +667,7 @@ function dedupe(events: NoteEvent[]): NoteEvent[] {
 }
 
 // Trills alternate with the upper note; tremolos repeat a note, or alternate two chords.
-function expand(events: NoteEvent[]): NoteEvent[] {
+function expand(events: NoteEvent[], beats = new Map<NoteEvent, number>()): NoteEvent[] {
   if (!events.some((e) => e.trillUpper !== undefined || e.tremolo || e.mordent !== undefined || e.turn)) return events;
   const out: NoteEvent[] = [];
   const split = (e: NoteEvent, step: number, pick: (k: number) => number) => {
@@ -683,7 +686,9 @@ function expand(events: NoteEvent[]): NoteEvent[] {
   for (const e of events) {
     if (used.has(e)) continue;
     if (e.trillUpper !== undefined) {
-      const step = Math.min(0.12, Math.max(0.06, e.dur / Math.max(1, Math.round(e.dur / 0.09))));
+      // 32nd notes, as MuseScore plays them; without a tempo, about 0.09 s.
+      const beat = beats.get(e);
+      const step = beat ? beat / 8 : Math.min(0.12, Math.max(0.06, e.dur / Math.max(1, Math.round(e.dur / 0.09))));
       const first = e.trillFromUpper ? 0 : 1;
       split(e, step, (k) => (k % 2 === first ? e.trillUpper! : e.midi));
     } else if (e.turn) {
