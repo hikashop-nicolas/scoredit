@@ -13,6 +13,8 @@ export interface MusicSymbol {
   y: number;
   /** Font size in points: a SMuFL font's em is four staff spaces. */
   size: number;
+  /** Advance width in points. */
+  w: number;
 }
 
 export interface TextRun {
@@ -23,6 +25,8 @@ export interface TextRun {
   font: string;
   bold: boolean;
   italic: boolean;
+  /** The words of the run (split where a space was), with where each starts and ends. */
+  words: { str: string; x: number; x1: number }[];
 }
 
 export interface NormPage {
@@ -95,7 +99,7 @@ export function normalizePage(page: PdfPage, fonts: Map<string, PdfFontInfo>): N
       if (cp === DROP) {
         const key = `${font} ${mapper.label(g, info)}`;
         unmapped[key] = (unmapped[key] ?? 0) + 1;
-      } else if (cp !== null) symbols.push({ cp, x: g.x, y: g.y, size: g.size });
+      } else if (cp !== null) symbols.push({ cp, x: g.x, y: g.y, size: g.size, w: g.advance });
       else if (g.unicode.trim()) textGlyphs.push(g);
     }
   }
@@ -142,18 +146,29 @@ function textRuns(glyphs: PdfGlyph[]): TextRun[] {
   for (const g of sorted) {
     if (cur && cur.font === g.font && Math.abs(cur.y - g.y) < g.size * 0.2 && g.x - cur.end < g.size * 0.8 && g.x >= cur.x - 0.5) {
       // A gap wider than a fifth of the size was a space.
+      const space = g.x - cur.end > g.size * 0.18 || !g.unicode.trim();
       cur.str += (g.x - cur.end > g.size * 0.18 ? " " : "") + g.unicode;
+      const last = cur.words[cur.words.length - 1];
+      if (!g.unicode.trim()) {
+        if (last?.str) cur.words.push({ str: "", x: g.x, x1: g.x });
+      } else if (last && !last.str) Object.assign(last, { str: g.unicode, x: g.x, x1: g.x + g.advance });
+      else if (space || !last) cur.words.push({ str: g.unicode, x: g.x, x1: g.x + g.advance });
+      else {
+        last.str += g.unicode;
+        last.x1 = g.x + g.advance;
+      }
       cur.end = g.x + g.advance;
       continue;
     }
     if (cur) runs.push(strip(cur));
-    cur = { str: g.unicode, x: g.x, y: g.y, size: g.size, font: g.font, bold: /bold|black|heavy/i.test(g.font), italic: /italic|oblique/i.test(g.font), end: g.x + g.advance };
+    const words = g.unicode.trim() ? [{ str: g.unicode, x: g.x, x1: g.x + g.advance }] : [];
+    cur = { str: g.unicode, x: g.x, y: g.y, size: g.size, font: g.font, bold: /bold|black|heavy/i.test(g.font), italic: /italic|oblique/i.test(g.font), words, end: g.x + g.advance };
   }
   if (cur) runs.push(strip(cur));
   return runs.filter((r) => r.str.trim());
 
   function strip(r: TextRun & { end: number }): TextRun {
     const { end: _end, ...run } = r;
-    return { ...run, str: run.str.replace(/\s+/g, " ").trim() };
+    return { ...run, str: run.str.replace(/\s+/g, " ").trim(), words: run.words.filter((w) => w.str) };
   }
 }
