@@ -110,7 +110,7 @@ describe("ornaments and pedal", () => {
     expect(tl.events.at(-1)!.time + tl.events.at(-1)!.dur).toBeCloseTo(4 * 0.6, 5);
   });
 
-  it("trills in 64ths when 32nds would be slow", () => {
+  it("trills in 64ths below 60 a minute", () => {
     const slow = `<direction><sound tempo="50"/></direction>`;
     const tl = buildTimeline(new ScoreDoc(score([Q + slow + n("E", 4, orn("<trill-mark/>"))])));
     expect(tl.events).toHaveLength(16); // a quarter at 50 a minute

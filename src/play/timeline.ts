@@ -671,8 +671,8 @@ function dedupe(events: NoteEvent[]): NoteEvent[] {
   });
 }
 
-// Trill and turn notes: 32nds, 64ths when 32nds would be slower than 0.12 s (as MuseScore plays them).
-const ornamentStep = (secPerQuarter: number) => (secPerQuarter / 8 > 0.12 ? secPerQuarter / 16 : secPerQuarter / 8);
+// Trill and turn notes: 32nds, 64ths below 60 quarters a minute (as MuseScore plays them).
+const ornamentStep = (secPerQuarter: number) => (secPerQuarter > 1 + 1e-9 ? secPerQuarter / 16 : secPerQuarter / 8);
 
 // Trills alternate with the upper note; tremolos repeat a note, or alternate two chords.
 function expand(events: NoteEvent[], beats = new Map<NoteEvent, number>()): NoteEvent[] {
