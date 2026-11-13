@@ -367,8 +367,8 @@ export function buildTimeline(score: ScoreDoc, opts: { straight?: boolean; bpm?:
 
   // Notes, per pass through each measure.
   const events: NoteEvent[] = [];
-  // Seconds a quarter under each trill and turn, which move in 32nd notes.
-  const beats = new Map<NoteEvent, number>();
+  // Seconds each quick note of a trill or turn lasts.
+  const steps = new Map<NoteEvent, number>();
   const velocity = parts.map(() => 80);
   const controls: ControlEvent[] = [];
   // Ties left open at the end of a measure, picked up by the next one played.
@@ -407,6 +407,20 @@ export function buildTimeline(score: ScoreDoc, opts: { straight?: boolean; bpm?:
         const g0 = kid(list[0].el, "grace");
         // Graces after a note take their written lengths; others share the first one's, as MuseScore plays them.
         const after = g0?.getAttribute("steal-time-previous") === "0";
+        // Graces ending a trill take its last quick notes, after at least four of the trill's.
+        const tr = after ? prev.find((e) => e.trillUpper !== undefined && steps.has(e)) : undefined;
+        if (tr) {
+          const n = Math.max(Math.round(tr.dur / steps.get(tr)!), 4 + slots.length);
+          const slot = tr.dur / n;
+          let at = tr.time + (n - slots.length) * slot;
+          for (const e of prev) if (e.time + e.dur > at) e.dur = at - e.time;
+          for (const e of prev) if (steps.has(e)) steps.set(e, slot);
+          for (const sl of slots) {
+            for (const g of sl) events.push({ time: at, dur: slot, midi: g.midi, velocity: velocity[p], channel: parts[p].channel, program: parts[p].program, part: p, staff: Number(text(g.el, "staff")) || 1, measure: m, onset, el: g.el, grace: true });
+            at += slot;
+          }
+          return 0;
+        }
         const want = after ? slots.reduce((t, sl) => t + sl[0].q, 0) : slots[0][0].q;
         const before = (mainQ <= 0 || g0?.getAttribute("slash") === "yes" || !!g0?.hasAttribute("steal-time-previous")) && atQ(onset - want) >= 0;
         // On the beat, at most half the main note.
@@ -510,12 +524,12 @@ export function buildTimeline(score: ScoreDoc, opts: { straight?: boolean; bpm?:
             if (tm) {
               ev.trillUpper = upperNeighbour(text(pitch, "step"), Number(text(pitch, "octave")), fifths, override) + shift;
               ev.trillFromUpper = tm.getAttribute("start-note") === "upper";
-              beats.set(ev, span.tempo.filter(([from]) => from <= onset).pop()![1]);
+              steps.set(ev, ornamentStep(span.tempo.filter(([from]) => from <= onset).pop()![1]));
             } else if (c.getElementsByTagName("turn").length || c.getElementsByTagName("inverted-turn").length) {
               const up = upperNeighbour(text(pitch, "step"), Number(text(pitch, "octave")), fifths) + shift;
               const down = lowerNeighbour(text(pitch, "step"), Number(text(pitch, "octave")), fifths) + shift;
               ev.turn = c.getElementsByTagName("turn").length ? [up, midi, down] : [down, midi, up];
-              beats.set(ev, span.tempo.filter(([from]) => from <= onset).pop()![1]);
+              steps.set(ev, ornamentStep(span.tempo.filter(([from]) => from <= onset).pop()![1]));
             } else if (c.getElementsByTagName("inverted-mordent").length) {
               ev.mordent = upperNeighbour(text(pitch, "step"), Number(text(pitch, "octave")), fifths, override) + shift;
             } else if (c.getElementsByTagName("mordent").length) {
@@ -560,7 +574,7 @@ export function buildTimeline(score: ScoreDoc, opts: { straight?: boolean; bpm?:
   }
   events.sort((a, b) => a.time - b.time);
   controls.sort((a, b) => a.time - b.time);
-  return { events: expand(dedupe(arpeggiate(events)), beats), controls, spans, duration: t, programs };
+  return { events: expand(dedupe(arpeggiate(events)), steps), controls, spans, duration: t, programs };
 }
 
 /** Seconds from the start of a measure to quarter offset q in it: after a pause there, or before it for the end of a note. */
@@ -675,11 +689,11 @@ function dedupe(events: NoteEvent[]): NoteEvent[] {
 const ornamentStep = (secPerQuarter: number) => (secPerQuarter > 1 + 1e-9 ? secPerQuarter / 16 : secPerQuarter / 8);
 
 // Trills alternate with the upper note; tremolos repeat a note, or alternate two chords.
-function expand(events: NoteEvent[], beats = new Map<NoteEvent, number>()): NoteEvent[] {
+function expand(events: NoteEvent[], steps = new Map<NoteEvent, number>()): NoteEvent[] {
   if (!events.some((e) => e.trillUpper !== undefined || e.tremolo || e.mordent !== undefined || e.turn)) return events;
   const out: NoteEvent[] = [];
-  const split = (e: NoteEvent, step: number, pick: (k: number) => number) => {
-    const n = Math.max(1, Math.round(e.dur / step));
+  const split = (e: NoteEvent, step: number, pick: (k: number) => number, least = 1) => {
+    const n = Math.max(least, Math.round(e.dur / step));
     const d = e.dur / n;
     for (let k = 0; k < n; k++) out.push({ ...e, time: e.time + k * d, dur: d, midi: pick(k), trillUpper: undefined, trillFromUpper: undefined, tremolo: undefined });
   };
@@ -694,15 +708,14 @@ function expand(events: NoteEvent[], beats = new Map<NoteEvent, number>()): Note
   for (const e of events) {
     if (used.has(e)) continue;
     if (e.trillUpper !== undefined) {
-      // Without a tempo, about 0.09 s.
-      const beat = beats.get(e);
-      const step = beat ? ornamentStep(beat) : Math.min(0.12, Math.max(0.06, e.dur / Math.max(1, Math.round(e.dur / 0.09))));
+      // At least four notes, as MuseScore plays a trill on a short note; without a tempo, about 0.09 s.
+      const step = steps.get(e) ?? Math.min(0.12, Math.max(0.06, e.dur / Math.max(1, Math.round(e.dur / 0.09))));
       const first = e.trillFromUpper ? 0 : 1;
-      split(e, step, (k) => (k % 2 === first ? e.trillUpper! : e.midi));
+      split(e, step, (k) => (k % 2 === first ? e.trillUpper! : e.midi), steps.has(e) ? 4 : 1);
     } else if (e.turn) {
       // Upper, main, lower (or the reverse), then the main note for the rest of its length.
-      const beat = beats.get(e);
-      const quick = beat ? Math.min(ornamentStep(beat), e.dur / 4) : Math.min(0.08, e.dur / 6);
+      const step = steps.get(e);
+      const quick = step ? Math.min(step, e.dur / 4) : Math.min(0.08, e.dur / 6);
       const base = { ...e, turn: undefined };
       e.turn.forEach((m, k) => out.push({ ...base, time: e.time + k * quick, dur: quick, midi: m }));
       out.push({ ...base, time: e.time + 3 * quick, dur: e.dur - 3 * quick });

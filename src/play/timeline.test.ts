@@ -110,6 +110,15 @@ describe("ornaments and pedal", () => {
     expect(tl.events.at(-1)!.time + tl.events.at(-1)!.dur).toBeCloseTo(4 * 0.6, 5);
   });
 
+  it("trills a short note in four notes, and ends a trill with its graces at the trill's pace", () => {
+    const short = buildTimeline(new ScoreDoc(score([Q + n("E", 1, orn("<trill-mark/>")) + n("E", 15)])));
+    expect(short.events.filter((e) => e.onset === 0)).toHaveLength(4); // a 16th
+    const after = (step: string) => `<note><grace steal-time-previous="0"/><pitch><step>${step}</step><octave>4</octave></pitch><type>16th</type></note>`;
+    const tl = buildTimeline(new ScoreDoc(score([Q + n("E", 2, orn("<trill-mark/>")) + after("D") + after("E") + n("G", 14)])));
+    // An eighth at 100 a minute: four trill notes, then the two graces, all 0.05 s.
+    expect(tl.events.slice(0, 6).map((e) => [e.midi, Math.round(e.time * 1000)])).toEqual([[64, 0], [66, 50], [64, 100], [66, 150], [62, 200], [64, 250]]);
+  });
+
   it("trills in 64ths below 60 a minute", () => {
     const slow = `<direction><sound tempo="50"/></direction>`;
     const tl = buildTimeline(new ScoreDoc(score([Q + slow + n("E", 4, orn("<trill-mark/>"))])));
