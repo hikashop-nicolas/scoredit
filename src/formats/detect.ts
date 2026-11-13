@@ -1,7 +1,7 @@
 import { unzipSync } from "fflate";
 import { looksLikeAbc } from "./abc";
 
-export type ScoreFormat = "musicxml" | "mxl" | "mscz" | "mscx" | "abc" | "guitarpro" | "midi";
+export type ScoreFormat = "musicxml" | "mxl" | "mscz" | "mscx" | "abc" | "guitarpro" | "midi" | "pdf";
 
 const isZip = (b: Uint8Array) => b.length > 4 && b[0] === 0x50 && b[1] === 0x4b && b[2] === 0x03 && b[3] === 0x04;
 
@@ -9,6 +9,7 @@ const isZip = (b: Uint8Array) => b.length > 4 && b[0] === 0x50 && b[1] === 0x4b 
 // compressed MusicXML; XML is told apart by its root element.
 export function detectFormat(bytes: Uint8Array): ScoreFormat | null {
   if (bytes.length > 13 && String.fromCharCode(...bytes.subarray(0, 4)) === "MThd") return "midi";
+  if (bytes.length > 8 && String.fromCharCode(...bytes.subarray(0, 5)) === "%PDF-") return "pdf";
   if (isZip(bytes)) {
     try {
       const names = Object.keys(unzipSync(bytes, { filter: (f) => !f.name.endsWith(".png") }));

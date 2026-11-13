@@ -10,7 +10,7 @@ function corpus(): Plugin {
   const list = (d: string): string[] =>
     readdirSync(d).flatMap((n) => {
       const p = join(d, n);
-      return statSync(p).isDirectory() ? list(p) : /\.(musicxml|xml|mxl|mscz|mscx|mid|midi|gp|gpx|gp3|gp4|gp5)$/i.test(n) ? [relative(corpusDir, p)] : [];
+      return statSync(p).isDirectory() ? list(p) : /\.(musicxml|xml|mxl|mscz|mscx|mid|midi|gp|gpx|gp3|gp4|gp5|pdf)$/i.test(n) ? [relative(corpusDir, p)] : [];
     });
   return {
     name: "scoredit-corpus",

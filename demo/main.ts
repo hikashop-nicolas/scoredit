@@ -1,7 +1,7 @@
 import * as scoreditLib from "../src/index";
 import { layoutKeys, keyRange } from "../src/ui/keyboard";
 import * as scoreditRebuild from "../src/edit/rebuild";
-import { SOUNDS_CDN, createScoreViewer, loadScore, partFamily, remoteSounds, type ScoreViewerHandle } from "../src/index";
+import { SOUNDS_CDN, createScoreViewer, loadScore, loadScoreAsync, partFamily, remoteSounds, type ScoreViewerHandle } from "../src/index";
 
 // Recorded sounds: from the local corpus copy of scoredit-sounds, or ?sounds=cdn for jsDelivr.
 const sounds = remoteSounds({ base: new URLSearchParams(location.search).get("sounds") === "cdn" ? SOUNDS_CDN : new URL("corpus/sounds/gm/", location.href).href });
@@ -13,7 +13,7 @@ let viewer: ScoreViewerHandle | null = null;
 let rendered = 0;
 let renderMs = 0;
 
-function open(bytes: Uint8Array, name: string): void {
+async function open(bytes: Uint8Array, name: string): Promise<void> {
   viewer?.destroy();
   viewer = null;
   host.textContent = "";
@@ -21,7 +21,7 @@ function open(bytes: Uint8Array, name: string): void {
   renderMs = 0;
   const t0 = performance.now();
   try {
-    const loaded = loadScore(bytes, { tab: new URLSearchParams(location.search).get("tab") === "1" ? "always" : "auto", tune: Number(new URLSearchParams(location.search).get("tune")) || undefined });
+    const loaded = await loadScoreAsync(bytes, { tab: new URLSearchParams(location.search).get("tab") === "1" ? "always" : "auto", tune: Number(new URLSearchParams(location.search).get("tune")) || undefined });
     const { score, format } = loaded;
     const parsed = performance.now() - t0;
     (window as unknown as { viewer?: unknown }).viewer = null;
@@ -55,12 +55,12 @@ function open(bytes: Uint8Array, name: string): void {
 
 document.getElementById("file")!.addEventListener("change", async (e) => {
   const f = (e.target as HTMLInputElement).files?.[0];
-  if (f) open(new Uint8Array(await f.arrayBuffer()), f.name);
+  if (f) await open(new Uint8Array(await f.arrayBuffer()), f.name);
 });
 
 async function openUrl(path: string): Promise<void> {
   const res = await fetch(path.startsWith("fixtures/") ? path : `corpus/${path}`);
-  open(new Uint8Array(await res.arrayBuffer()), path);
+  await open(new Uint8Array(await res.arrayBuffer()), path);
 }
 select.addEventListener("change", () => select.value && void openUrl(select.value));
 

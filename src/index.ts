@@ -1,11 +1,12 @@
 // scoredit: a client-side music score viewer and editor.
 //
-// - formats/  detect, read (and later write) MusicXML, mxl, MuseScore, MIDI, ABC, Guitar Pro
+// - formats/  detect, read (and later write) MusicXML, mxl, MuseScore, MIDI, ABC, Guitar Pro, PDF
 // - model/    ScoreDoc, a MusicXML DOM with the index layout and editing need
 // - layout/   system (line) breaking
 // - render/   the viewer: one OSMD render per system, rendered as it scrolls into view
 export { detectFormat, type ScoreFormat } from "./formats/detect";
-export { loadScore, type LoadedScore, type LoadOptions } from "./formats/load";
+export { loadScore, loadScoreAsync, type LoadedScore, type LoadOptions } from "./formats/load";
+export { readPdfScore } from "./formats/pdf/read";
 export { readMxl, writeMxl } from "./formats/mxl";
 export { readAbc, abcTunes, type AbcOptions } from "./formats/abc";
 export { readGuitarPro, type GuitarProOptions } from "./formats/gp";

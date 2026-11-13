@@ -63,9 +63,18 @@ export function loadScore(bytes: Uint8Array, opts: LoadOptions = {}): LoadedScor
     case "midi":
       // Read-only: no save.
       return { format, score: new ScoreDoc(midiToMusicXml(bytes)), fretted: false, tab: false };
+    case "pdf":
+      throw new Error("PDF scores are read with loadScoreAsync");
     default:
       throw new Error("This file is not a score scoredit can read");
   }
+}
+
+/** Like loadScore, for every format, PDF scores (read-only) included. */
+export async function loadScoreAsync(bytes: Uint8Array, opts: LoadOptions = {}): Promise<LoadedScore> {
+  if (detectFormat(bytes) !== "pdf") return loadScore(bytes, opts);
+  const { readPdfScore } = await import("./pdf/read");
+  return withTab("pdf", new ScoreDoc(await readPdfScore(bytes)));
 }
 
 // A MusicXML score shows the tab it has; scoredit adds none to it.
