@@ -26,6 +26,10 @@ export interface ScanOptions {
   ort?: OrtLike;
   /** Options for InferenceSession.create, e.g. { executionProviders: ["webgpu", "wasm"] }. */
   session?: Record<string, unknown>;
+  /** Where onnxruntime-web finds its .wasm files (its env.wasm.wasmPaths), when the bundler does not serve them. */
+  wasmPaths?: string;
+  /** onnxruntime-web CPU threads (needs a cross-origin isolated page for more than 1). */
+  threads?: number;
   /** Tiles per network run (default 1). */
   batch?: number;
   /** Distance between tiles in pixels (oemer: 128; larger is faster, a little less sure). */
@@ -79,6 +83,10 @@ const loadOrt = () => (ortModule ??= import("onnxruntime-web") as unknown as Pro
 /** The two networks' class maps for a prepared BGR image. */
 export async function classMaps(bgr: Uint8Array, w: number, h: number, opts: ScanOptions) {
   const ort = opts.ort ?? (await loadOrt());
+  if (ort.env?.wasm) {
+    if (opts.wasmPaths) ort.env.wasm.wasmPaths = opts.wasmPaths;
+    if (opts.threads) ort.env.wasm.numThreads = opts.threads;
+  }
   const run = async (src: ModelSource, win: number, classes: number, name: string) => {
     const session: OrtSession = await ort.InferenceSession.create(await bytesOf(src), opts.session);
     try {

@@ -5,6 +5,7 @@
 export interface OrtLike {
   InferenceSession: { create(model: Uint8Array, opts?: Record<string, unknown>): Promise<OrtSession> };
   Tensor: new (type: "uint8", data: Uint8Array, dims: number[]) => unknown;
+  env?: { wasm?: { wasmPaths?: unknown; numThreads?: number } };
 }
 
 export interface OrtSession {
