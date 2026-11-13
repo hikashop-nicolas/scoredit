@@ -248,6 +248,8 @@ export function readPage(page: NormPage): PageResult {
     let n = 0;
     for (const b of beams) {
       if (v.x < b.x0 - space * 0.2 || v.x > b.x1 + space * 0.2) continue;
+      // A short stroke across the middle of the stem is a tremolo, not a beam.
+      if (b.x1 - b.x0 < space * 2.2 && Math.abs((b.x0 + b.x1) / 2 - v.x) < space * 0.3) continue;
       const y = beamY(b, v.x);
       if (Math.abs(y - end) > space * 4.2) continue;
       if (up ? y >= v.y0 - b.thick && y <= v.y1 - space * 0.8 : y <= v.y1 + b.thick && y >= v.y0 + space * 0.8) n++;
@@ -271,9 +273,11 @@ export function readPage(page: NormPage): PageResult {
     const end = up ? v.y0 : v.y1;
     const fl = flags.filter((f) => f.sys === hs[0].sys && Math.abs(f.x - v.x) < st.space * 0.7 && Math.abs(f.y - end) < st.space * 1.2);
     const nFlags = Math.max(0, ...fl.map((f) => flag(f.cp)!.n));
-    const nBeams = nFlags ? 0 : hs[0].kind === "black" ? beamCount(v, up, st.space) : 0;
     const kind = hs.some((h) => h.kind === "black") ? "black" : hs[0].kind;
-    events.push(chord(hs, HEAD_LENGTH[kind] / 2 ** (nFlags + nBeams), up, hs[0].sys, v));
+    const nBeams = nFlags ? 0 : beamCount(v, up, st.space);
+    // Beamed half notes are a two-note tremolo: each lasts half of what it shows.
+    const base = kind === "black" ? HEAD_LENGTH.black / 2 ** (nFlags + nBeams) : HEAD_LENGTH[kind] / (nBeams ? 2 : 1);
+    events.push(chord(hs, base, up, hs[0].sys, v));
   }
   loose.sort((a, b) => a.sys - b.sys || a.staff - b.staff || a.x - b.x);
   for (let i = 0; i < loose.length; ) {
