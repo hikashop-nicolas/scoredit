@@ -102,7 +102,8 @@ export interface PMeasure {
   /** Barline at the right end: its lines, and repeat dots. */
   right?: { kinds: ("thin" | "thick")[]; repeat: boolean };
   leftRepeat?: boolean;
-  ending?: { number: string; start: boolean; stop: boolean };
+  /** Volta bracket: its number on the first measure, how it ends on the last. */
+  ending?: { number: string; start: boolean; end?: "stop" | "discontinue" };
 }
 
 export interface PSystem {
@@ -545,6 +546,9 @@ export function readPage(page: NormPage): PageResult {
     }
   }
   for (const sys of systems) for (const m of sys.measures) m.events.forEach((evs, k) => assignVoices(evs, sys.staves[k]));
+  voltas(page, systems, sp);
+  words(page, systems, sp);
+
   // Staves joined by barlines are one instrument when only the first is named.
   for (const sys of systems) {
     for (let k = 0; k + 1 < sys.staves.length; ) {
@@ -652,6 +656,42 @@ function ties(shapes: PdfShape[], heads: (Head & { sys: number })[], systems: PS
       b.tieStop = true;
     } else if (a && x1 > Math.max(...st.map((s) => s.x1)) - sp * 2) a.tieStart = true;
     else if (b && !a && x0 < b.x - sp * 0.5 && !near.some((h) => h.staff === b.staff && h.x < b.x && h.x > x0 - sp)) b.tieStop = true;
+  }
+}
+
+const EXPRESSION = /^\(?((cresc|decresc|dim|rit|rall|accel|espr|stacc|smorz|pizz|arco|riten)\.?|dolce|a tempo|legato|marcato|tranquillo|morendo|subito .+|sempre .+|poco .+|molto .+|più .+|meno .+|con sord.*|senza sord.*)\)?$/i;
+
+/** Tempo marks (bold, above a staff) and expression words: directions at the measure under them. */
+function words(page: NormPage, systems: PSystem[], sp: number): void {
+  for (const t of page.texts) {
+    const bold = t.bold && !/^[\d.,\s]+$/.test(t.str);
+    if (!bold && !EXPRESSION.test(t.str)) continue;
+    for (const sys of systems) {
+      const k = sys.staves.findIndex((st) => (bold ? t.y < st.top && t.y > st.top - 8 * sp : t.y > st.top - 6 * sp && t.y < st.bottom + 6 * sp));
+      if (k < 0 || t.x < sys.x0 - sp) continue;
+      const m = sys.measures.find((q) => t.x >= q.x0 - sp && t.x < q.x1);
+      if (m) m.dirs.push({ x: t.x, staff: k, words: t.str, above: t.y < sys.staves[k].top });
+      break;
+    }
+  }
+}
+
+/** Voltas: open brackets over the top staff, numbered at their start ("1.", "2."). */
+function voltas(page: NormPage, systems: PSystem[], sp: number): void {
+  for (const sh of page.shapes) {
+    if (sh.filled || sh.curved || sh.points.length < 3 || sh.points.length > 4) continue;
+    const [a, b, c] = sh.points;
+    if (Math.abs(a[0] - b[0]) > 0.2 || Math.abs(b[1] - c[1]) > 0.2 || b[1] >= a[1] || c[0] - b[0] < sp * 2) continue;
+    const sys = systems.find((s) => b[1] < s.top && b[1] > s.top - 10 * sp && c[0] > s.x0);
+    if (!sys) continue;
+    const label = page.texts.find((t) => t.x >= b[0] - 0.5 && t.x < b[0] + sp * 3 && t.y > b[1] && t.y < a[1] + sp && /^\d/.test(t.str));
+    if (!label) continue;
+    const number = label.str.replace(/[.\s]+$/, "").replace(/\.\s*/g, ", ").replace(/,\s*$/, "").replace(/\s+/g, " ");
+    const ms = sys.measures.filter((m) => Math.min(m.x1, c[0]) - Math.max(m.x0, b[0]) > sp);
+    if (!ms.length) continue;
+    ms[0].ending = { number: number.replace(/, /g, ","), start: true };
+    const last = ms[ms.length - 1];
+    last.ending = { ...(last.ending ?? { number: ms[0].ending.number, start: false }), end: sh.points.length === 4 ? "stop" : "discontinue" };
   }
 }
 

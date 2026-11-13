@@ -51,7 +51,7 @@ function credits(header: TextRun[], width: number) {
   const lines: { str: string; x: number; x1: number; y: number; size: number }[] = [];
   for (const t of [...header].sort((a, b) => a.y - b.y || a.x - b.x)) {
     const x1 = t.words.length ? t.words[t.words.length - 1].x1 : t.x + t.size * 0.5 * t.str.length;
-    const l = lines.find((q) => Math.abs(q.y - t.y) < 1 && Math.abs(q.size - t.size) < 1 && t.x - q.x1 < t.size * 2);
+    const l = lines.find((q) => Math.abs(q.y - t.y) < 1 && Math.abs(q.size - t.size) < 1 && t.x > q.x1 - 1 && t.x - q.x1 < t.size * 2);
     if (l) {
       l.str += " " + t.str;
       l.x1 = x1;
@@ -140,7 +140,8 @@ function writeScore(systems: PSystem[], header: TextRun[], width: number, docTit
     measures.forEach(({ m, staffMap }, mi) => {
       const ks = Array.from({ length: part.staves }, (_, k) => staffMap[part.first + k]);
       out.push(`<measure number="${mi + 1}">`);
-      if (m.leftRepeat) out.push(`<barline location="left"><bar-style>heavy-light</bar-style><repeat direction="forward"/></barline>`);
+      if (m.leftRepeat || m.ending?.start)
+        out.push(`<barline location="left">${m.leftRepeat ? "<bar-style>heavy-light</bar-style>" : ""}${m.ending?.start ? `<ending number="${esc(m.ending.number)}" type="start"/>` : ""}${m.leftRepeat ? `<repeat direction="forward"/>` : ""}</barline>`);
       const lead = ks.map((k) => (k < 0 ? [] : m.attrs[k].filter((a) => leading(a, m))));
       const attrs: string[] = [];
       if (mi === 0) attrs.push(`<divisions>${DIV}</divisions>`);
@@ -236,10 +237,12 @@ function writeScore(systems: PSystem[], header: TextRun[], width: number, docTit
         });
         clefs[sk] = clef;
       });
-      if (m.right && (m.right.repeat || m.right.kinds.length > 1)) {
+      const end = m.ending?.end ? `<ending number="${esc(m.ending.number)}" type="${m.ending.end}"/>` : "";
+      if (m.right && (m.right.repeat || m.right.kinds.length > 1 || end)) {
         const style = m.right.kinds.join("-").replace(/thin/g, "light").replace(/thick/g, "heavy");
-        out.push(`<barline location="right"><bar-style>${style === "light-light" || style === "light-heavy" || style === "heavy-light" || style === "heavy-heavy" ? style : "light-heavy"}</bar-style>${m.right.repeat ? `<repeat direction="backward"/>` : ""}</barline>`);
-      }
+        const bar = m.right.kinds.length > 1 || m.right.repeat ? `<bar-style>${style === "light-light" || style === "light-heavy" || style === "heavy-light" || style === "heavy-heavy" ? style : "light-heavy"}</bar-style>` : "";
+        out.push(`<barline location="right">${bar}${end}${m.right.repeat ? `<repeat direction="backward"/>` : ""}</barline>`);
+      } else if (end) out.push(`<barline location="right">${end}</barline>`);
       out.push("</measure>");
     });
     out.push("</part>");
