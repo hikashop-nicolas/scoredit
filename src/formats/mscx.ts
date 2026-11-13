@@ -963,7 +963,7 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
                         if (mark) el(ornaments(), "accidental-mark", mark);
                       }
                     });
-                    if (trillNext) {
+                    if (trillNext && !graceTag) {
                       if (!orns.includes("trill-mark")) el(ornaments(), "trill-mark");
                       el(ornaments(), "wavy-line", null, { type: "start" });
                     }
@@ -1033,7 +1033,7 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
                   afterGraces.push(made);
                 } else if (!graceTag) for (const made of afterGraces.splice(0).reverse()) for (const x of made) meas.appendChild(x);
                 if (c.tagName === "Chord") {
-                  if (trillNext) trillNext = false;
+                  if (!graceTag) trillNext = false;
                   tremoloStop = tremolo?.two ? tremolo.strokes : 0;
                   if (!graceTag) lastFirst = firstNote;
                   graceCount = graceTag ? graceCount + 1 : 0;

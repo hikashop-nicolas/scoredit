@@ -47,6 +47,12 @@ describe("MuseScore reader", () => {
     expect(tl.controls.map((c) => c.value)).toEqual([127, 0]);
   });
 
+  it("trills the main note of a trill line, not the grace notes after it", () => {
+    const m = TS + span("Trill", true) + chord("32nd", [[65, 13]], "<grace32after/>") + chord("32nd", [[64, 18]], "<grace32after/>") + chord("whole", [[65, 13]]);
+    const tl = buildTimeline(loadScore(strToU8(mscx([m, span("Trill", false) + chord("whole", [[65, 13]])]))).score);
+    expect(tl.events.filter((e) => e.measure === 0 && !e.grace).length).toBeGreaterThan(8);
+  });
+
   it("adds a tab staff when MuseScore had one in an instrument part", () => {
     const guitar = `<Part><Staff id="1"><StaffType group="pitched"/><defaultClef>G8vb</defaultClef></Staff><trackName>Guitar</trackName><Instrument><instrumentId>pluck.guitar.nylon-string</instrumentId><StringData><frets>19</frets><string>40</string><string>45</string><string>50</string><string>55</string><string>59</string><string>64</string></StringData></Instrument></Part>`;
     const body = mscx([TS + chord("whole", [[52, 18]], "", "<fret>2</fret><string>4</string>")], guitar);
