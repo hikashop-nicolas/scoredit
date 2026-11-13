@@ -78,7 +78,9 @@ machine learning (binarisation, run lengths, projections in vertical strips, eac
 followed across the page); the symbols come from a TypeScript port of
 [oemer](https://github.com/BreezeWhite/oemer) (MIT): its symbol segmentation network runs in
 onnxruntime-web (imported on first use) and its post-processing (noteheads, beams, rests,
-clefs, accidentals, dots) is ported line by line.
+clefs, accidentals, dots) is ported line by line. On a test bed of 14 pages (piano, voice,
+clean renders and their scans, 24 staffs) it gets 80% of the pitches and 72% of pitch and
+duration together right, where oemer's own staff network gives 80% and 69%.
 
 scoredit ships no model. The host gives each as a URL, bytes or a fetch function, and
 `python scripts/scan-models.py out/` writes them from an oemer install:
@@ -97,8 +99,34 @@ The symbol network is the slow part: it runs on about 200 overlapping tiles per 
 2019 laptop that is about 70 seconds with WebGPU, 4 minutes in WebAssembly with eight
 threads and 20 minutes with one. `step: 256` (63 tiles) with the int8 copy brings that to
 80 seconds with eight threads and 4 minutes with one, reading about as well. Staff lines
-take under a second and the post-processing 7 to 10 seconds on the main thread: run it in
-a worker.
+take about a second and the post-processing 5 to 7 seconds.
+
+### Off the main thread
+
+`worker` runs the whole scan (networks and post-processing) in a module worker and passes
+its progress back; `signal` stops it. Without it, everything runs on the calling thread
+(Node, tests, or a worker of the host's own).
+
+```ts
+// Bundlers that follow new Worker(new URL(..., import.meta.url)) (Vite build, webpack 5)
+// emit scoredit's scan-worker.js themselves:
+await scanToMusicXml(blob, { models, worker: true, wasmPaths: "/ort/", progress });
+
+// Vite, dev server included: a factory from Vite's ?worker import.
+import ScanWorker from "scoredit/scan-worker?worker";
+await scanToMusicXml(blob, { models, worker: () => new ScanWorker(), progress });
+
+// Or the URL where the host serves dist/formats/scan/scan-worker.js, bundled.
+await scanToMusicXml(blob, { models, worker: "/js/scan-worker.js" });
+```
+
+`worker: true` works in a Vite production build; the Vite dev server pre-bundles
+dependencies and loses the worker file, so use the `?worker` factory there (or
+`optimizeDeps: { exclude: ["scoredit"] }`). Model URLs are resolved against the page and
+fetched by the worker; bytes are copied to it and fetch functions run on the page first. The
+worker imports onnxruntime-web itself, so `ort` is ignored; give `wasmPaths` when the
+bundler does not serve onnxruntime-web's .wasm and .mjs files. Progress reports the network
+tiles (`symbols`, and `staff` with unet_big), then `lines` and `post` as 0 or 1 of 1.
 
 ## Develop
 

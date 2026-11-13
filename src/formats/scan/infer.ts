@@ -61,6 +61,7 @@ export async function segment(
   const cnt = new Uint8Array(w * h);
   const inName = session.inputNames[0];
   const outName = session.outputNames[0];
+  opts.progress?.({ model: opts.name ?? "", done: 0, total: todo.length });
   for (let i = 0; i < todo.length; i += batch) {
     const part = todo.slice(i, i + batch);
     const data = new Uint8Array(part.length * win * win * 3);

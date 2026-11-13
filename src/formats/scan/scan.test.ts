@@ -6,6 +6,8 @@ import { getBbox, type Img } from "./ndimage";
 import { resizeBicubic } from "./resample";
 import { findPeaks, uniqueSet, wardLabels } from "./sci";
 import { classicStaffMap } from "./stafflines";
+import { scanToMusicXml, type ScanReply, type ScanRequest } from "./index";
+import { handleScan } from "./scan-worker";
 
 const grid = (w: number, h: number, on: (x: number, y: number) => boolean): Img<Uint8Array> => {
   const d = new Uint8Array(w * h);
@@ -107,5 +109,38 @@ describe("classic staff lines", () => {
     expect(map[Math.round(60 + 100 * 0.02) * w + 100] & 3).toBe(1);
     expect(map[94 * w + 296] & 2).toBe(2);
     expect(map[Math.round(60 + 28 + 300 * 0.02) * w + 300]).toBe(3);
+  });
+});
+
+describe("scan worker", () => {
+  // Stands in for a module worker: the same handler, with the message cloned as postMessage would.
+  class FakeWorker {
+    onmessage: ((e: { data: ScanReply }) => void) | null = null;
+    onerror: ((e: { message: string }) => void) | null = null;
+    terminated = false;
+    postMessage(req: ScanRequest) {
+      void handleScan(structuredClone(req), (r) => this.onmessage?.({ data: r }));
+    }
+    terminate() {
+      this.terminated = true;
+    }
+  }
+  const image = { width: 4, height: 4, data: new Uint8ClampedArray(64).fill(255) } as unknown as ImageData;
+
+  it("posts the request, relays the worker's error and terminates it", async () => {
+    const fake = new FakeWorker();
+    const run = scanToMusicXml(image, {
+      models: { symbols: new Uint8Array(4), classifiers: async () => new TextEncoder().encode("not json") },
+      worker: () => fake as unknown as Worker,
+    });
+    await expect(run).rejects.toThrow(/JSON/);
+    expect(fake.terminated).toBe(true);
+  });
+
+  it("does not start when already aborted", async () => {
+    const ac = new AbortController();
+    ac.abort(new Error("stopped"));
+    const run = scanToMusicXml(image, { models: { symbols: "a", classifiers: "b" }, worker: () => new FakeWorker() as unknown as Worker, signal: ac.signal });
+    await expect(run).rejects.toThrow("stopped");
   });
 });
