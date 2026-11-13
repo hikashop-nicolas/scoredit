@@ -11,7 +11,8 @@ const OBJSTM_MAX = 40;
 
 /**
  * Whether a PDF is a score engraved by notation software: it names a music font (Leland,
- * Opus, Maestro, Emmentaler...). A scan of a score is not one: it has no music font.
+ * Opus, Maestro, Emmentaler...), or has a MusicXML file attached (as scoredit's exports do).
+ * A scan of a score is not one: it has no music font.
  */
 export function isScorePdf(bytes: Uint8Array): boolean {
   if (String.fromCharCode(...bytes.subarray(0, 5)) !== "%PDF-") return false;
@@ -20,9 +21,11 @@ export function isScorePdf(bytes: Uint8Array): boolean {
   let packed = false;
   for (let at = 0; at < end; at += CHUNK) {
     const text = latin1(bytes.subarray(at, Math.min(end, at + CHUNK + 256)));
-    if (namesMusicFont(text)) return true;
+    if (namesMusicFont(text) || attachesMusicXml(text)) return true;
     packed ||= text.includes("/ObjStm");
   }
+  // Attachments are often appended at the end, past what was scanned.
+  if (bytes.length > end && attachesMusicXml(latin1(bytes.subarray(bytes.length - CHUNK)))) return true;
   if (!packed) return false;
   // Font dictionaries packed in object streams (PDF 1.5) only show once inflated.
   const text = latin1(bytes.subarray(0, end));
@@ -38,7 +41,8 @@ export function isScorePdf(bytes: Uint8Array): boolean {
     if (stop < 0) continue;
     seen++;
     try {
-      if (namesMusicFont(latin1(unzlibSync(bytes.subarray(start, stop))))) return true;
+      const inflated = latin1(unzlibSync(bytes.subarray(start, stop)));
+      if (namesMusicFont(inflated) || attachesMusicXml(inflated)) return true;
     } catch {
       /* not deflated, or damaged: skip it */
     }
@@ -59,6 +63,11 @@ export function pdfNotationApp(bytes: Uint8Array): string | null {
 function namesMusicFont(text: string): boolean {
   for (const m of text.matchAll(/\/(?:BaseFont|FontName)\s*\/(?:[A-Z]{6}\+)?([^\s/<>[\]()]+)/g)) if (MUSIC_FONT.test(m[1])) return true;
   return false;
+}
+
+// An embedded file of MusicXML's media type, or a file name ending in .mxl or .musicxml.
+function attachesMusicXml(text: string): boolean {
+  return /\/Subtype\s*\/application#2Fvnd\.recordare\.musicxml|\.(?:mxl|musicxml)\)/i.test(text);
 }
 
 /**

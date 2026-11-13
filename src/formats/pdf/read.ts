@@ -1,6 +1,7 @@
 // Reads a PDF made by notation software (MuseScore and other SMuFL engravers, and the font
 // families normalize.ts maps) into a MusicXML score-partwise document. Read-only.
 import { parseXml } from "../../model/xml";
+import { readEmbeddedScore } from "./embed";
 import { extractPdf } from "./extract";
 import { normalizePage, type TextRun } from "./normalize";
 import { length, readPage, type Clef, type PAttr, type PEvent, type PMeasure, type PSystem } from "./notation";
@@ -26,8 +27,13 @@ const TREBLE: Clef = { sign: "G", line: 2, octave: 0, top: 38 };
 
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
-/** Reads a score PDF into MusicXML. Throws when no music is found (a scan, or not a score). */
+/**
+ * Reads a score PDF into MusicXML: the MusicXML file attached to it as it is, else what its
+ * pages draw. Throws when no music is found (a scan, or not a score).
+ */
 export async function readPdfScore(bytes: Uint8Array): Promise<Document> {
+  const embedded = await readEmbeddedScore(bytes);
+  if (embedded) return embedded;
   const pdf = await extractPdf(bytes);
   const pages = pdf.pages.map((p) => normalizePage(p, pdf.fonts));
   const read = pages.map((p) => readPage(p));

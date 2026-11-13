@@ -81,5 +81,5 @@ fetch("corpus-index.json")
 
 document.addEventListener("fullscreenchange", () => viewer?.setReadingMode(document.fullscreenElement === host));
 
-// For the end-to-end tests (e2e/): the library and the strip's key layout.
-Object.assign(window, { scoreditLib, scoreditRebuild, scoreditKeys: { layoutKeys, keyRange } });
+// For the end-to-end tests (e2e/): the library, the strip's key layout, and pdf.js to check exports.
+Object.assign(window, { scoreditLib, scoreditRebuild, scoreditKeys: { layoutKeys, keyRange }, scoreditPdfjs: () => import("pdfjs-dist/legacy/build/pdf.mjs") });

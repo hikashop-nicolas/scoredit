@@ -24,7 +24,7 @@ export { remoteSounds, SOUNDS_CDN, type RemoteSoundsOptions, type SoundDownloads
 export { setLocale, t } from "./ui/i18n";
 export { getVolume, setVolume } from "./play/player";
 export { isNotationMidi, isScorePdf, pdfNotationApp } from "./formats/sniff";
-export { exportPdf, renderPages, type PageOptions, type Paper } from "./render/pdf-export";
+export { embedScore, exportPdf, renderPages, type PageOptions, type Paper, type PdfExportOptions } from "./render/pdf-export";
 export { encodeMp3, encodeWav, exportMp3, exportWav, renderAudio, type AudioExportOptions, type RenderedAudio } from "./play/audio-export";
 export { newMuseScore, newMscx, type NewScore } from "./formats/mscx-new";
 export { INSTRUMENTS, instrument, type InstrumentDef } from "./model/instruments";

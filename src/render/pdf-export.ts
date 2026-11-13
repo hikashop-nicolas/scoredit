@@ -2,6 +2,8 @@
 // one SVG per page, then each page drawn into a vector PDF (jsPDF + svg2pdf.js, loaded on use).
 import { OpenSheetMusicDisplay } from "opensheetmusicdisplay";
 import type { ScoreDoc } from "../model/score";
+import { attachFile, MXL_MIME } from "../formats/pdf/embed";
+import { writeMxl } from "../formats/mxl";
 
 export type Paper = "a4" | "letter";
 
@@ -102,8 +104,13 @@ export async function renderPages(score: ScoreDoc, opts: PageOptions = {}): Prom
   }
 }
 
+export interface PdfExportOptions extends PageOptions {
+  /** Attach the score as compressed MusicXML, so the PDF opens again as this score. Default true. */
+  embedScore?: boolean;
+}
+
 /** The score as a vector PDF, one page per OSMD page. */
-export async function exportPdf(score: ScoreDoc, opts: PageOptions = {}): Promise<Uint8Array> {
+export async function exportPdf(score: ScoreDoc, opts: PdfExportOptions = {}): Promise<Uint8Array> {
   const paper = PAPER[opts.paper ?? "a4"];
   const progress = opts.onProgress;
   const pages = await renderPages(score, { ...opts, onProgress: (f) => progress?.(f * 0.6) });
@@ -126,5 +133,12 @@ export async function exportPdf(score: ScoreDoc, opts: PageOptions = {}): Promis
   } finally {
     holder.remove();
   }
-  return new Uint8Array(doc.output("arraybuffer"));
+  const pdf = new Uint8Array(doc.output("arraybuffer"));
+  return opts.embedScore === false ? pdf : embedScore(pdf, score);
+}
+
+/** `pdf` with the score attached as "<title>.mxl", which readPdfScore reads back first. */
+export function embedScore(pdf: Uint8Array, score: ScoreDoc): Uint8Array {
+  const name = (score.title || "Score").replace(/[\\/:*?"<>|\x00-\x1f]+/g, "_").trim().slice(0, 120) || "Score";
+  return attachFile(pdf, { name: `${name}.mxl`, data: writeMxl(score.serialize()), mime: MXL_MIME, description: "MusicXML score" });
 }

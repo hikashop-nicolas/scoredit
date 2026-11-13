@@ -198,6 +198,41 @@ export const HELPERS = `(() => {
   };
 })()`;
 
+// Exports the open score to PDF, opens that PDF again and draws its first page with pdf.js.
+async function pdfRoundTrip(d) {
+  let r;
+  await d.step("Export the score to PDF, then open that PDF again", async () => {
+    r = await d.eval(`(async () => {
+      const lib = scoreditLib;
+      const strip = (x) => x.replace(/^<\\?xml[^>]*>\\s*/, "");
+      const pdf = await lib.exportPdf(viewer.score);
+      const plain = await lib.exportPdf(viewer.score, { embedScore: false });
+      const back = await lib.loadScoreAsync(pdf);
+      const pdfjs = await scoreditPdfjs();
+      const task = pdfjs.getDocument({ data: pdf.slice() });
+      const doc = await task.promise;
+      const page = await doc.getPage(1);
+      const vp = page.getViewport({ scale: 1 });
+      const canvas = document.createElement("canvas");
+      canvas.width = vp.width;
+      canvas.height = vp.height;
+      const ctx = canvas.getContext("2d");
+      await page.render({ canvasContext: ctx, canvas, viewport: vp }).promise;
+      const px = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      let ink = 0;
+      for (let i = 0; i < px.length; i += 4) if (px[i] < 128) ink++;
+      const files = await doc.getAttachments();
+      const pages = doc.numPages;
+      await task.destroy();
+      return { sniff: lib.isScorePdf(pdf), plainSniff: lib.isScorePdf(plain), format: back.format, same: strip(back.score.serialize()) === strip(viewer.score.serialize()), pages, ink, names: files ? [...files.values()].map((f) => f.filename) : [], extra: pdf.length - plain.length };
+    })()`);
+  });
+  d.check("The PDF is recognised as a score", r.sniff && !r.plainSniff, JSON.stringify(r));
+  d.check("It carries one attached .mxl file", r.names.length === 1 && r.names[0].endsWith(".mxl"), r.names.join(", "));
+  d.check("Opening it gives back the same MusicXML", r.format === "pdf" && r.same);
+  d.check("The pages still draw in a PDF reader", r.pages >= 1 && r.ink > 500, `${r.pages} pages, ${r.ink} dark pixels on page 1`);
+}
+
 const EMPTY = "whole-bar rest";
 
 export const scenarios = [
@@ -211,6 +246,26 @@ export const scenarios = [
     async run(d) {
       await d.bars({ 1: "C4 quarter, D4 quarter, E4 quarter, F4 quarter", 2: "G4 half, A4 half", 3: "B4 whole", 4: EMPTY });
     },
+  },
+  {
+    id: "pdf-roundtrip",
+    title: "A PDF scoredit exports opens again as the same score",
+    device: "desktop",
+    fixture: "piano.musicxml",
+    edit: false,
+    why: "An exported PDF carries the score itself as an attached MusicXML file, so opening that PDF gives back the exact score rather than a guess read from the drawing.",
+    look: "The piano fixture, as it was opened.",
+    run: pdfRoundTrip,
+  },
+  {
+    id: "pdf-roundtrip-elise",
+    title: "Für Elise exported to PDF opens again as the same score",
+    device: "desktop",
+    corpus: "musescore-com/fur-elise-beethoven.mxl",
+    edit: false,
+    why: "The same round trip on a real piece several pages long: the PDF reopens as the exact score.",
+    look: "Für Elise, as it was opened.",
+    run: pdfRoundTrip,
   },
   {
     id: "palette-desktop",
