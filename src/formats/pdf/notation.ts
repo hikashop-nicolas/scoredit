@@ -183,6 +183,19 @@ export function readPage(page: NormPage): PageResult {
   for (const p of placed) {
     const kind = headKind(p.cp);
     if (!kind) continue;
+    // A note far from its staff has ledger lines leading to it: between two staves, follow them.
+    if (staffDist(staffOf(p), p.y) > staffOf(p).space * 1.2) {
+      const sys = systems[p.sys];
+      const w = p.w || sp;
+      const ledgerTo = (k: number) => {
+        const st = sys.staves[k];
+        if (!st || st.lines !== 5) return false;
+        const y = p.y < st.top ? st.top - st.space : st.bottom + st.space;
+        return hl.some((l) => Math.abs(l.y - y) < st.space * 0.15 && l.x1 - l.x0 < st.space * 4 && l.x0 < p.x + w && l.x1 > p.x);
+      };
+      const other = p.y < staffOf(p).top ? p.staff - 1 : p.staff + 1;
+      if (!ledgerTo(p.staff) && ledgerTo(other)) p.staff = other;
+    }
     const st = staffOf(p);
     heads.push({ x: p.x, y: p.y, w: p.w || st.space * 1.18, kind, staff: p.staff, sys: p.sys, grace: p.size < st.space * 4 * 0.85, pos: Math.round((p.y - st.top) / (st.space / 2)), size: p.size });
   }
