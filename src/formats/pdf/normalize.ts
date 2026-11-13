@@ -1,6 +1,7 @@
 // One vocabulary for every engraver: music symbols as SMuFL code points, words as text runs,
 // thin filled bars as line segments. The notation reader only sees this.
 import { glyphNameLookup } from "./cff";
+import { MUSIC_FONT } from "./fonts";
 import { type ChordPiece, chordRuns, width } from "./chords";
 import { emmentalerMapper, isEmmentaler } from "./emmentaler";
 import type { PdfFontInfo, PdfGlyph, PdfPage, PdfSegment, PdfShape } from "./extract";
@@ -80,7 +81,6 @@ export function registerFontMapper(test: (font: string, glyphs: PdfGlyph[]) => b
   MAPPERS.push({ test, map, label });
 }
 
-const MUSIC_FONT = /bravura|leland|petaluma|maestro|opus|sonata|petrucci|emmentaler|feta|jazz|engraver|broadway|reprise|helsinki|norfolk|pori|tamburo|golden age|sebastian|gootville|leipzig|ekmelos|musescore|mscore|toccata|november|anastasia|lassus|august|campania/i;
 
 export function normalizePage(page: PdfPage, fonts: Map<string, PdfFontInfo>): NormPage {
   const byFont = new Map<string, PdfGlyph[]>();

@@ -23,6 +23,7 @@ export { buildTimeline, type Timeline, type NoteEvent } from "./play/timeline";
 export { remoteSounds, SOUNDS_CDN, type RemoteSoundsOptions, type SoundDownloads, type SoundRequest } from "./play/sounds";
 export { setLocale, t } from "./ui/i18n";
 export { getVolume, setVolume } from "./play/player";
+export { isNotationMidi, isScorePdf, pdfNotationApp } from "./formats/sniff";
 export { exportPdf, renderPages, type PageOptions, type Paper } from "./render/pdf-export";
 export { encodeMp3, encodeWav, exportMp3, exportWav, renderAudio, type AudioExportOptions, type RenderedAudio } from "./play/audio-export";
 export { newMuseScore, newMscx, type NewScore } from "./formats/mscx-new";
