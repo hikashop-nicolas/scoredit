@@ -62,6 +62,12 @@ export interface ScanResult {
   issues: string[];
 }
 
+/** The onnxruntime-web version the scan runs on, for a host serving its wasm files (e.g. from a CDN). */
+export async function scanEngineVersion(): Promise<string> {
+  const ort = await import("onnxruntime-web");
+  return ort.env.versions.web;
+}
+
 export async function bytesOf(src: ModelSource): Promise<Uint8Array> {
   if (typeof src === "function") src = await src();
   if (src instanceof Uint8Array) return src;

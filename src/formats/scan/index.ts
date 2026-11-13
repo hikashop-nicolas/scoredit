@@ -6,7 +6,7 @@ import type { TileProgress } from "./infer";
 import { bytesOf, scanInThread, type ModelSource, type ScanModels, type ScanOptions, type ScanResult } from "./read";
 
 export type { OrtLike, TileProgress } from "./infer";
-export { classMaps } from "./read";
+export { classMaps, scanEngineVersion } from "./read";
 export type { ModelSource, ScanModels, ScanOptions, ScanResult };
 
 /** Reads one page of printed music from a scan or photo into MusicXML text. */
