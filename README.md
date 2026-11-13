@@ -68,27 +68,37 @@ vector PDF (OSMD's paged layout drawn with jsPDF and svg2pdf.js, both MIT, loade
 import { readScanScore } from "scoredit";
 
 const doc = await readScanScore(blobOrImageData, {
-  models: { staff: urlOrBytes, symbols: urlOrBytes, classifiers: urlOrBytes },
+  models: { symbols: urlOrBytes, classifiers: urlOrBytes },
   session: { executionProviders: ["webgpu", "wasm"] },
 });
 ```
 
-One page of printed music becomes a MusicXML document. This is a TypeScript port of
-[oemer](https://github.com/BreezeWhite/oemer) (MIT): its two segmentation networks run in
-onnxruntime-web (imported on first use) and its post-processing (staff lines, noteheads,
-beams, rests, clefs, accidentals, deskew) is ported line by line, so on the same network
-output it writes the same notes as oemer. scoredit ships none of the models: the host gives
-each as a URL, bytes or a fetch function. `python scripts/scan-models.py out/` writes them from
-an oemer install: oemer-staff.onnx (71 MB), oemer-symbols.onnx (38 MB) and
-oemer-classifiers.json (5.9 MB); `--int8 page.png` adds a 10 MB int8 copy of the symbols
-network that reads as well. The staff network was trained on CVC-MUSCIMA, a non-commercial
-dataset (CC BY-NC-SA 4.0), and oemer's checkpoints carry no licence of their own: check this
-before shipping them.
+One page of printed music becomes a MusicXML document. Staff lines are found without
+machine learning (binarisation, run lengths, projections in vertical strips, each line
+followed across the page); the symbols come from a TypeScript port of
+[oemer](https://github.com/BreezeWhite/oemer) (MIT): its symbol segmentation network runs in
+onnxruntime-web (imported on first use) and its post-processing (noteheads, beams, rests,
+clefs, accidentals, dots) is ported line by line.
 
-It is slow. oemer runs each network on overlapping tiles (about 200 per page each). On a
-2019 laptop that is about 2 minutes with WebGPU and half an hour in single-threaded
-WebAssembly; `step: 256` (tiles without overlap) divides the time by four for a few points
-of accuracy. The post-processing takes 10 to 20 seconds on the main thread: run it in a worker.
+scoredit ships no model. The host gives each as a URL, bytes or a fetch function, and
+`python scripts/scan-models.py out/` writes them from an oemer install:
+
+- `symbols`: oemer-symbols.onnx, oemer's seg_net (38.4 MB; `--int8 page.png` also writes a
+  10.3 MB int8 copy that reads about as well);
+- `classifiers`: oemer-classifiers.json, oemer's four SVM classifiers (5.9 MB).
+
+Both were trained by oemer's author on [DeepScoresV2](https://zenodo.org/record/4012193)
+(Tuggener et al., CC BY 4.0); credit DeepScoresV2 and oemer where the models are shipped.
+oemer's staff network (unet_big) is not needed and is not shipped: it was trained on
+CVC-MUSCIMA, a non-commercial dataset. For comparison it can still be used
+(`staffLines: "unet"`, `models.staff`, `scan-models.py --staff`).
+
+The symbol network is the slow part: it runs on about 200 overlapping tiles per page. On a
+2019 laptop that is about 70 seconds with WebGPU, 4 minutes in WebAssembly with eight
+threads and 20 minutes with one. `step: 256` (63 tiles) with the int8 copy brings that to
+80 seconds with eight threads and 4 minutes with one, reading about as well. Staff lines
+take under a second and the post-processing 7 to 10 seconds on the main thread: run it in
+a worker.
 
 ## Develop
 

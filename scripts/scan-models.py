@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-# Prepares oemer's models for readScanScore: its four SVM classifiers as one JSON file,
-# and optionally an int8 copy of the symbols network (a quarter of the size; the staff
-# network loses its staff lines when quantised, so it stays fp32).
+# Prepares oemer's models for readScanScore: its symbols network (seg_net), its four SVM
+# classifiers as one JSON file, and optionally an int8 copy of the symbols network (a
+# quarter of the size). Both were trained on DeepScoresV2 (CC BY 4.0). --staff also copies
+# the staff network (unet_big, trained on CVC-MUSCIMA, CC BY-NC-SA 4.0: comparison only).
 #   pip install oemer==0.1.5 onnx onnxruntime   (oemer downloads its checkpoints on first run)
-#   python scripts/scan-models.py out/ [--int8 calibration.png]
+#   python scripts/scan-models.py out/ [--int8 calibration.png] [--staff]
 # Run with numpy < 1.24, or the np.int aliases below cover newer versions.
 import base64
 import json
@@ -43,6 +44,8 @@ json.dump(svms, open(os.path.join(out, "oemer-classifiers.json"), "w"))
 
 nets = {"unet_big": ("oemer-staff", 256), "seg_net": ("oemer-symbols", 288)}
 for src, (dst, _) in nets.items():
+    if src == "unet_big" and "--staff" not in sys.argv:
+        continue
     with open(os.path.join(MODULE_PATH, "checkpoints", src, "model.onnx"), "rb") as f, open(os.path.join(out, dst + ".onnx"), "wb") as g:
         g.write(f.read())
 
