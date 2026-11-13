@@ -131,7 +131,8 @@ function writeScore(systems: PSystem[], header: TextRun[], width: number, docTit
 
   parts.forEach((part, pi) => {
     out.push(`<part id="P${pi + 1}">`);
-    const clefs: Clef[] = Array.from({ length: part.staves }, () => TREBLE);
+    const lines = Array.from({ length: part.staves }, (_, k) => full.staves[part.first + k].lines);
+    const clefs: Clef[] = lines.map((n) => (n === 5 ? TREBLE : TAB));
     let fifths: number | null = null;
     let lastTime: (typeof time) | null = null;
     measures.forEach(({ m, staffMap }, mi) => {
@@ -154,11 +155,19 @@ function writeScore(systems: PSystem[], header: TextRun[], width: number, docTit
       if (mi === 0 && part.staves > 1) attrs.push(`<staves>${part.staves}</staves>`);
       lead.forEach((as, k) => {
         const c = as.filter((a) => a.clef).pop()?.clef;
+        if (lines[k] !== 5) {
+          if (mi === 0) attrs.push(clefXml(TAB, part.staves > 1 ? k + 1 : 0));
+          return;
+        }
         if (mi === 0 || (c && !sameClef(c, clefs[k]))) {
           clefs[k] = c ?? clefs[k];
           attrs.push(clefXml(clefs[k], part.staves > 1 ? k + 1 : 0));
         }
       });
+      if (mi === 0)
+        lines.forEach((n, k) => {
+          if (n !== 5) attrs.push(staffDetails(n, part.staves > 1 ? k + 1 : 0));
+        });
       if (attrs.length) out.push(`<attributes>${attrs.join("")}</attributes>`);
 
       const mlen = (t.beats * 4) / t.type;
@@ -184,6 +193,10 @@ function writeScore(systems: PSystem[], header: TextRun[], width: number, docTit
         let ci = 0;
         for (const e of byX) {
           while (ci < mid.length && mid[ci].x < e.x) clef = mid[ci++].clef!;
+          if (e.tab) {
+            e.notes = e.tab.map((t) => ({ ...spell(tuning(lines[sk])[t.string - 1] + t.fret, fifths ?? 0), pos: 0, tab: t }));
+            continue;
+          }
           e.notes = e.heads.map((h) => {
             const d = clef.top - h.pos;
             let alter = 0;
@@ -228,6 +241,29 @@ function writeScore(systems: PSystem[], header: TextRun[], width: number, docTit
   });
   out.push("</score-partwise>");
   return out.join("\n");
+}
+
+const TAB: Clef = { sign: "TAB", line: 5, octave: 0, top: 0 };
+const TUNING: Record<number, number[]> = { 6: [64, 59, 55, 50, 45, 40], 4: [43, 38, 33, 28], 5: [43, 38, 33, 28, 23], 7: [64, 59, 55, 50, 45, 40, 35] };
+// Standard tunings, top line first: a PDF does not say which tuning a tablature uses.
+const tuning = (lines: number) => TUNING[lines] ?? TUNING[6];
+
+function spell(midi: number, fifths: number): { step: string; octave: number; alter: number } {
+  const pc = ((midi % 12) + 12) % 12;
+  const natural = [0, 2, 4, 5, 7, 9, 11].indexOf(pc);
+  const octave = Math.floor(midi / 12) - 1;
+  if (natural >= 0) return { step: STEPS[natural], octave, alter: 0 };
+  if (fifths >= 0) return { step: STEPS[[0, 2, 4, 5, 7, 9, 11].indexOf(pc - 1)], octave, alter: 1 };
+  return { step: STEPS[[0, 2, 4, 5, 7, 9, 11].indexOf(pc + 1)], octave, alter: -1 };
+}
+
+function staffDetails(lines: number, staff: number): string {
+  const tun = [...tuning(lines)].reverse();
+  const tunes = tun.map((m, i) => {
+    const p = spell(m, 0);
+    return `<staff-tuning line="${i + 1}"><tuning-step>${p.step}</tuning-step>${p.alter ? `<tuning-alter>${p.alter}</tuning-alter>` : ""}<tuning-octave>${p.octave}</tuning-octave></staff-tuning>`;
+  });
+  return `<staff-details${staff ? ` number="${staff}"` : ""}><staff-lines>${lines}</staff-lines>${tunes.join("")}</staff-details>`;
 }
 
 const voiceNo = (v: number, staff: number) => staff * 4 + v;
@@ -326,7 +362,7 @@ function timeMeasure(m: PMeasure, mlen: number, space: number): void {
 function hiddenTuplets(line: PEvent[], mlen: number): void {
   const isRest = (e: PEvent) => e.rest && e.base === 4 && line.length === 1;
   const total = line.reduce((t, e) => t + (isRest(e) ? mlen : length(e)), 0);
-  if (total <= mlen + 1e-6 || line.some((e) => e.tuplet)) return;
+  if (total <= mlen + 1e-6 || line.some((e) => e.tuplet || e.guess)) return;
   const min = Math.min(...line.map((e) => e.base));
   const short = line.filter((e) => e.base === min);
   const sum = short.reduce((t, e) => t + length(e), 0);
@@ -353,7 +389,7 @@ function typeOf(base: number): string {
 }
 
 function noteXml(e: PEvent, dur: number, voice: number, staff: number, tup: ReturnType<typeof tupletEdge>): string {
-  const common = (chord: boolean, inner: string, extra: string, lyric: string) => {
+  const common = (chord: boolean, inner: string, extra: string, lyric: string, tech = "") => {
     const s: string[] = ["<note>"];
     if (e.grace) s.push("<grace/>");
     if (chord) s.push("<chord/>");
@@ -366,7 +402,8 @@ function noteXml(e: PEvent, dur: number, voice: number, staff: number, tup: Retu
     if (e.tuplet) s.push(`<time-modification><actual-notes>${e.tuplet.actual}</actual-notes><normal-notes>${e.tuplet.normal}</normal-notes></time-modification>`);
     if (!e.rest && e.up !== undefined) s.push(`<stem>${e.up ? "up" : "down"}</stem>`);
     if (staff) s.push(`<staff>${staff}</staff>`);
-    if (!chord && tup) s.push(`<notations>${tup === "start" || tup === "both" ? `<tuplet type="start"/>` : ""}${tup === "stop" || tup === "both" ? `<tuplet type="stop"/>` : ""}</notations>`);
+    const tupXml = !chord && tup ? `${tup === "start" || tup === "both" ? `<tuplet type="start"/>` : ""}${tup === "stop" || tup === "both" ? `<tuplet type="stop"/>` : ""}` : "";
+    if (tupXml || tech) s.push(`<notations>${tupXml}${tech}</notations>`);
     s.push(lyric);
     s.push("</note>");
     return s.join("");
@@ -377,7 +414,8 @@ function noteXml(e: PEvent, dur: number, voice: number, staff: number, tup: Retu
     .map((n, i) => {
       const pitch = `<pitch><step>${n.step}</step>${n.alter ? `<alter>${n.alter}</alter>` : ""}<octave>${n.octave}</octave></pitch>`;
       const acc = n.shown !== undefined ? `<accidental>${ACC_NAMES[n.shown] ?? "natural"}</accidental>` : "";
-      return common(i > 0, pitch, acc, i === 0 ? lyrics : "");
+      const tech = n.tab ? `<technical><string>${n.tab.string}</string><fret>${n.tab.fret}</fret></technical>` : "";
+      return common(i > 0, pitch, acc, i === 0 ? lyrics : "", tech);
     })
     .join("");
 }

@@ -1,6 +1,6 @@
 // From a page's symbols and lines to systems of measures holding chords and rests, with
 // pitches, durations and voices. Font-agnostic: it only sees SMuFL code points.
-import { beamY, braceGroups, findBarlines, findBeams, findStaves, findSystems, horizontals, mergeVerticals, verticals, type HLine, type Staff, type VLine } from "./geometry";
+import { beamY, braceGroups, type Beam, findBarlines, findBeams, findStaves, findSystems, horizontals, mergeVerticals, verticals, type HLine, type Staff, type VLine } from "./geometry";
 import type { MusicSymbol, NormPage, TextRun } from "./normalize";
 import { ACCIDENTALS, OTTAVAS, AUGMENTATION_DOT, CLEFS, DYNAMICS, HEAD_LENGTH, REPEAT_DOT, RESTS, REST_WHOLE, TIME_COMMON, TIME_CUT, flag, headKind, timeDigit, tupletDigit, type HeadKind } from "./glyphs";
 
@@ -35,6 +35,7 @@ export interface PNote {
   tieStart?: boolean;
   tieStop?: boolean;
   pos: number;
+  tab?: { string: number; fret: number };
 }
 
 export interface Lyric {
@@ -62,6 +63,12 @@ export interface PEvent {
   voice: number;
   onset: number;
   lyrics: Lyric[];
+  /** Tablature: string (1 = top line) and fret of each note. */
+  tab?: { string: number; fret: number }[];
+  /** The chord of the staff of notes this tablature chord doubles. */
+  link?: PEvent;
+  /** Tablature without rhythm: the length is a guess. */
+  guess?: boolean;
 }
 
 export const length = (e: PEvent) => (e.base * (2 - 1 / 2 ** e.dots) * (e.tuplet ? e.tuplet.normal / e.tuplet.actual : 1));
@@ -128,20 +135,22 @@ export function readPage(page: NormPage): PageResult {
   const vRaw = verticals(page.segments);
   const vl = mergeVerticals(vRaw);
   const allStaves = findStaves(hl);
-  const staves = allStaves.filter((s) => s.lines === 5);
-  if (!staves.length) return { systems: [], header: page.texts };
+  const staves = allStaves.filter((s) => s.lines === 5 || s.lines === 6);
+  if (!staves.some((s) => s.lines === 5 || s.lines === 6)) return { systems: [], header: page.texts };
   const sysIdx = findSystems(staves, vl, page.symbols);
-  const sp = median(staves.map((s) => s.space));
+  const sp = median(staves.filter((s) => s.lines === 5).map((s) => s.space)) || median(staves.map((s) => s.space));
   const beams = findBeams(page.shapes, page.segments, sp);
 
   // Which system and staff a point belongs to.
-  const sysOf = (x: number, y: number): [number, number] | null => {
+  // Music symbols go to staves of notes; tablature only takes rests and flags.
+  const sysOf = (x: number, y: number, cp = 0): [number, number] | null => {
     let best: [number, number] | null = null;
     let bd = Infinity;
+    const tabOk = RESTS[cp] !== undefined || flag(cp) !== null || cp === AUGMENTATION_DOT;
     sysIdx.forEach((idx, si) =>
       idx.forEach((i, k) => {
         const s = staves[i];
-        if (x < s.x0 - 6 * s.space || x > s.x1 + s.space) return;
+        if (x < s.x0 - 6 * s.space || x > s.x1 + s.space || (s.lines !== 5 && !tabOk)) return;
         const d = staffDist(s, y);
         if (d < bd) {
           bd = d;
@@ -161,7 +170,7 @@ export function readPage(page: NormPage): PageResult {
   type Placed = MusicSymbol & { sys: number; staff: number };
   const placed: Placed[] = [];
   for (const s of page.symbols) {
-    const at = sysOf(s.x, s.y);
+    const at = sysOf(s.x, s.y, s.cp);
     if (!at) continue;
     const st = systems[at[0]].staves[at[1]];
     if (staffDist(st, s.y) > 10 * st.space) continue;
@@ -325,6 +334,8 @@ export function readPage(page: NormPage): PageResult {
     e.dots = Math.min(n, 3);
   }
 
+  tablature(page, systems, sysIdx.length, vRaw, beams, placed, events);
+
   // Per system: barlines, measures, then what each measure holds.
   systems.forEach((sys, si) => {
     const idx = sysIdx[si];
@@ -370,7 +381,7 @@ export function readPage(page: NormPage): PageResult {
         if (m >= 0) raw[m].attrs[k].push({ x: p.x, clef: { sign: c.sign, line: c.sign === "percussion" ? 2 : line, octave: c.octave, top } });
       }
       // Time signatures: digits above and below the middle line, stacked.
-      const digits = mine.filter((p) => timeDigit(p.cp) >= 0 && p.size >= st.space * 4 * 0.85).sort((a, b) => a.x - b.x);
+      const digits = mine.filter((p) => timeDigit(p.cp) >= 0 && p.size >= st.space * 4 * 0.85 && p.y > st.top - st.space && p.y < st.bottom + st.space * 1.5).sort((a, b) => a.x - b.x);
       const used = new Set<MusicSymbol>();
       for (const d of digits) {
         if (used.has(d)) continue;
@@ -509,10 +520,73 @@ export function readPage(page: NormPage): PageResult {
   }
   lyricsOf(page, systems, sp);
   tuplets(page, systems);
+  for (const sys of systems)
+    for (const m of sys.measures)
+      for (const e of m.events.flat()) if (e.link) Object.assign(e, { base: e.link.base, dots: e.link.dots, tuplet: e.link.tuplet, voice: e.link.voice });
   return { systems, header };
 
   function newMeasure(x0: number, x1: number, n: number, leftRepeat: boolean, right?: PMeasure["right"]): PMeasure {
     return { x0, x1, events: Array.from({ length: n }, () => []), attrs: Array.from({ length: n }, () => []), dirs: [], right, leftRepeat };
+  }
+}
+
+/** Tablature: fret numbers on the lines; rhythm from stems under the staff, else from the staff of notes above. */
+function tablature(page: NormPage, systems: PSystem[], n: number, vRaw: VLine[], beams: Beam[], placed: (MusicSymbol & { sys: number; staff: number })[], events: (PEvent & { sys: number })[]): void {
+  for (let si = 0; si < n; si++) {
+    const sys = systems[si];
+    sys.staves.forEach((st, k) => {
+      if (st.lines === 5) return;
+      let frets: { x: number; string: number; fret: number; font: string }[] = [];
+      for (const t of page.texts)
+        for (const w of t.words) {
+          const m = /^\(?(\d{1,2})\)?$/.exec(w.str);
+          const cy = t.y - t.size * 0.35;
+          if (!m || cy < st.top - st.space * 0.5 || cy > st.bottom + st.space * 0.5 || w.x < st.x0 || w.x > st.x1) continue;
+          const line = Math.round((cy - st.top) / st.space);
+          if (Math.abs(cy - (st.top + line * st.space)) > st.space * 0.3) continue;
+          frets.push({ x: (w.x + w.x1) / 2, string: line + 1, fret: Number(m[1]), font: `${t.font} ${Math.round(t.size * 10)}` });
+        }
+      // Fret numbers share one font; fingerings and string numbers use others.
+      const count = new Map<string, number>();
+      for (const f of frets) count.set(f.font, (count.get(f.font) ?? 0) + 1);
+      const main = [...count].sort((a, b) => b[1] - a[1])[0]?.[0];
+      frets = frets.filter((f) => f.font === main);
+      frets.sort((a, b) => a.x - b.x);
+      const stems = vRaw.filter((v) => v.y0 > st.bottom - st.space * 0.2 && v.y0 < st.bottom + st.space * 3 && v.x > st.x0 && v.x < st.x1);
+      const lens = stems.map((v) => v.y1 - v.y0);
+      const full = Math.max(0, ...lens);
+      const above = k > 0 && sys.staves[k - 1].lines === 5 ? events.filter((e) => e.sys === si && e.staff === k - 1 && !e.rest && !e.grace) : [];
+      for (let i = 0; i < frets.length; ) {
+        let j = i + 1;
+        while (j < frets.length && frets[j].x - frets[i].x < st.space * 0.6) j++;
+        const col = frets.slice(i, j);
+        i = j;
+        const x = col.reduce((a, f) => a + f.x, 0) / col.length;
+        const half = st.space * 0.5;
+        const e: PEvent & { sys: number } = { rest: false, x: x - half, x1: x + half, y: st.top, staff: k, base: 1, dots: 0, grace: false, heads: [], notes: [], measureRest: false, voice: 1, onset: 0, lyrics: [], sys: si, tab: col.map((f) => ({ string: f.string, fret: f.fret })) };
+        const twins = above.filter((a) => Math.abs((a.x + a.x1) / 2 - x) < st.space * 1.2).sort((a, b) => a.y - b.y);
+        const stem = stems.find((v) => Math.abs(v.x - x) < st.space * 0.6);
+        if (twins.length) {
+          // One chord per voice above: higher strings go with the higher chord.
+          const byString = [...col].sort((a, b) => a.string - b.string);
+          let at = 0;
+          twins.forEach((t, i) => {
+            const take = i === twins.length - 1 ? byString.slice(at) : byString.slice(at, at + t.heads.length);
+            at += take.length;
+            if (take.length) events.push({ ...e, tab: take.map((f) => ({ string: f.string, fret: f.fret })), link: t });
+          });
+          continue;
+        } else if (stem) {
+          const end = stem.y1;
+          const fl = placed.filter((p) => p.sys === si && flag(p.cp) && Math.abs(p.x - stem.x) < st.space * 0.7 && Math.abs(p.y - end) < st.space * 1.2);
+          const nf = Math.max(0, ...fl.map((p) => flag(p.cp)!.n));
+          const nb = beams.filter((b) => stem.x >= b.x0 - st.space * 0.2 && stem.x <= b.x1 + st.space * 0.2 && Math.abs(beamY(b, stem.x) - end) < st.space * 2.5 && beamY(b, stem.x) > stem.y0).length;
+          e.base = stem.y1 - stem.y0 < full * 0.65 && !nf && !nb ? 2 : 1 / 2 ** (nf || nb);
+        } else if (stems.length) e.base = 4;
+        else e.guess = true;
+        events.push(e);
+      }
+    });
   }
 }
 
@@ -570,7 +644,7 @@ export function assignVoices(evs: PEvent[], st: Staff): void {
   for (const e of main) {
     const partner = main.find((o) => o !== e && !o.rest && same(e, o));
     if (!e.rest) {
-      if (e.up === undefined && partner) e.voice = partner.y < e.y ? 2 : 1;
+      if (e.up === undefined && partner) e.voice = partner.up === undefined ? (partner.y < e.y ? 2 : 1) : partner.voice === 1 ? 2 : 1;
       continue;
     }
     if (partner) e.voice = e.y < partner.y ? 1 : 2;
