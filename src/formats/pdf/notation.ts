@@ -1,6 +1,7 @@
 // From a page's symbols and lines to systems of measures holding chords and rests, with
 // pitches, durations and voices. Font-agnostic: it only sees SMuFL code points.
 import { beamY, braceGroups, type Beam, findBarlines, findBeams, findStaves, findSystems, horizontals, mergeVerticals, verticals, type HLine, type Staff, type VLine } from "./geometry";
+import type { PdfShape } from "./extract";
 import type { MusicSymbol, NormPage, TextRun } from "./normalize";
 import { ACCIDENTALS, OTTAVAS, AUGMENTATION_DOT, CLEFS, DYNAMICS, HEAD_LENGTH, REPEAT_DOT, RESTS, REST_WHOLE, TIME_COMMON, TIME_CUT, flag, headKind, timeDigit, tupletDigit, type HeadKind } from "./glyphs";
 
@@ -17,6 +18,8 @@ export interface Head {
   acc?: number;
   /** Semitones an octave line moves it. */
   shift?: number;
+  tieStart?: boolean;
+  tieStop?: boolean;
 }
 
 export interface Clef {
@@ -348,6 +351,7 @@ export function readPage(page: NormPage): PageResult {
   }
 
   tablature(page, systems, sysIdx.length, vRaw, beams, placed, events);
+  ties(page.shapes, heads, systems);
 
   // Per system: barlines, measures, then what each measure holds.
   systems.forEach((sys, si) => {
@@ -600,6 +604,30 @@ function tablature(page: NormPage, systems: PSystem[], n: number, vRaw: VLine[],
         events.push(e);
       }
     });
+  }
+}
+
+/** Ties: flat curves from a notehead to the next one on the same line or space (or off the end of a system). */
+function ties(shapes: PdfShape[], heads: (Head & { sys: number })[], systems: PSystem[]): void {
+  for (const c of shapes) {
+    if (!c.curved) continue;
+    const { x0, x1, y0, y1 } = c.box;
+    const at = (x: number) => c.points.reduce((best, p) => (Math.abs(p[0] - x) < Math.abs(best[0] - x) ? p : best), c.points[0])[1];
+    const ya = at(x0);
+    const yb = at(x1);
+    const sys = systems.findIndex((s) => y0 > s.top - 8 * s.staves[0].space && y1 < s.bottom + 8 * s.staves[0].space && x1 > s.x0);
+    if (sys < 0) continue;
+    const sp = systems[sys].staves[0].space;
+    if (y1 - y0 > sp * 1.6 || x1 - x0 < sp * 0.8 || Math.abs(ya - yb) > sp * 0.5) continue;
+    const near = heads.filter((h) => h.sys === sys && !h.grace);
+    const a = near.filter((h) => x0 >= h.x && x0 <= h.x + h.w + sp && Math.abs(h.y - ya) < sp * 1.1).sort((p, q) => q.x - p.x)[0];
+    const b = near.filter((h) => x1 >= h.x - sp && x1 <= h.x + h.w && Math.abs(h.y - yb) < sp * 1.1 && (!a || (h.staff === a.staff && h.pos === a.pos && h.x > a.x))).sort((p, q) => p.x - q.x)[0];
+    const st = systems[sys].staves;
+    if (a && b) {
+      a.tieStart = true;
+      b.tieStop = true;
+    } else if (a && x1 > Math.max(...st.map((s) => s.x1)) - sp * 2) a.tieStart = true;
+    else if (b && !a && x0 < b.x - sp * 0.5 && !near.some((h) => h.staff === b.staff && h.x < b.x && h.x > x0 - sp)) b.tieStop = true;
   }
 }
 

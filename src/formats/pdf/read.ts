@@ -133,6 +133,8 @@ function writeScore(systems: PSystem[], header: TextRun[], width: number, docTit
     out.push(`<part id="P${pi + 1}">`);
     const lines = Array.from({ length: part.staves }, (_, k) => full.staves[part.first + k].lines);
     const clefs: Clef[] = lines.map((n) => (n === 5 ? TREBLE : TAB));
+    // Alterations carried by ties, per staff and diatonic step.
+    const tied = lines.map(() => new Map<number, number>());
     let fifths: number | null = null;
     let lastTime: (typeof time) | null = null;
     measures.forEach(({ m, staffMap }, mi) => {
@@ -202,9 +204,12 @@ function writeScore(systems: PSystem[], header: TextRun[], width: number, docTit
             let alter = 0;
             if (h.acc !== undefined && !e.grace) alters.set(d, h.acc);
             if (h.acc !== undefined) alter = h.acc;
+            else if (h.tieStop && tied[sk].has(d)) alter = tied[sk].get(d)!;
             else if (alters.has(d)) alter = alters.get(d)!;
             else alter = keyAlter(fifths ?? 0, ((d % 7) + 7) % 7);
-            return { step: STEPS[((d % 7) + 7) % 7], octave: Math.floor(d / 7) + Math.round((h.shift ?? 0) / 12), alter, shown: h.acc, pos: h.pos };
+            if (h.tieStart) tied[sk].set(d, alter);
+            else if (h.tieStop) tied[sk].delete(d);
+            return { step: STEPS[((d % 7) + 7) % 7], octave: Math.floor(d / 7) + Math.round((h.shift ?? 0) / 12), alter, shown: h.acc, pos: h.pos, tieStart: h.tieStart, tieStop: h.tieStop };
           });
         }
         while (ci < mid.length) clef = mid[ci++].clef!;
@@ -389,12 +394,14 @@ function typeOf(base: number): string {
 }
 
 function noteXml(e: PEvent, dur: number, voice: number, staff: number, tup: ReturnType<typeof tupletEdge>): string {
-  const common = (chord: boolean, inner: string, extra: string, lyric: string, tech = "") => {
+  const common = (chord: boolean, inner: string, extra: string, lyric: string, tech = "", tie: { start?: boolean; stop?: boolean } = {}) => {
     const s: string[] = ["<note>"];
     if (e.grace) s.push("<grace/>");
     if (chord) s.push("<chord/>");
     s.push(inner);
     if (!e.grace) s.push(`<duration>${Math.round(dur * DIV)}</duration>`);
+    if (tie.stop) s.push(`<tie type="stop"/>`);
+    if (tie.start) s.push(`<tie type="start"/>`);
     s.push(`<voice>${voice}</voice>`);
     if (!e.measureRest) s.push(`<type>${typeOf(e.base)}</type>`);
     for (let d = 0; d < e.dots; d++) s.push("<dot/>");
@@ -403,7 +410,8 @@ function noteXml(e: PEvent, dur: number, voice: number, staff: number, tup: Retu
     if (!e.rest && e.up !== undefined) s.push(`<stem>${e.up ? "up" : "down"}</stem>`);
     if (staff) s.push(`<staff>${staff}</staff>`);
     const tupXml = !chord && tup ? `${tup === "start" || tup === "both" ? `<tuplet type="start"/>` : ""}${tup === "stop" || tup === "both" ? `<tuplet type="stop"/>` : ""}` : "";
-    if (tupXml || tech) s.push(`<notations>${tupXml}${tech}</notations>`);
+    const tied = `${tie.stop ? `<tied type="stop"/>` : ""}${tie.start ? `<tied type="start"/>` : ""}`;
+    if (tupXml || tech || tied) s.push(`<notations>${tied}${tupXml}${tech}</notations>`);
     s.push(lyric);
     s.push("</note>");
     return s.join("");
@@ -415,7 +423,7 @@ function noteXml(e: PEvent, dur: number, voice: number, staff: number, tup: Retu
       const pitch = `<pitch><step>${n.step}</step>${n.alter ? `<alter>${n.alter}</alter>` : ""}<octave>${n.octave}</octave></pitch>`;
       const acc = n.shown !== undefined ? `<accidental>${ACC_NAMES[n.shown] ?? "natural"}</accidental>` : "";
       const tech = n.tab ? `<technical><string>${n.tab.string}</string><fret>${n.tab.fret}</fret></technical>` : "";
-      return common(i > 0, pitch, acc, i === 0 ? lyrics : "", tech);
+      return common(i > 0, pitch, acc, i === 0 ? lyrics : "", tech, { start: n.tieStart, stop: n.tieStop });
     })
     .join("");
 }
