@@ -1,6 +1,7 @@
 import { strFromU8, unzipSync } from "fflate";
 import { kidIndexed as kid, kids, parseXml } from "../model/xml";
 import { chordFromMuseScore, makeHarmony } from "../edit/chords";
+import { PLAY_PAUSE, PLAY_STRETCH } from "../model/score";
 
 // A chord or note's children by tag, read in one pass.
 const NO_GROUPS = new Map<string, Element[]>();
@@ -28,6 +29,17 @@ export const BREATH: Record<string, [string, string]> = {
   caesuraCurved: ["caesura", "curved"],
   caesuraSingleStroke: ["caesura", "single"],
 };
+/** MuseScore's fermata symbols (without Above/Below), as MusicXML fermata shapes. */
+export const FERMATA_SHAPE: Record<string, string> = {
+  fermata: "",
+  fermataShort: "angled",
+  fermataLong: "square",
+  fermataVeryShort: "double-angled",
+  fermataVeryLong: "double-square",
+  fermataLongHenze: "double-dot",
+  fermataShortHenze: "half-curve",
+};
+
 const GRACES = ["acciaccatura", "appoggiatura", "grace4", "grace8after", "grace16", "grace16after", "grace32", "grace32after"];
 
 // The reader asks the same elements for many children: indexed lookups.
@@ -309,7 +321,8 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
   const score = kid(ms, "Score");
   if (!score) throw new Error("The MuseScore file holds no score");
 
-  let pendingFermata = false;
+  // The MuseScore fermata waiting for the next chord or rest.
+  let pendingFermata: Element | null = null;
   // Slurs paired by where each end says the other is: open ones by the place they end at,
   // and ends met before their start (an earlier staff or voice) by their own place.
   const slurOpen = new Map<string, number[]>();
@@ -581,7 +594,7 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
         voiceLists.forEach((voiceKids, v) => {
           let pos = 0;
           // A fermata left over at the end of a voice stood on the barline.
-          pendingFermata = false;
+          pendingFermata = null;
           // A trill line or two-chord tremolo starts on the next chord; a trill line ends on the last one.
           let trillNext = false;
           let tremoloStop = 0;
@@ -955,8 +968,10 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
                       el(ornaments(), "wavy-line", null, { type: "start" });
                     }
                     if (pendingFermata && !graceTag) {
-                      el(notations(), "fermata", null, { type: "upright" });
-                      pendingFermata = false;
+                      const stretch = Number(text(pendingFermata, "timeStretch"));
+                      const shape = FERMATA_SHAPE[text(pendingFermata, "subtype").replace(/(Above|Below)$/, "")];
+                      el(notations(), "fermata", shape || null, { type: "upright", ...(stretch > 0 ? { [PLAY_STRETCH]: stretch } : {}) });
+                      pendingFermata = null;
                     }
                     if (gone(cg, "Arpeggio")) el(notations(), "arpeggiate");
                   }
@@ -1029,7 +1044,7 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
                 break;
               }
               case "Fermata": {
-                pendingFermata = true;
+                pendingFermata = c;
                 break;
               }
               case "Breath": {
@@ -1038,7 +1053,8 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
                   const nt = kid(lastEvent, "notations") ?? el(lastEvent, "notations");
                   const arts = kid(nt, "articulations") ?? el(nt, "articulations");
                   const [tag, value] = BREATH[text(c, "symbol")] ?? (/caesura/i.test(text(c, "symbol")) ? ["caesura", ""] : ["breath-mark", ""]);
-                  el(arts, tag, value || null);
+                  const pause = text(c, "pause");
+                  el(arts, tag, value || null, pause && Number(pause) >= 0 ? { [PLAY_PAUSE]: Number(pause) } : undefined);
                 }
                 break;
               }
@@ -1103,7 +1119,12 @@ export function readMscx(source: string, opts: MscxOptions = {}): { doc: Documen
   // Section breaks (between movements) end a section; the next measure starts one.
   const sections = [0];
   (measuresOf[0] ?? []).forEach((m, i) => {
-    if (kids(m, "LayoutBreak").some((b) => text(b, "subtype") === "section") && i + 1 < nMeasures) sections.push(i + 1);
+    const brk = kids(m, "LayoutBreak").find((b) => text(b, "subtype") === "section");
+    if (!brk || i + 1 >= nMeasures) return;
+    sections.push(i + 1);
+    // Its pause, on the section's last measure in every part.
+    const pause = text(brk, "pause");
+    if (pause && Number(pause) >= 0) for (const part of kids(root, "part")) kids(part, "measure")[i]?.setAttribute(PLAY_PAUSE, String(Number(pause)));
   });
   const fretted = parts.some((p) => p.strings.length > 0 && !p.drums);
   const link: MscxLink = {

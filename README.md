@@ -35,8 +35,12 @@ const xml = midiToMusicXml(mid); // and back, quantised to written values
 
 The export plays the score the way scoredit plays it: repeats and jumps unfolded, transposing
 instruments at concert pitch, drums on channel 10, velocities from dynamics and accents,
-staccato shortened, grace notes and arpeggios timed. `{ straight: true }` writes each
-measure once instead.
+staccato shortened, grace notes and arpeggios timed, fermatas held and pauses taken after
+caesuras and at section ends. `{ straight: true }` writes each measure once instead.
+
+A MuseScore file can set how long each fermata holds and each pause lasts; MusicXML has no
+place for those, so the score keeps them as `scoredit-stretch` and `scoredit-pause` attributes
+that playback reads and that `score.serialize()` leaves out.
 
 ## Sound
 

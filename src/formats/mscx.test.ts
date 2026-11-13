@@ -94,3 +94,27 @@ describe("Sound effects on a percussion staff", () => {
     ]);
   });
 });
+
+describe("Fermata lengths and pauses the file sets", () => {
+  const m1 = `<Measure><LayoutBreak><subtype>section</subtype><pause>1.5</pause></LayoutBreak><voice>${TS}<Fermata><subtype>fermataLongAbove</subtype><timeStretch>3</timeStretch></Fermata>${chord("quarter", [[60, 14]])}${chord("quarter", [[62, 16]])}<Breath><symbol>breathMarkComma</symbol><pause>0.5</pause></Breath>${chord("half", [[64, 18]])}</voice></Measure>`;
+  const m2 = `<Measure><voice>${chord("whole", [[65, 13]])}</voice></Measure>`;
+  const file = mscx([]).replace(`<Staff id="1"></Staff></Score>`, `<Staff id="1">${m1}${m2}</Staff></Score>`);
+
+  it("play as MuseScore does, and stay out of the MusicXML", () => {
+    const { score } = loadScore(strToU8(file));
+    expect(score.doc.getElementsByTagName("fermata")[0].textContent).toBe("square");
+    const tl = buildTimeline(score);
+    // A quarter is 0.6 s: the fermata holds 3 times, the breath and the section end pause.
+    expect(tl.events.map((e) => [+e.time.toFixed(3), +e.dur.toFixed(3)])).toEqual([
+      [0, 1.8],
+      [1.8, 0.6],
+      [2.9, 1.2],
+      [5.6, 2.4],
+    ]);
+    const xml = score.serialize();
+    expect(xml).not.toContain("scoredit-");
+    expect(xml).toContain(">square</fermata>");
+    // The live score keeps them.
+    expect(buildTimeline(score).events[3].time).toBeCloseTo(5.6, 5);
+  });
+});

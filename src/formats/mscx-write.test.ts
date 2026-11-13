@@ -263,6 +263,19 @@ describe("Saving back into MuseScore files", () => {
       expect(noteList(loadScore(strToU8(saved)).score)).toEqual(noteList(loaded.score));
     }
   });
+
+  it("keeps a fermata's shape and time stretch and a breath's pause", () => {
+    const fermata = `<Fermata><subtype>fermataLongAbove</subtype><timeStretch>1.5</timeStretch></Fermata>`;
+    const loaded = loadScore(strToU8(file([TS + fermata + chord("half", 60, 14) + `<Breath><symbol>caesura</symbol><pause>0.25</pause></Breath>` + chord("half", 62, 16)])));
+    for (const fresh of [false, true]) {
+      loaded.score.changing(0, 0);
+      const m = strFromU8(loaded.save!({ fresh }).bytes);
+      expect(m).toContain("<Clef>"); // written again, not kept
+      expect(m).toContain("<subtype>fermataLongAbove</subtype>");
+      expect(m).toMatch(/<timeStretch>1\.5<\/timeStretch>[\s\S]*<symbol>caesura<\/symbol>\s*<pause>0\.25<\/pause>/);
+      expect(m).not.toContain("scoredit-");
+    }
+  });
 });
 
 // A corpus file (SCOREDIT_SAVE=path, run by scripts/save-corpus.mjs, one per process): every

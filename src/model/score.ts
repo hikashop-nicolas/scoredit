@@ -16,6 +16,12 @@ const CARRIED = new Set(["divisions", "key", "time", "staves", "part-symbol", "i
 
 const attrKey = (e: Element) => e.tagName + "#" + (e.getAttribute("number") ?? "");
 
+// Playback values MusicXML cannot carry, kept as internal attributes and dropped by serialize():
+/** On <fermata>: how many times slower it plays (MuseScore's time stretch). */
+export const PLAY_STRETCH = "scoredit-stretch";
+/** On <caesura> or <breath-mark>: seconds of silence after it; on a section's last <measure>: at its end. */
+export const PLAY_PAUSE = "scoredit-pause";
+
 // A MusicXML score, partwise, kept as a DOM so that elements scoredit does not model
 // survive a save untouched. The index on top answers what layout and editing ask.
 export class ScoreDoc {
@@ -218,7 +224,13 @@ export class ScoreDoc {
 
   /** The score as a MusicXML file. */
   serialize(): string {
-    const xml = new XMLSerializer().serializeToString(this.doc);
+    let doc: Document = this.doc;
+    const marked = `[${PLAY_STRETCH}],[${PLAY_PAUSE}]`;
+    if (doc.querySelector(marked)) {
+      doc = doc.cloneNode(true) as Document;
+      for (const e of Array.from(doc.querySelectorAll(marked))) [PLAY_STRETCH, PLAY_PAUSE].forEach((a) => e.removeAttribute(a));
+    }
+    const xml = new XMLSerializer().serializeToString(doc);
     return xml.startsWith("<?xml") ? xml : `<?xml version="1.0" encoding="UTF-8"?>\n${xml}`;
   }
 }

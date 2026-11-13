@@ -2,9 +2,9 @@ import { strFromU8, strToU8, unzipSync, zipSync, type Zippable } from "fflate";
 import { pairEnds, type SlurItem } from "../edit/pairs";
 import { isAfterGrace, readMeasure, voiceKey, type Event } from "../edit/measure";
 import { bendsOf, fingeringOf, lyricsOf, marksOf, midiOf, readPitch, slursOf, spansOf, spellMidi, tremoloOf, type Pitch } from "../edit/notes";
-import type { ScoreDoc } from "../model/score";
+import { PLAY_PAUSE, PLAY_STRETCH, type ScoreDoc } from "../model/score";
 import { kid, kids, parseXml, text } from "../model/xml";
-import { BREATH, SYM, marksOfSubtype, plain, type MscxLink } from "./mscx";
+import { BREATH, FERMATA_SHAPE, SYM, marksOfSubtype, plain, type MscxLink } from "./mscx";
 import { DYNAMICS, directionOf, type Direction } from "../edit/directions";
 import { chordFromMuseScore, chordText, readHarmony, tpcOf } from "../edit/chords";
 import { CLEFS, INSTRUMENTS, type InstrumentDef } from "../model/instruments";
@@ -1530,8 +1530,14 @@ function writeVoice(ctx: Ctx, v: Element, part: number, k: number, staff: number
       add(num, "style", ctx.v4 ? "tuplet" : "Tuplet");
       add(num, "text", g.actual);
     }
-    if (!ev.rest && ev.notes.some((n) => marksOf(n).includes("fermata"))) add(add(v, "Fermata"), "subtype", "fermataAbove");
-    else if (ev.rest && ev.notes.some((n) => marksOf(n).includes("fermata"))) add(add(v, "Fermata"), "subtype", "fermataAbove");
+    const fe = ev.notes.flatMap((n) => kids(n, "notations").flatMap((x) => kids(x, "fermata")))[0];
+    if (fe) {
+      // Its shape and the time stretch the file set.
+      const sym = Object.keys(FERMATA_SHAPE).find((k) => FERMATA_SHAPE[k] === (fe.textContent?.trim() === "normal" ? "" : fe.textContent?.trim() ?? "")) ?? "fermata";
+      const f = add(v, "Fermata");
+      add(f, "subtype", `${sym}Above`);
+      if (fe.getAttribute(PLAY_STRETCH)) add(f, "timeStretch", Number(fe.getAttribute(PLAY_STRETCH)));
+    }
     const at = run.index?.get(`${m}|${ev.pos}`) ?? -1;
     for (const g of graceSlots(ev.graces)) v.appendChild(chordFor(ctx, part, staff, m, pos, per, g.notes, g.index, run, at, accidentals, key, ev.pos));
     v.appendChild(ev.rest ? restFor(ctx, ev, per, part, key, m, pos) : chordFor(ctx, part, staff, m, pos, per, ev.notes, -1, run, at, accidentals, key, ev.pos));
@@ -1540,7 +1546,9 @@ function writeVoice(ctx: Ctx, v: Element, part: number, k: number, staff: number
     if (breath) {
       const value = breath.textContent?.trim() || (breath.tagName === "caesura" ? "normal" : "comma");
       const symbol = Object.keys(BREATH).find((k) => BREATH[k][0] === breath.tagName && BREATH[k][1] === value);
-      add(add(v, "Breath"), "symbol", symbol ?? (breath.tagName === "caesura" ? "caesura" : "breathMarkComma"));
+      const b = add(v, "Breath");
+      add(b, "symbol", symbol ?? (breath.tagName === "caesura" ? "caesura" : "breathMarkComma"));
+      if (breath.getAttribute(PLAY_PAUSE)) add(b, "pause", Number(breath.getAttribute(PLAY_PAUSE)));
     }
     cur = pos + ev.dur / per / 4;
     if (g?.end) add(v, "endTuplet");
