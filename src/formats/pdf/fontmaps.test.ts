@@ -42,13 +42,55 @@ describe("font tables", () => {
     expect(cp("%")).toBe(0xe047);
   });
 
+  it("covers the rarer LilyPond glyphs", () => {
+    const cp = (n: string) => emmentalerName(n);
+    // Shape notes: style, syllable, fill, and fa's direction from the stem.
+    expect(cp("noteheads.s2do")).toBe(0xe1bb);
+    expect(cp("noteheads.s1re")).toBe(0xe1bc);
+    expect(cp("noteheads.s0miThin")).toBe(0xe1b8);
+    expect(cp("noteheads.u2fa")).toBe(0xe1b7);
+    expect(cp("noteheads.d0faWalker")).toBe(0xe1b4);
+    expect(cp("noteheads.s2la")).toBe(0xe1b3);
+    expect(cp("noteheads.s1ti")).toBe(0xe1be);
+    expect(cp("noteheads.u0doFunk")).toBe(0xe1c6);
+    expect(cp("noteheads.s2tiWalker")).toBe(0xe1c5);
+    expect(cp("noteheads.s2triangle")).toBe(0xe0c2);
+    // Compound ornaments by their strokes, figured bass, arrowheads, accordion.
+    expect(cp("scripts.upprall")).toBe(0xe5b5);
+    expect(cp("scripts.pralldown")).toBe(0xe5c8);
+    expect(cp("scripts.lineprall")).toBe(0xe5b2);
+    expect(cp("figbass.sixstroked")).toBe(0xea5c);
+    expect(cp("accidentals.sharp.figbass")).toBe(0xea66);
+    expect(cp("arrowheads.close.1M1")).toBe(0xeb7c);
+    expect(cp("accordion.push")).toBe(0xe8cb);
+    // Mensural and chant.
+    expect(cp("noteheads.s0mensural")).toBe(0xe939);
+    expect(cp("noteheads.s2neomensural")).toBe(0xe938);
+    expect(cp("noteheads.dM2blackmensural")).toBe(0xe934);
+    expect(cp("rests.1neomensural")).toBe(0xe9f5);
+    expect(cp("clefs.petrucci.c3_change")).toBe(0xe909);
+    expect(cp("timesig.neomensural32")).toBe(0xe911);
+    expect(cp("custodes.mensural.u1")).toBe(0xea02);
+    expect(cp("noteheads.svaticana.quilisma")).toBe(0xe99b);
+    expect(cp("noteheads.ssolesmes.stropha")).toBe(0xe99f);
+  });
+
+  it("reads the Sibelius and Finale characters checked against real output", () => {
+    expect(smufl(SONATA["¿"])).toBe(0xe0a9);
+    expect(smufl(SONATA["µ"])).toBe(0xe56e);
+    expect(smufl(SONATA_SPECIAL["™"])).toBe(0xe1e7);
+    expect(smufl(SONATA_SPECIAL["\uf0de"])).toBe(0xe564);
+    expect(smufl(SONATA_SPECIAL["à"])).toBe(0xe4cf);
+    expect(smufl(SONATA_TEXT[":"])).toBe(0xe88a);
+  });
+
   it("tells the Sonata font kinds apart by name", () => {
     expect(sonataKind("OpusStd")).toBe("main");
     expect(sonataKind("ABCDEF+Maestro")).toBe("main");
     expect(sonataKind("Inkpen2")).toBe("main");
     expect(sonataKind("OpusSpecialStd")).toBe("special");
     expect(sonataKind("OpusTextStd")).toBe("text");
-    expect(sonataKind("OpusChordsStd")).toBe("plain");
+    expect(sonataKind("OpusChordsStd")).toBe("chord");
     expect(sonataKind("JazzText")).toBe("plain");
     expect(sonataKind("OpusPercussionStd")).toBe("unknown");
     expect(sonataKind("PlantinMTStd-Regular")).toBeNull();
@@ -69,11 +111,11 @@ describe("font tables", () => {
     expect(emmentalerName("rests.3")).toBe(0xe4e6);
     expect(emmentalerName("timesig.C44")).toBe(0xe08a);
     expect(emmentalerName("fattened.fixedwidth.seven.alt")).toBe(0xe087);
-    expect(emmentalerName("accidentals.natural.figbass")).toBe(0xe261);
+    expect(emmentalerName("accidentals.natural.figbass")).toBe(0xea65);
     expect(emmentalerName("accidentals.M2")).toBe(0xe260);
     expect(emmentalerName("brace217")).toBe(0xe000);
     expect(emmentalerName("quarthead")).toBe(0xe0a4);
-    expect(emmentalerName("noteheads.s0mensural")).toBeUndefined();
+    expect(emmentalerName("accordion.oldEE")).toBeUndefined();
     expect(isEmmentaler("Emmentaler-20")).toBe(true);
     expect(isEmmentaler("GNU-LilyPond-feta-20")).toBe(true);
     expect(isEmmentaler("Emmentaler-SMuFL")).toBe(false);

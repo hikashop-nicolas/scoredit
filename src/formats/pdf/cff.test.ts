@@ -117,7 +117,7 @@ describe("CFF structures", () => {
 
 describe("Emmentaler through its embedded font", () => {
   it("turns renumbered subset codes into SMuFL symbols by glyph name", () => {
-    const names = [".notdef", "noteheads.s2", "clefs.G", "fixedwidth.four.alt", "space", "scripts.ictus"];
+    const names = [".notdef", "noteheads.s2", "clefs.G", "fixedwidth.four.alt", "space", "accordion.oldEE"];
     const data = sfnt({ "CFF ": Array.from(buildCff(names)), cmap: cmap4(0xe000, [1, 2, 3, 4, 5]) });
     const font = { id: "f1", name: "Emmentaler-20", data, toFontChar: new Map([0, 1, 2, 3, 4].map((c) => [c, 0xe000 + c])) };
     const glyph = (code: number): PdfGlyph => ({ code, unicode: String.fromCharCode(code), font: "Emmentaler-20", fontId: "f1", x: 0, y: 0, size: 20, advance: 5 });
