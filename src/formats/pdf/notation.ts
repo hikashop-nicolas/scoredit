@@ -416,6 +416,26 @@ export function readPage(page: NormPage): PageResult {
         if (m >= 0) raw[m].attrs[k].push({ x: p.x, time: p.cp === TIME_COMMON ? { beats: 4, type: 4, symbol: "common" } : { beats: 2, type: 2, symbol: "cut" } });
       }
     });
+    // A time signature after the notes of a measure starts the next one (its barline is not drawn).
+    for (let i = 0; i < raw.length; i++) {
+      const m = raw[i];
+      const firsts = m.events.map((evs) => (evs.length ? Math.min(...evs.map((e) => e.x)) : Infinity));
+      const xs = m.attrs.flatMap((as, k) => as.filter((a) => a.time && a.x > firsts[k]).map((a) => a.x));
+      if (!xs.length) continue;
+      const cut = Math.min(...xs) - space * 0.3;
+      const right = newMeasure(cut, m.x1, sys.staves.length, false, m.right);
+      m.x1 = cut;
+      m.right = undefined;
+      m.events.forEach((evs, k) => {
+        right.events[k] = evs.filter((e) => (e.x + e.x1) / 2 >= cut);
+        m.events[k] = evs.filter((e) => (e.x + e.x1) / 2 < cut);
+      });
+      m.attrs.forEach((as, k) => {
+        right.attrs[k] = as.filter((a) => a.x >= cut);
+        m.attrs[k] = as.filter((a) => a.x < cut);
+      });
+      raw.splice(i + 1, 0, right);
+    }
     // Accidentals: a key signature, or the accidental of the note on their right.
     sys.staves.forEach((st, k) => {
       const accs = syms.filter((p) => p.staff === k && ACCIDENTALS[p.cp] !== undefined && p.size >= st.space * 4 * 0.85).sort((a, b) => a.x - b.x);

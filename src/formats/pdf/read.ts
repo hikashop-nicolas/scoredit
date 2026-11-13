@@ -338,7 +338,10 @@ function nameFits(a: string, b: string): boolean {
 /** Onsets: voices one after the other; a voice starting late lines up with the column it stands in. */
 function timeMeasure(m: PMeasure, mlen: number, space: number): void {
   const cols: { x: number; at: number }[] = [];
-  for (const evs of m.events) for (const v of new Set(evs.map((e) => e.voice))) hiddenTuplets(evs.filter((e) => e.voice === v && !e.grace), mlen);
+  // Unnumbered tuplets, when some voice fits the measure (else the time signature was misread).
+  const lines = m.events.flatMap((evs) => [...new Set(evs.map((e) => e.voice))].map((v) => evs.filter((e) => e.voice === v && !e.grace)));
+  const fits = lines.some((l) => l.length && Math.abs(l.reduce((t, e) => t + (e.rest && e.base === 4 && l.length === 1 ? mlen : length(e)), 0) - mlen) < 1e-6);
+  if (fits) for (const l of lines) hiddenTuplets(l, mlen);
   for (const pass of [1, 2]) {
     m.events.forEach((evs) => {
       const voices = [...new Set(evs.map((e) => e.voice))];
