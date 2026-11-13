@@ -364,7 +364,7 @@ function inferTrackNums(L: Layers, staffs: Staff[][], minDegree: number): number
 }
 
 /** Staffs per zone (columns of the page) and the zones. */
-export function extractStaffs(L: Layers, opts: { splits?: number; lineThreshold?: number } = {}): { staffs: Staff[][]; zones: Zone[] } {
+export function extractStaffs(L: Layers, issues: string[] = [], opts: { splits?: number; lineThreshold?: number } = {}): { staffs: Staff[][]; zones: Zone[] } {
   const zones = initZones(L.staff, opts.splits ?? 8);
   const parts: Staff[][] = [];
   for (const z of zones) {
@@ -385,9 +385,10 @@ export function extractStaffs(L: Layers, opts: { splits?: number; lineThreshold?
   };
   for (let i = 0; i < staffs[0].length; i++) {
     const row = staffs.map((c) => c[i]);
-    if (new Set(row.map((s) => s.lines.length)).size !== 1) throw new ScanError("staffs with other than five lines");
-    if (!norm(row.map((s) => s.yCenter)).every((v) => v < 0.1)) throw new ScanError("staff parts not aligned");
-    if (!norm(row.map((s) => s.unitSize)).every((v) => v < 0.1)) throw new ScanError("staff unit sizes inconsistent");
+    // oemer stops on these; the port notes them and carries on.
+    if (new Set(row.map((s) => s.lines.length)).size !== 1) issues.push(`staff ${i}: parts with other than five lines`);
+    if (!norm(row.map((s) => s.yCenter)).every((v) => v < 0.1)) issues.push(`staff ${i}: parts not aligned`);
+    if (!norm(row.map((s) => s.unitSize)).every((v) => v < 0.1)) issues.push(`staff ${i}: unit sizes inconsistent`);
   }
   return { staffs, zones };
 }

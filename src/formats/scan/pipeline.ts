@@ -47,7 +47,7 @@ export interface Recognised {
 
 export function recognise(L: Layers, cls: Classifiers, title = "Scan"): Recognised {
   const issues: string[] = [];
-  const { staffs, zones } = extractStaffs(L);
+  const { staffs, zones } = extractStaffs(L, issues);
   const S = new Staffs(staffs, zones);
   const notes = extractNotes(L, S);
   const { w, h } = L.symbols;
