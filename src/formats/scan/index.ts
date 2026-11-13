@@ -31,6 +31,8 @@ export interface ScanOptions {
   /** Distance between tiles in pixels (oemer: 128; larger is faster, a little less sure). */
   step?: number;
   progress?: (p: TileProgress) => void;
+  /** Straighten skewed or bent staff lines first (default true, as oemer). */
+  deskew?: boolean;
   title?: string;
 }
 
@@ -95,7 +97,7 @@ export async function scanToMusicXml(image: ImageData | Blob, opts: ScanOptions)
   const cls = classifiers(JSON.parse(new TextDecoder().decode(await bytesOf(opts.models.classifiers))) as ClassifiersJson);
   const { bgr, w, h } = await prepare(image);
   const maps = await classMaps(bgr, w, h, opts);
-  const r = recognise(layersOf(maps), cls, opts.title);
+  const r = recognise(layersOf(maps, opts.deskew ?? true), cls, opts.title);
   return { xml: r.xml, issues: r.issues };
 }
 

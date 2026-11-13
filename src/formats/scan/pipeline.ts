@@ -1,5 +1,6 @@
 // oemer's post-processing, from the two networks' class maps to MusicXML.
 import { buildMusicXml } from "./build";
+import { dewarp, estimateCoords } from "./dewarp";
 import { extractGroups } from "./group";
 import type { Img } from "./ndimage";
 import { extractNotes, pySlice } from "./notehead";
@@ -16,7 +17,8 @@ export interface ClassMaps {
   seg: Uint8Array;
 }
 
-export function layersOf(m: ClassMaps): Layers {
+/** The layers oemer works on; with deskew, each map straightened along the staff lines first. */
+export function layersOf(m: ClassMaps, deskew = false): Layers {
   const { w, h } = m;
   const n = w * h;
   const L = (f: (i: number) => number): Img => {
@@ -24,13 +26,15 @@ export function layersOf(m: ClassMaps): Layers {
     for (let i = 0; i < n; i++) d[i] = f(i);
     return { w, h, d };
   };
-  return {
-    staff: L((i) => +(m.unet[i] === 1)),
-    symbols: L((i) => +(m.unet[i] === 2 || m.seg[i] === 1 || m.seg[i] === 3)),
-    stems: L((i) => +(m.seg[i] === 1)),
-    notehead: L((i) => +(m.seg[i] === 2)),
-    clefs: L((i) => +(m.seg[i] === 3)),
-  };
+  let staff = L((i) => +(m.unet[i] === 1));
+  let sym = L((i) => +(m.unet[i] === 2));
+  let stems = L((i) => +(m.seg[i] === 1));
+  let notehead = L((i) => +(m.seg[i] === 2));
+  let clefs = L((i) => +(m.seg[i] === 3));
+  const coords = deskew ? estimateCoords(staff) : null;
+  if (coords) [staff, sym, stems, notehead, clefs] = [staff, sym, stems, notehead, clefs].map((a) => dewarp(a, coords));
+  const symbols = L((i) => Math.min(1, sym.d[i] + clefs.d[i] + stems.d[i]));
+  return { staff, symbols, stems, notehead, clefs };
 }
 
 export interface Recognised {
