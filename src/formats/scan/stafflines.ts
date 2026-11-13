@@ -58,6 +58,70 @@ export function sauvola(g: Uint8Array, w: number, h: number, win = 31, k = 0.2, 
   return out;
 }
 
+/**
+ * Keeps only ink darker than a point between the ink's grey and the local paper's (f = 0.5:
+ * halfway), so blurred edges do not fatten symbols and close the gap between two beams.
+ * The ink's grey is the darkest within r pixels (r > 0), else the page's dark core.
+ */
+export function halfway(g: Uint8Array, ink: Uint8Array, w: number, h: number, f = 0.5, r = 0, win = 31): void {
+  const hist = new Array<number>(256).fill(0);
+  let n = 0;
+  for (let i = 0; i < ink.length; i++) if (ink[i]) hist[g[i]]++, n++;
+  let level = 0;
+  // The ink's own grey: its dark core (scans blur a large share of it lighter).
+  for (let acc = 0; level < 255 && (acc += hist[level]) < n * 0.1; level++);
+  // With r: the darkest grey within r instead, so thin faint strokes keep their core.
+  const core = r > 0 ? minFilter(g, w, h, r) : null;
+  // Local paper grey: the mean of the pixels around that are not ink.
+  const W = w + 1;
+  const s = new Float64Array(W * (h + 1));
+  const c = new Float64Array(W * (h + 1));
+  for (let y = 0; y < h; y++) {
+    let r = 0;
+    let k = 0;
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      if (!ink[i]) (r += g[i]), k++;
+      s[(y + 1) * W + x + 1] = s[y * W + x + 1] + r;
+      c[(y + 1) * W + x + 1] = c[y * W + x + 1] + k;
+    }
+  }
+  const rr = win >> 1;
+  for (let y = 0; y < h; y++) {
+    const y0 = Math.max(0, y - rr);
+    const y1 = Math.min(h, y + rr + 1);
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      if (!ink[i]) continue;
+      const x0 = Math.max(0, x - rr);
+      const x1 = Math.min(w, x + rr + 1);
+      const cnt = c[y1 * W + x1] - c[y0 * W + x1] - c[y1 * W + x0] + c[y0 * W + x0];
+      const paper = cnt > 0 ? (s[y1 * W + x1] - s[y0 * W + x1] - s[y1 * W + x0] + s[y0 * W + x0]) / cnt : 255;
+      const lv = core ? core[i] : level;
+      if (g[i] > lv + f * (paper - lv)) ink[i] = 0;
+    }
+  }
+}
+
+/** Minimum over a (2r+1) square, separably. */
+function minFilter(g: Uint8Array, w: number, h: number, r: number): Uint8Array {
+  const a = new Uint8Array(w * h);
+  const b = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) {
+      let m = 255;
+      for (let k = Math.max(0, x - r); k <= Math.min(w - 1, x + r); k++) m = Math.min(m, g[y * w + k]);
+      a[y * w + x] = m;
+    }
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) {
+      let m = 255;
+      for (let k = Math.max(0, y - r); k <= Math.min(h - 1, y + r); k++) m = Math.min(m, a[k * w + x]);
+      b[y * w + x] = m;
+    }
+  return b;
+}
+
 const mode = (hist: number[], from = 1) => {
   let best = from;
   for (let i = from; i < hist.length; i++) if (hist[i] > hist[best]) best = i;
@@ -263,7 +327,7 @@ export function classicStaffMap(
   bgr: Uint8Array,
   w: number,
   h: number,
-  opts: { k?: number; lineK?: number; minArea?: number } = {},
+  opts: { k?: number; lineK?: number; minArea?: number; mid?: number; midR?: number; keepSmall?: number } = {},
 ): { map: Uint8Array; info: StaffLineInfo } {
   // Faint lines need a lower threshold than symbols, which then pick up less noise.
   const g = grey(bgr, w, h);
@@ -271,6 +335,21 @@ export function classicStaffMap(
   const inkS = sauvola(g, w, h, 31, opts.k ?? 0.2);
   const info = findStaffLines(ink, w, h);
   const { thickness: t, spacing: d } = info;
+  // Symbols trimmed to their dark core (mid 0 keeps Sauvola's), as unet_big draws them.
+  const mid = opts.mid ?? 0.4;
+  if (mid > 0) {
+    const ks = opts.keepSmall ?? 1;
+    const before = ks ? inkS.slice() : null;
+    halfway(g, inkS, w, h, mid, opts.midR ?? 2);
+    // Blobs under a space squared (dots) stay whole: trimmed, they fall under oemer's dot area.
+    if (before) {
+      const lab = label({ w, h, d: before });
+      const area = new Int32Array(lab.n + 1);
+      for (let i = 0; i < before.length; i++) area[lab.map.d[i]]++;
+      const max = d * d * ks;
+      for (let i = 0; i < before.length; i++) if (before[i] && area[lab.map.d[i]] <= max) inkS[i] = 1;
+    }
+  }
   const map = new Uint8Array(w * h);
   for (let i = 0; i < map.length; i++) map[i] = inkS[i] ? 2 : 0;
   const maxRun = t + 2;
