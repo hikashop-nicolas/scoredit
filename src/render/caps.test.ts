@@ -19,8 +19,9 @@ describe("capSystems", () => {
     expect(out).toEqual([
       { start: 0, end: 4 },
       { start: 4, end: 7 },
-      { start: 7, end: 11 },
-      { start: 11, end: 12 },
+      // The rest is broken again, its short last line evened out.
+      { start: 7, end: 10 },
+      { start: 10, end: 12 },
     ]);
   });
 

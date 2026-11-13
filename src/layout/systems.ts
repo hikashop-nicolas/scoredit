@@ -29,7 +29,25 @@ export function breakSystems(weights: number[], o: BreakOptions): SystemRange[] 
     used += w;
   }
   if (weights.length) out.push({ start, end: weights.length });
-  return out;
+  return balanceLast(weights, out, o);
+}
+
+// A short last system takes measures from the one before while that leaves the two
+// more even, so the piece does not end on a lone bar stretched across the page.
+function balanceLast(weights: number[], out: SystemRange[], o: BreakOptions): SystemRange[] {
+  if (out.length < 2) return out;
+  const fill = (a: number, b: number) => {
+    let used = o.systemStart;
+    for (let m = a; m < b; m++) used += o.measureBase + weights[m] * o.perWeight;
+    return used / o.width;
+  };
+  const prev = out[out.length - 2];
+  const last = out[out.length - 1];
+  if (fill(last.start, last.end) >= 0.5) return out;
+  let cut = last.start;
+  while (cut - 1 > prev.start && fill(prev.start, cut - 1) >= fill(cut - 1, last.end)) cut--;
+  if (cut === last.start) return out;
+  return [...out.slice(0, -2), { start: prev.start, end: cut }, { start: cut, end: last.end }];
 }
 
 /** Index of the system holding measure m. */
