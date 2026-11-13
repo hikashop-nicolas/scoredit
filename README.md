@@ -58,6 +58,10 @@ encoder is [rusty_mp3](https://github.com/Remade-With-Rust/remade_ffmpeg_rs) (Ap
 compiled to WebAssembly (`scripts/build-mp3-wasm.sh`, from `wasm/mp3`) and loaded only when
 an MP3 is made.
 
+`exportPdf(score, { paper: "a4" | "letter", onProgress })` lays the score out on pages and gives a
+vector PDF (OSMD's paged layout drawn with jsPDF and svg2pdf.js, both MIT, loaded on first use);
+`renderPages` gives the same pages as SVG, for printing.
+
 ## Develop
 
 ```sh
