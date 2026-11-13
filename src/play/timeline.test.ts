@@ -220,6 +220,15 @@ describe("ornaments and pedal", () => {
       [60, 0.733],
     ]);
   });
+
+  it("rolls each voice's arpeggiated chord on its own", () => {
+    const arp = `<notations><arpeggiate/></notations>`;
+    const v = (k: number) => `<voice>${k}</voice>`;
+    const upper = n("E", 4, v(1) + arp) + n("G", 4, "<chord/>" + v(1) + arp);
+    const lower = `<backup><duration>4</duration></backup>` + n("C", 4, v(2) + arp, 3);
+    const tl = buildTimeline(new ScoreDoc(score([Q + upper + lower])));
+    expect(tl.events.map((e) => [e.midi, Math.round(e.time * 1000)]).sort((a, b) => a[1] - b[1] || a[0] - b[0])).toEqual([[48, 0], [64, 0], [67, 67]]);
+  });
 });
 
 describe("fermatas and pauses", () => {

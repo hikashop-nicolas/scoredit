@@ -649,7 +649,8 @@ function arpeggiate(events: NoteEvent[]): NoteEvent[] {
     }
     const mark = arp.get(head);
     if (!mark) continue;
-    const k = `${e.part}|${e.staff}|${Math.round(e.time * 1000)}|${mark.getAttribute("direction") === "down" ? "down" : "up"}`;
+    // Each voice rolls its own chord, as MuseScore plays two arpeggiated voices.
+    const k = `${e.part}|${e.staff}|${text(head, "voice")}|${Math.round(e.time * 1000)}|${mark.getAttribute("direction") === "down" ? "down" : "up"}`;
     (chords.get(k) ?? chords.set(k, []).get(k)!).push(e);
   }
   for (const [k, list] of chords) {
