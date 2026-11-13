@@ -138,6 +138,11 @@ describe("ornaments and pedal", () => {
     expect(new Set(tl.events.map((e) => e.midi))).toEqual(new Set([60]));
   });
 
+  it("counts an eighth's flag with its tremolo stroke", () => {
+    const tl = buildTimeline(new ScoreDoc(score([Q + n("C", 2, `<type>eighth</type>` + orn(`<tremolo type="single">1</tremolo>`))])));
+    expect(tl.events).toHaveLength(2); // an eighth in 16ths
+  });
+
   it("repeats a tremolo in a tuplet at the tuplet's speed", () => {
     // A dotted half in 6:4 lasts two quarters, played as six eighth-note strokes.
     const tup = `<type>half</type><dot/><time-modification><actual-notes>6</actual-notes><normal-notes>4</normal-notes></time-modification>`;
