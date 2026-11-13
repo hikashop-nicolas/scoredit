@@ -367,7 +367,7 @@ export function buildTimeline(score: ScoreDoc, opts: { straight?: boolean; bpm?:
 
   // Notes, per pass through each measure.
   const events: NoteEvent[] = [];
-  // Seconds a quarter under each trill, which moves in 32nd notes.
+  // Seconds a quarter under each trill and turn, which move in 32nd notes.
   const beats = new Map<NoteEvent, number>();
   const velocity = parts.map(() => 80);
   const controls: ControlEvent[] = [];
@@ -513,6 +513,7 @@ export function buildTimeline(score: ScoreDoc, opts: { straight?: boolean; bpm?:
               const up = upperNeighbour(text(pitch, "step"), Number(text(pitch, "octave")), fifths) + shift;
               const down = lowerNeighbour(text(pitch, "step"), Number(text(pitch, "octave")), fifths) + shift;
               ev.turn = c.getElementsByTagName("turn").length ? [up, midi, down] : [down, midi, up];
+              beats.set(ev, span.tempo.filter(([from]) => from <= onset).pop()![1]);
             } else if (c.getElementsByTagName("inverted-mordent").length) {
               ev.mordent = upperNeighbour(text(pitch, "step"), Number(text(pitch, "octave")), fifths, override) + shift;
             } else if (c.getElementsByTagName("mordent").length) {
@@ -668,6 +669,9 @@ function dedupe(events: NoteEvent[]): NoteEvent[] {
   });
 }
 
+// Trill and turn notes: 32nds, 64ths when 32nds would be slower than 0.12 s (as MuseScore plays them).
+const ornamentStep = (secPerQuarter: number) => (secPerQuarter / 8 > 0.12 ? secPerQuarter / 16 : secPerQuarter / 8);
+
 // Trills alternate with the upper note; tremolos repeat a note, or alternate two chords.
 function expand(events: NoteEvent[], beats = new Map<NoteEvent, number>()): NoteEvent[] {
   if (!events.some((e) => e.trillUpper !== undefined || e.tremolo || e.mordent !== undefined || e.turn)) return events;
@@ -688,14 +692,15 @@ function expand(events: NoteEvent[], beats = new Map<NoteEvent, number>()): Note
   for (const e of events) {
     if (used.has(e)) continue;
     if (e.trillUpper !== undefined) {
-      // 32nd notes, 64ths in a slow tempo, as MuseScore plays them; without a tempo, about 0.09 s.
+      // Without a tempo, about 0.09 s.
       const beat = beats.get(e);
-      const step = beat ? (beat / 8 > 0.12 ? beat / 16 : beat / 8) : Math.min(0.12, Math.max(0.06, e.dur / Math.max(1, Math.round(e.dur / 0.09))));
+      const step = beat ? ornamentStep(beat) : Math.min(0.12, Math.max(0.06, e.dur / Math.max(1, Math.round(e.dur / 0.09))));
       const first = e.trillFromUpper ? 0 : 1;
       split(e, step, (k) => (k % 2 === first ? e.trillUpper! : e.midi));
     } else if (e.turn) {
       // Upper, main, lower (or the reverse), then the main note for the rest of its length.
-      const quick = Math.min(0.08, e.dur / 6);
+      const beat = beats.get(e);
+      const quick = beat ? Math.min(ornamentStep(beat), e.dur / 4) : Math.min(0.08, e.dur / 6);
       const base = { ...e, turn: undefined };
       e.turn.forEach((m, k) => out.push({ ...base, time: e.time + k * quick, dur: quick, midi: m }));
       out.push({ ...base, time: e.time + 3 * quick, dur: e.dur - 3 * quick });

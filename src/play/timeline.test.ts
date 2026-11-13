@@ -130,6 +130,7 @@ describe("ornaments and pedal", () => {
   it("plays a turn as upper, main, lower, main", () => {
     const tl = buildTimeline(new ScoreDoc(score([Q + n("D", 4, orn("<turn/>"))])));
     expect(tl.events.map((e) => e.midi)).toEqual([64, 62, 60, 62]);
+    expect(tl.events[1].time).toBeCloseTo(0.6 / 8, 5); // in 32nds
   });
 
   it("repeats a single-note tremolo at its stroke value", () => {
