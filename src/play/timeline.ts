@@ -1,4 +1,4 @@
-import type { ScoreDoc } from "../model/score";
+import { PLAY_PAUSE, PLAY_STRETCH, type ScoreDoc } from "../model/score";
 import { kid, kids, text } from "../model/xml";
 import type { Bend } from "./pluck";
 
@@ -73,6 +73,11 @@ const FERMATA: Record<string, number> = { "": 2, normal: 2, angled: 1.5, square:
 // Seconds of silence after a caesura, and at a section end (MuseScore's default there).
 const CAESURA_PAUSE = 1;
 const SECTION_PAUSE = 3;
+// A value the file sets (internal attribute), if any.
+const setValue = (e: Element | undefined, attr: string): number | null => {
+  const v = e?.getAttribute(attr);
+  return v != null && v !== "" && Number(v) >= 0 ? Number(v) : null;
+};
 
 // Tempo, from <sound tempo> or a metronome mark, keyed by quarter offset in the measure.
 function tempoMarks(score: ScoreDoc, m: number): [number, number][] {
@@ -269,14 +274,14 @@ export function buildTimeline(score: ScoreDoc, opts: { straight?: boolean; bpm?:
   // Measure lengths (quarters) and tempo marks, per score measure.
   const lengths = new Map<number, number>();
   const marks = new Map<number, [number, number][]>();
-  // Fermatas ([onset, stretch]), caesuras (quarter after the note) and every onset, per measure.
+  // Fermatas ([onset, stretch]), caesuras and breaths ([quarter after the note, seconds]) and every onset, per measure.
   const fermatas = new Map<number, [number, number][]>();
-  const caesuras = new Map<number, number[]>();
+  const caesuras = new Map<number, [number, number][]>();
   const onsets = new Map<number, number[]>();
   for (const m of new Set(order)) {
     let len = 0;
     const ferm: [number, number][] = [];
-    const caes = new Set<number>();
+    const caes = new Map<number, number>();
     const starts = new Set<number>();
     score.measures.forEach((ms, p) => {
       const meas = ms[m];
@@ -297,8 +302,12 @@ export function buildTimeline(score: ScoreDoc, opts: { straight?: boolean; bpm?:
           }
           const nots = kids(c, "notations");
           const fe = nots.flatMap((n) => kids(n, "fermata"))[0];
-          if (fe) ferm.push([last, FERMATA[text(fe)] ?? 2]);
-          if (nots.some((n) => n.getElementsByTagName("caesura").length)) caes.add(last + dur / div);
+          if (fe) ferm.push([last, setValue(fe, PLAY_STRETCH) || (FERMATA[text(fe)] ?? 2)]);
+          for (const b of nots.flatMap((n) => [...Array.from(n.getElementsByTagName("caesura")), ...Array.from(n.getElementsByTagName("breath-mark"))])) {
+            const sec = setValue(b, PLAY_PAUSE) ?? (b.tagName === "caesura" ? CAESURA_PAUSE : 0);
+            const q = last + dur / div;
+            if (sec > (caes.get(q) ?? 0)) caes.set(q, sec);
+          }
         }
         len = Math.max(len, pos / div);
       }
@@ -306,7 +315,7 @@ export function buildTimeline(score: ScoreDoc, opts: { straight?: boolean; bpm?:
     lengths.set(m, len || 1);
     marks.set(m, tempoMarks(score, m));
     if (ferm.length) fermatas.set(m, ferm);
-    if (caes.size) caesuras.set(m, [...caes].sort((a, b) => a - b));
+    if (caes.size) caesuras.set(m, [...caes].sort((a, b) => a[0] - b[0]));
     if (ferm.length) onsets.set(m, [...starts].sort((a, b) => a - b));
   }
 
@@ -342,8 +351,13 @@ export function buildTimeline(score: ScoreDoc, opts: { straight?: boolean; bpm?:
     }
     const span: MeasureSpan = { measure: m, start: t, end: 0, quarters, tempo: stretch(tempo, m, quarters) };
     // A caesura, and the end of a section, are followed by a silence.
-    const pauses: [number, number][] = (caesuras.get(m) ?? []).filter((q) => q > 0).map((q) => [Math.min(q, quarters), CAESURA_PAUSE]);
-    if (score.sections.includes(m + 1)) pauses.push([quarters, SECTION_PAUSE]);
+    const pauses: [number, number][] = (caesuras.get(m) ?? []).filter(([q]) => q > 0).map(([q, sec]) => [Math.min(q, quarters), sec]);
+    if (score.sections.includes(m + 1)) {
+      const set = score.measures.map((ms) => setValue(ms[m], PLAY_PAUSE)).find((v) => v !== null);
+      pauses.push([quarters, set ?? SECTION_PAUSE]);
+    }
+    // Zero-length pauses (a breath mark by default) change nothing.
+    for (let i = pauses.length - 1; i >= 0; i--) if (!(pauses[i][1] > 0)) pauses.splice(i, 1);
     if (pauses.length) span.pauses = pauses;
     span.end = t + quarterToSec(span, quarters);
     spans.push(span);
