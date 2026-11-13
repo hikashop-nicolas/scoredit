@@ -405,10 +405,12 @@ export function buildTimeline(score: ScoreDoc, opts: { straight?: boolean; bpm?:
         }
         const prev = lastOf.get(`${p}|${vk}`) ?? [];
         const g0 = kid(list[0].el, "grace");
-        const want = slots.reduce((t, sl) => t + sl[0].q, 0);
+        // Graces after a note take their written lengths; others share the first one's, as MuseScore plays them.
+        const after = g0?.getAttribute("steal-time-previous") === "0";
+        const want = after ? slots.reduce((t, sl) => t + sl[0].q, 0) : slots[0][0].q;
         const before = (mainQ <= 0 || g0?.getAttribute("slash") === "yes" || !!g0?.hasAttribute("steal-time-previous")) && atQ(onset - want) >= 0;
-        // Before the beat they sound at their written length; on it, one takes half the main note.
-        const scale = before ? 1 : slots.length === 1 || want > mainQ / 2 ? mainQ / 2 / want : 1;
+        // On the beat, at most half the main note.
+        const scale = before ? 1 : Math.min(1, mainQ / 2 / want);
         // Before the beat: at most the second half of the note before.
         const half = prev.length ? Math.max(...prev.map((e) => e.time + e.dur / 2)) : -Infinity;
         let start = before ? Math.max(atQ(onset - want), half) : atQ(onset);
@@ -417,7 +419,7 @@ export function buildTimeline(score: ScoreDoc, opts: { straight?: boolean; bpm?:
         let q = before ? onset - want * shrink : onset;
         for (const e of prev) if (e.time < start && e.time + e.dur > start) e.dur = start - e.time;
         for (const sl of slots) {
-          const len = sl[0].q * scale * shrink;
+          const len = (after ? sl[0].q : want / slots.length) * scale * shrink;
           for (const g of sl) events.push({ time: atQ(q), dur: Math.max(0.01, atQ(q + len) - atQ(q)), midi: g.midi, velocity: velocity[p], channel: parts[p].channel, program: parts[p].program, part: p, staff: Number(text(g.el, "staff")) || 1, measure: m, onset, el: g.el, grace: true });
           q += len;
         }
@@ -464,7 +466,7 @@ export function buildTimeline(score: ScoreDoc, opts: { straight?: boolean; bpm?:
               if (!gp) break;
               const gm = (Number(text(gp, "octave")) + 1) * 12 + (STEP[text(gp, "step")] ?? 0) + (Number(text(gp, "alter")) || 0) + shift;
               const q = (TYPE_Q[text(c, "type")] ?? 0.125) * (2 - 2 ** -kids(c, "dot").length);
-              (graces.get(vk) ?? graces.set(vk, []).get(vk)!).push({ el: c, midi: gm, q: Math.min(q, 0.5), chord: !!kid(c, "chord") });
+              (graces.get(vk) ?? graces.set(vk, []).get(vk)!).push({ el: c, midi: gm, q, chord: !!kid(c, "chord") });
               break;
             }
             const chord = !!kid(c, "chord");

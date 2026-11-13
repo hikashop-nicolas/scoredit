@@ -171,7 +171,7 @@ describe("ornaments and pedal", () => {
     expect(tl.events).toHaveLength(1);
   });
 
-  it("plays a slashed grace before the beat, from the note before, and an appoggiatura on it", () => {
+  it("plays a slashed grace before the beat, from the note before, and an appoggiatura on it at its written length", () => {
     const g = (slash: string, step: string) => `<note><grace${slash}/><pitch><step>${step}</step><octave>5</octave></pitch><type>eighth</type></note>`;
     const tl = buildTimeline(new ScoreDoc(score([Q + n("C", 4) + g(' slash="yes"', "E") + n("D", 4) + g("", "A") + n("G", 8)])));
     const r = (x: number) => Math.round(x * 1000) / 1000;
@@ -179,8 +179,21 @@ describe("ornaments and pedal", () => {
       [60, 0, 0.3, false],
       [76, 0.3, 0.3, true],
       [62, 0.6, 0.6, false],
-      [81, 1.2, 0.6, true],
-      [67, 1.8, 0.6, false],
+      [81, 1.2, 0.3, true],
+      [67, 1.5, 0.9, false],
+    ]);
+  });
+
+  it("shares the first grace's length among several, at most half the main note", () => {
+    const g = (step: string) => `<note><grace/><pitch><step>${step}</step><octave>5</octave></pitch><type>16th</type></note>`;
+    const tl = buildTimeline(new ScoreDoc(score([Q + g("E") + g("F") + n("D", 4) + g("A") + n("G", 1) + n("G", 11)])));
+    const r = (x: number) => Math.round(x * 1000) / 1000;
+    expect(tl.events.slice(0, 5).map((e) => [r(e.time), r(e.dur)])).toEqual([
+      [0, 0.075],
+      [0.075, 0.075],
+      [0.15, 0.45],
+      [0.6, 0.075],
+      [0.675, 0.075],
     ]);
   });
 

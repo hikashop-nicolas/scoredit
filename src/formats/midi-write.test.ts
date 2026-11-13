@@ -139,7 +139,7 @@ describe("MIDI writer", () => {
     expect(m.notes(2)[0][0]).toBe(1);
   });
 
-  it("plays a slashed grace note before the beat and an appoggiatura on it", () => {
+  it("plays a slashed grace note before the beat and an appoggiatura on it, at its written length", () => {
     const g = (slash: string, step: string) => `<note><grace${slash}/><pitch><step>${step}</step><octave>5</octave></pitch><type>eighth</type></note>`;
     const s = score(
       `<score-part id="P1"><part-name>Oboe</part-name></score-part>`,
@@ -149,8 +149,8 @@ describe("MIDI writer", () => {
       [72, 0, 240],
       [76, 240, 480],
       [74, 480, 960],
-      [77, 960, 1440],
-      [76, 1440, 1920],
+      [77, 960, 1200],
+      [76, 1200, 1920],
     ]);
   });
 
