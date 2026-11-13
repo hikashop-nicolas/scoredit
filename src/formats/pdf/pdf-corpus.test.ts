@@ -40,6 +40,7 @@ interface StaffSummary {
   measures: number;
   pitches: string[];
   notes: string[];
+  byMeasure: string[][];
 }
 
 const STEP: Record<string, number> = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
@@ -84,7 +85,9 @@ function summarize(doc: Document): StaffSummary[] {
     });
     for (let s = 1; s <= staves; s++) {
       const list = (ev.get(s) ?? []).sort((a, b) => a.m - b.m || a.on - b.on || a.p - b.p);
-      out.push({ measures: measures.length, pitches: list.map((e) => String(e.p)), notes: list.map((e) => `${e.p}:${Math.round(e.d * 1000) / 1000}`) });
+      const tok = (e: (typeof list)[number]) => `${e.p}:${Math.round(e.d * 1000) / 1000}`;
+      const byMeasure = measures.map((_, m) => list.filter((e) => e.m === m).map(tok));
+      out.push({ measures: measures.length, pitches: list.map((e) => String(e.p)), notes: list.map(tok), byMeasure });
     }
   }
   return out;
@@ -101,6 +104,7 @@ function lev(a: string[], b: string[]): number {
   return prev[b.length];
 }
 
+const log = (...a: unknown[]) => process.stdout.write(a.join(" ") + "\n");
 const pct = (n: number) => `${(n * 100).toFixed(1)}%`;
 
 describe.skipIf(!have)("MuseScore PDFs", () => {
@@ -117,6 +121,7 @@ describe.skipIf(!have)("MuseScore PDFs", () => {
       try {
         const doc = await readPdfScore(new Uint8Array(readFileSync(join(cache, `${name}.pdf`))));
         ours = summarize(doc);
+        if (process.env.SCOREDIT_PDF_SAVE) writeFileSync(join(cache, `${name}.ours.musicxml`), new XMLSerializer().serializeToString(doc));
         // And it opens as a score.
         loadScore(new TextEncoder().encode(new XMLSerializer().serializeToString(doc)));
       } catch (e) {
@@ -127,7 +132,14 @@ describe.skipIf(!have)("MuseScore PDFs", () => {
       let ne = 0;
       const ms: string[] = [];
       ref.forEach((r, i) => {
-        const o = ours[i] ?? { measures: 0, pitches: [], notes: [] };
+        const o = ours[i] ?? { measures: 0, pitches: [], notes: [], byMeasure: [] };
+        if (process.env.SCOREDIT_PDF_DIFF) {
+          let shown = 0;
+          r.byMeasure.forEach((t, m) => {
+            const a = (o.byMeasure[m] ?? []).join(" ");
+            if (a !== t.join(" ") && shown++ < Number(process.env.SCOREDIT_PDF_DIFF)) log(`${name} staff ${i + 1} m${m + 1}\n  ours ${a}\n  ref  ${t.join(" ")}`);
+          });
+        }
         notes += r.notes.length;
         pe += Math.min(r.pitches.length, lev(o.pitches, r.pitches));
         ne += Math.min(r.notes.length, lev(o.notes, r.notes));
@@ -140,13 +152,13 @@ describe.skipIf(!have)("MuseScore PDFs", () => {
       total.staves += ref.length;
       const row = `${name.padEnd(48)} staves ${String(ours.length).padStart(2)}/${String(ref.length).padEnd(2)} measures ${ms.join(",").padEnd(14)} notes ${String(notes).padStart(5)} pitch ${pct(1 - pe / Math.max(1, notes)).padStart(6)} pitch+dur ${pct(1 - ne / Math.max(1, notes)).padStart(6)} ${err}`;
       rows.push(row);
-      console.log(row);
+      log(row);
       expect(ref.length).toBeGreaterThan(0);
     }, 600_000);
   }
   it("reports the table", () => {
     const summary = `TOTAL staves ${total.staves} measure counts right ${total.measuresOk}, notes ${total.notes}, pitch ${pct(1 - total.pitchErr / Math.max(1, total.notes))}, pitch+dur ${pct(1 - total.noteErr / Math.max(1, total.notes))}`;
-    console.log([...rows, summary].join("\n"));
+    log([...rows, summary].join("\n"));
     writeFileSync(join(cache, "report.txt"), [...rows, summary].join("\n") + "\n");
   });
 });

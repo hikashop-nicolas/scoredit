@@ -47,13 +47,16 @@ export const verticals = (segs: PdfSegment[]): VLine[] =>
 
 /** Joins vertical pieces on one x that touch or overlap (barlines drawn staff by staff). */
 export function mergeVerticals(lines: VLine[], gap = 1): VLine[] {
-  const sorted = [...lines].sort((a, b) => a.x - b.x || a.y0 - b.y0);
+  const key = (x: number) => Math.round(x * 10);
+  const sorted = [...lines].sort((a, b) => key(a.x) - key(b.x) || a.y0 - b.y0);
   const out: VLine[] = [];
   const open: VLine[] = [];
   for (const l of sorted) {
-    const m = open.find((o) => near(o.x, l.x, 0.05) && near(o.width, l.width, 0.05) && l.y0 <= o.y1 + gap);
-    if (m) m.y1 = Math.max(m.y1, l.y1);
-    else {
+    const m = open.find((o) => near(o.x, l.x, 0.05) && near(o.width, l.width, 0.05) && l.y0 <= o.y1 + gap && l.y1 >= o.y0 - gap);
+    if (m) {
+      m.y0 = Math.min(m.y0, l.y0);
+      m.y1 = Math.max(m.y1, l.y1);
+    } else {
       const c = { ...l };
       out.push(c);
       open.push(c);

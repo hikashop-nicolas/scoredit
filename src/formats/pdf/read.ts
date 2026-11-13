@@ -75,8 +75,40 @@ function credits(header: TextRun[], width: number) {
 }
 
 function writeScore(systems: PSystem[], header: TextRun[], width: number, docTitle?: string): string {
-  const parts = partsOf(systems[0]);
-  const total = systems[0].staves.length;
+  // Systems without names join barline-linked staves as the named systems did.
+  const named = systems.filter((s) => s.names.some((n) => n) && s.barLinks.some((l) => l));
+  const joins = named.some((s) => s.barLinks.some((l, k) => l && s.groups.some(([a, b]) => k >= a && k < b)));
+  const splits = named.some((s) => s.barLinks.some((l, k) => l && !s.groups.some(([a, b]) => k >= a && k < b)));
+  if (joins && !splits)
+    for (const s of systems) {
+      if (s.names.some((n) => n)) continue;
+      for (let k = 0; k + 1 < s.staves.length; ) {
+        if (!s.barLinks[k] || s.groups.some(([a, b]) => k >= a && k <= b)) {
+          k++;
+          continue;
+        }
+        let e = k + 1;
+        while (s.barLinks[e] && e + 1 < s.staves.length) e++;
+        s.groups.push([k, e]);
+        k = e + 1;
+      }
+      s.groups.sort((a, b) => a[0] - b[0]);
+    }
+  // The parts are those of the fullest system; others may hide empty staves.
+  const full = systems.reduce((a, b) => (b.staves.length > a.staves.length ? b : a));
+  const parts = partsOf(full);
+  const total = full.staves.length;
+  const maps = systems.map((sys) => (sys.staves.length === total && sys !== full ? matchStaves(parts, sys, true) : matchStaves(parts, sys, false)));
+  // Names as the first system that shows the part has them.
+  parts.forEach((p) => {
+    for (let i = 0; i < systems.length; i++) {
+      const k = maps[i].indexOf(p.first);
+      if (k >= 0 && systems[i].names[k]) {
+        p.name = systems[i].names[k];
+        break;
+      }
+    }
+  });
   const cred = credits(header, width);
   const out: string[] = [`<?xml version="1.0" encoding="UTF-8"?>`, `<score-partwise version="4.0">`];
   const title = cred.title || docTitle;
@@ -92,16 +124,15 @@ function writeScore(systems: PSystem[], header: TextRun[], width: number, docTit
   out.push("</part-list>");
 
   // Every measure of every system, with where each staff of the score is in it.
-  const measures: { m: PMeasure; sys: PSystem; staffMap: (number | null)[] }[] = [];
-  for (const sys of systems) {
-    const map = sys.staves.length === total ? sys.staves.map((_, k) => k) : matchStaves(systems[0], sys);
-    for (const m of sys.measures) measures.push({ m, sys, staffMap: map });
-  }
+  const measures: { m: PMeasure; sys: PSystem; staffMap: number[] }[] = [];
+  systems.forEach((sys, i) => {
+    for (const m of sys.measures) measures.push({ m, sys, staffMap: maps[i] });
+  });
   // Time first: measure lengths need the time signature, voices their onsets.
   let time = { beats: 4, type: 4 } as NonNullable<PAttr["time"]>;
   const times: (typeof time)[] = [];
   for (const { m, sys, staffMap } of measures) {
-    const t = staffMap.flatMap((k) => (k === null ? [] : m.attrs[k])).find((a) => a.time && leading(a, m, staffMap))?.time;
+    const t = staffMap.flatMap((k) => (k < 0 ? [] : m.attrs[k])).find((a) => a.time && leading(a, m))?.time;
     if (t) time = t;
     times.push(time);
     timeMeasure(m, (time.beats * 4) / time.type, sys.staves[0].space);
@@ -113,10 +144,10 @@ function writeScore(systems: PSystem[], header: TextRun[], width: number, docTit
     let fifths: number | null = null;
     let lastTime: (typeof time) | null = null;
     measures.forEach(({ m, staffMap }, mi) => {
-      const ks = Array.from({ length: part.staves }, (_, k) => staffMap.indexOf(part.first + k));
+      const ks = Array.from({ length: part.staves }, (_, k) => staffMap[part.first + k]);
       out.push(`<measure number="${mi + 1}">`);
       if (m.leftRepeat) out.push(`<barline location="left"><bar-style>heavy-light</bar-style><repeat direction="forward"/></barline>`);
-      const lead = ks.map((k) => (k < 0 ? [] : m.attrs[k].filter((a) => leading(a, m, staffMap))));
+      const lead = ks.map((k) => (k < 0 ? [] : m.attrs[k].filter((a) => leading(a, m))));
       const attrs: string[] = [];
       if (mi === 0) attrs.push(`<divisions>${DIV}</divisions>`);
       const key = lead.flat().find((a) => a.key !== undefined)?.key ?? (mi === 0 ? 0 : null);
@@ -142,10 +173,16 @@ function writeScore(systems: PSystem[], header: TextRun[], width: number, docTit
       const mlen = (t.beats * 4) / t.type;
       let pos = 0;
       ks.forEach((k, sk) => {
-        if (k < 0) return;
         const staffNo = part.staves > 1 ? sk + 1 : 0;
+        if (k < 0) {
+          // A staff the system hides: a measure rest.
+          if (pos > 0) out.push(`<backup><duration>${Math.round(pos * DIV)}</duration></backup>`);
+          out.push(`<note><rest measure="yes"/><duration>${Math.round(mlen * DIV)}</duration><voice>${voiceNo(1, sk)}</voice>${staffNo ? `<staff>${staffNo}</staff>` : ""}</note>`);
+          pos = mlen;
+          return;
+        }
         const evs = m.events[k];
-        const mid = m.attrs[k].filter((a) => a.clef && !leading(a, m, staffMap)).sort((a, b) => a.x - b.x);
+        const mid = m.attrs[k].filter((a) => a.clef && !leading(a, m)).sort((a, b) => a.x - b.x);
         const dirs = m.dirs.filter((d) => d.staff === k);
         const voices = [...new Set(evs.map((e) => e.voice))].sort((a, b) => a - b);
         if (!voices.length) voices.push(1);
@@ -217,16 +254,38 @@ function clefXml(c: Clef, staff: number): string {
 }
 
 /** An attribute stands before the measure's first chord or rest (on its staff). */
-function leading(a: PAttr, m: PMeasure, staffMap: (number | null)[]): boolean {
-  const k = staffMap.find((s) => s !== null && m.attrs[s].includes(a));
-  const evs = k === undefined || k === null ? [] : m.events[k].filter((e) => !e.grace);
+function leading(a: PAttr, m: PMeasure): boolean {
+  const k = m.attrs.findIndex((as) => as.includes(a));
+  const evs = k < 0 ? [] : m.events[k].filter((e) => !e.grace);
   return !evs.length || a.x < Math.min(...evs.map((e) => e.x));
 }
 
-/** Staves of a system with fewer staves than the first (empty ones hidden): matched by name, else from the top. */
-function matchStaves(first: PSystem, sys: PSystem): (number | null)[] {
-  const out: (number | null)[] = sys.staves.map((_, k) => (k < first.staves.length ? k : null));
-  return out;
+/** For each staff of the score, the system's staff showing it (or -1): parts matched in order by staff count and name. */
+function matchStaves(parts: Part[], sys: PSystem, same: boolean): number[] {
+  const total = parts.reduce((n, p) => n + p.staves, 0);
+  const map: number[] = Array(total).fill(-1);
+  if (same) return map.map((_, k) => k);
+  let j = 0;
+  for (const sp of partsOf(sys)) {
+    const name = sys.names[sp.first] ?? "";
+    let r = parts.findIndex((p, i) => i >= j && p.staves === sp.staves && nameFits(name, p.name));
+    if (r < 0) r = parts.findIndex((p, i) => i >= j && p.staves === sp.staves);
+    if (r < 0) continue;
+    for (let k = 0; k < sp.staves; k++) map[parts[r].first + k] = sp.first + k;
+    j = r + 1;
+  }
+  return map;
+}
+
+/** A name or its abbreviation ("Pno." for "Piano"): letters in order, same first letter. */
+function nameFits(a: string, b: string): boolean {
+  if (!a || !b) return true;
+  const x = a.toLowerCase().replace(/[^\p{L}\d]/gu, "");
+  const y = b.toLowerCase().replace(/[^\p{L}\d]/gu, "");
+  if (!x || !y || x[0] !== y[0]) return false;
+  let i = 0;
+  for (const c of y) if (c === x[i]) i++;
+  return i === x.length;
 }
 
 /** Onsets: voices one after the other; a voice starting late lines up with the column it stands in. */

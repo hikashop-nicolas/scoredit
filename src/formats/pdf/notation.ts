@@ -100,6 +100,8 @@ export interface PSystem {
   groups: [number, number][];
   /** Text left of each staff (instrument names), by staff index. */
   names: string[];
+  /** Whether barlines join staff k to staff k + 1. */
+  barLinks: boolean[];
   top: number;
   bottom: number;
   x0: number;
@@ -150,7 +152,7 @@ export function readPage(page: NormPage): PageResult {
 
   const systems: PSystem[] = sysIdx.map((idx) => {
     const ss = idx.map((i) => staves[i]);
-    return { staves: ss, measures: [], groups: braceGroups(staves, idx, page.symbols), names: ss.map(() => ""), top: ss[0].top, bottom: ss[ss.length - 1].bottom, x0: Math.min(...ss.map((s) => s.x0)) };
+    return { staves: ss, measures: [], groups: braceGroups(staves, idx, page.symbols), names: ss.map(() => ""), barLinks: [], top: ss[0].top, bottom: ss[ss.length - 1].bottom, x0: Math.min(...ss.map((s) => s.x0)) };
   });
 
   // Symbols per system and staff.
@@ -306,6 +308,8 @@ export function readPage(page: NormPage): PageResult {
     const idx = sysIdx[si];
     const bars = findBarlines(staves, idx, vl, isStemLine);
     const space = median(sys.staves.map((s) => s.space));
+    // Staves whose barlines run on into the next staff (one instrument, or a section).
+    sys.barLinks = sys.staves.map((_, k) => bars.some((b) => b.x0 > sys.x0 + space && b.staves.includes(k) && b.staves.includes(k + 1)));
     const need = Math.ceil(sys.staves.length / 2);
     const bl = bars.filter((b) => b.staves.length >= need || b.staves.length >= 1);
     const sx0 = sys.x0;
@@ -377,7 +381,7 @@ export function readPage(page: NormPage): PageResult {
         const first = evs.length ? Math.min(...evs.map((e) => e.x)) : m.x1;
         const lead = accs.filter((a) => a.x >= m.x0 - space && a.x < first);
         const clef = raw.flatMap((q) => q.attrs[k]).filter((a) => a.clef && (!lead.length || a.x < lead[0].x)).sort((a, b) => a.x - b.x).pop()?.clef;
-        const key = keySignature(lead, st, clef?.top ?? 38, m, hs);
+        const key = keySignature(lead, st, clef?.top ?? 38, hs);
         if (key) m.attrs[k].push(key.attr);
         for (const a of accs) if (a.x >= m.x0 - space && a.x < m.x1 + space * 0.2 && !key?.used.has(a)) takeAcc(a);
       }
@@ -439,22 +443,36 @@ export function readPage(page: NormPage): PageResult {
     if (si < 0) continue;
     const sys = systems[si];
     if (t.x + 0.3 * t.size * t.str.length < sys.x0 - sp && !/^\d+$/.test(t.str)) {
-      // Name of the staff (or brace group) whose middle is nearest.
+      // Name of the staff whose middle is nearest; between two joined staves, the upper one.
       let best = 0;
       let bd = Infinity;
       sys.staves.forEach((s, k) => {
-        const g = sys.groups.find(([a, b]) => k >= a && k <= b);
-        const mid = g ? (sys.staves[g[0]].top + sys.staves[g[1]].bottom) / 2 : (s.top + s.bottom) / 2;
-        const d = Math.abs(mid - t.y);
+        const joined = sys.groups.some(([a, b]) => k >= a && k < b) || sys.barLinks[k];
+        const mid = joined && k + 1 < sys.staves.length ? (s.top + sys.staves[k + 1].bottom) / 2 : (s.top + s.bottom) / 2;
+        const d = Math.abs(mid - t.y) - (joined ? sp * 0.1 : 0);
         if (d < bd) {
           bd = d;
-          best = g ? g[0] : k;
+          best = k;
         }
       });
       sys.names[best] = sys.names[best] ? `${sys.names[best]} ${t.str}` : t.str;
     }
   }
   for (const sys of systems) for (const m of sys.measures) m.events.forEach((evs, k) => assignVoices(evs, sys.staves[k]));
+  // Staves joined by barlines are one instrument when only the first is named.
+  for (const sys of systems) {
+    for (let k = 0; k + 1 < sys.staves.length; ) {
+      if (!sys.barLinks[k] || sys.groups.some(([a, b]) => k >= a && k <= b) || sys.names[k + 1] || !sys.names[k]) {
+        k++;
+        continue;
+      }
+      let e = k + 1;
+      while (sys.barLinks[e] && e + 1 < sys.staves.length && !sys.names[e + 1] && !sys.groups.some(([a]) => a === e + 1)) e++;
+      sys.groups.push([k, e]);
+      k = e + 1;
+    }
+    sys.groups.sort((a, b) => a[0] - b[0]);
+  }
   lyricsOf(page, systems, sp);
   tuplets(page, systems);
   return { systems, header };
@@ -472,7 +490,7 @@ const SHARPS = [3, 0, 4, 1, 5, 2, 6];
 const FLATS = [6, 2, 5, 1, 4, 0, 3];
 
 /** The key signature among the accidentals leading a measure: sharps or flats in their order, after any naturals. */
-function keySignature(lead: MusicSymbol[], st: Staff, top: number, m: PMeasure, hs: Head[]): { attr: PAttr; used: Set<MusicSymbol> } | null {
+function keySignature(lead: MusicSymbol[], st: Staff, top: number, hs: Head[]): { attr: PAttr; used: Set<MusicSymbol> } | null {
   if (!lead.length) return null;
   const letter = (a: MusicSymbol) => (((top - Math.round((a.y - st.top) / (st.space / 2))) % 7) + 7) % 7;
   let i = 0;
@@ -488,14 +506,13 @@ function keySignature(lead: MusicSymbol[], st: Staff, top: number, m: PMeasure, 
     n++;
   }
   if (!used.size) return null;
-  // A lone accidental right before a notehead on its line belongs to that note.
+  // Accidentals of the first chord are not a key: none may sit right before a notehead on its line,
+  // and the run must end with room before what follows.
+  const direct = (a: MusicSymbol) => hs.some((h) => Math.abs(h.y - a.y) < st.space * 0.3 && h.x > a.x && h.x - (a.x + a.w) < st.space);
+  if ([...used].some(direct)) return null;
   const lastAcc = [...used].sort((a, b) => b.x - a.x)[0];
   const next = [...hs, ...lead.filter((a) => !used.has(a))].filter((h) => h.x > lastAcc.x).sort((a, b) => a.x - b.x)[0];
-  const gap = next ? next.x - (lastAcc.x + (lastAcc as MusicSymbol).w) : Infinity;
-  if (gap < st.space * 0.45 && !(m.x0 < lastAcc.x && n === 0 && i === lead.length)) {
-    // The run ran into the first chord: only a key signature with room after it counts.
-    if (n <= 1) return null;
-  }
+  if (next && next.x - (lastAcc.x + lastAcc.w) < st.space * 0.4) return null;
   return { attr: { x: lead[0].x, key: type > 0 ? n : -n }, used };
 }
 
