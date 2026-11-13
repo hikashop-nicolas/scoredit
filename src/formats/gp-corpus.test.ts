@@ -6,7 +6,7 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { kid, kids, parseXml, text } from "../model/xml";
-import { readGuitarPro } from "./gp";
+import { parseSong, readGuitarPro, soundingMidi } from "./gp";
 import { loadScore } from "./load";
 
 // A summary of a MusicXML score for comparing two readings of the same Guitar Pro file: per
@@ -250,7 +250,8 @@ const dir = join(__dirname, "../../corpus/guitarpro");
 const on = process.env.SCOREDIT_CORPUS === "1" && existsSync(dir);
 
 // Files MuseScore reads otherwise, checked by hand: why scoredit keeps its own reading.
-const HARMONIC = "MuseScore keeps an artificial harmonic's fretted note beside its sound (and tab fret), and sounds GP3 to GP5 ones an octave up or at the fret whatever their harmonic";
+const HARMONIC =
+  "MuseScore drops GP3 harmonics (a plain fretted note), adds the fretted note to GP4 and GP5 artificial ones with a second note at the touched fret (GP4) or an unplayed octave (GP5); scoredit sounds the harmonic";
 const KNOWN: [RegExp, string][] = [
   [/^(Effects|Harmonics)\.gp[345]$|^artificial-harmonic|^gpp_tab\.gp[45]$/, HARMONIC],
   [/^(basic-)?bend\.|^gpp_tab\.gp4$/,"MuseScore writes a bent or pre-bent note at its bent pitch, and its tab adds the bend's target"],
@@ -266,6 +267,21 @@ describe.skipIf(!on)("Guitar Pro corpus", () => {
   const report: Record<string, unknown> = {};
   // The comparison of each file, for a closer look: corpus/guitarpro/report.json.
   afterAll(() => void (names.length && writeFileSync(join(dir, "report.json"), JSON.stringify(report, null, 1))));
+  // The A.H. sounds: GP3 flags an octave, GP4 touches 12, 7 or 5 frets up, GP5 names the note (an A# in Effects.gp5).
+  it.each([
+    ["Harmonics.gp3", [57, 57, 57]],
+    ["Harmonics.gp4", [55, 62, 67]],
+    ["Harmonics.gp5", [55, 67, 62]],
+    ["Effects.gp4", [70]],
+    ["Effects.gp5", [58]],
+  ])("sounds the artificial harmonics of %s", (name, midi) => {
+    if (!existsSync(join(dir, name))) return;
+    const song = parseSong(new Uint8Array(readFileSync(join(dir, name))));
+    const t = song.tracks[0];
+    if (t.kind !== "stringed") throw new Error("not fretted");
+    const notes = t.bars.flatMap((b) => b.voices.flatMap((v) => v.beats.flatMap((x) => x.notes)));
+    expect(notes.filter((n) => n.harmonic?.type === "artificial").map(soundingMidi)).toEqual(midi);
+  });
   for (const name of names) {
     it(`reads ${name} like MuseScore`, () => {
       const ours = summarize(readGuitarPro(new Uint8Array(readFileSync(join(dir, name)))).doc);

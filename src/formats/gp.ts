@@ -92,10 +92,48 @@ export function parseSong(bytes: Uint8Array): Song {
   }
   if (gpif) readExtras(song, gpif);
   else {
-    legacyHarmonics(song, /v5\./.test(strFromU8(bytes.subarray(1, 31))));
+    const version = Number(/v(\d)\./.exec(strFromU8(bytes.subarray(1, 31)))?.[1] ?? 0);
+    const folded = version === 5 ? foldHarmonicAccidentals(bytes, song) : null;
+    if (folded) {
+      bytes = folded;
+      song = parseLegacy(folded);
+    }
+    legacyHarmonics(song, version);
     legacyDrumKeys(song, bytes);
   }
   return song;
+}
+
+/**
+ * A GP5 file with each artificial harmonic's accidental folded into its note, which
+ * guitarpro-parser skips (A# read as A); null when there is none to fold.
+ */
+function foldHarmonicAccidentals(bytes: Uint8Array, song: Song): Uint8Array | null {
+  // The pitch classes the parsed harmonics name: a record [2, note, accidental, octave] holds one.
+  const classes = new Set<number>();
+  for (const t of song.tracks)
+    if (t.kind === "stringed")
+      for (const b of t.bars) for (const v of b.voices) for (const beat of v.beats) for (const n of beat.notes) if (n.harmonic?.type === "artificial") classes.add((n.midi + n.harmonic.fret) % 12);
+  if (!classes.size) return null;
+  const patched = bytes.slice();
+  let found = 0;
+  for (let o = 0; o + 3 < bytes.length && found < 64; o++) {
+    const acc = (bytes[o + 2] << 24) >> 24;
+    if (bytes[o] !== 2 || !classes.has(bytes[o + 1]) || !acc || Math.abs(acc) > 2 || bytes[o + 3] > 2) continue;
+    // A real record: an impossible note there makes the parser stop on it.
+    const probe = bytes.slice();
+    probe[o + 1] = 12;
+    try {
+      parseLegacy(probe);
+      continue;
+    } catch (e) {
+      if (!/pitch class 12/.test(e instanceof Error ? e.message : "")) continue;
+    }
+    patched[o + 1] = (bytes[o + 1] + acc + 12) % 12;
+    patched[o + 2] = 0;
+    found++;
+  }
+  return found ? patched : null;
 }
 
 /** A GP3 to GP5 file read by guitarpro-parser, past zero padding after the last bar. */
@@ -187,8 +225,15 @@ export function soundingMidi(n: FrettedNote): number {
   return (h.type === "natural" ? n.midi - n.fret : n.midi) + HARMONIC_SEMIS[k];
 }
 
-/** GP3 to GP5 harmonics as GP7 stores them: artificial ones a distance in semitones, a GP5 tap its fret. */
-function legacyHarmonics(song: Song, gp5: boolean): void {
+// GP4's A.H. kinds touch 5, 7 or 12 frets up; guitarpro-parser swaps the sound of the first two.
+const GP4_ARTIFICIAL: Record<number, number> = { 19: 24, 24: 19 };
+
+/**
+ * GP3 to GP5 harmonics as GP7 stores them, from the semitones guitarpro-parser gives an artificial
+ * one (GP3 only flags it: an octave), a GP5 tap from its fret.
+ */
+function legacyHarmonics(song: Song, version: number): void {
+  const gp5 = version === 5;
   for (const t of song.tracks) {
     if (t.kind !== "stringed") continue;
     for (const b of t.bars)
@@ -199,7 +244,8 @@ function legacyHarmonics(song: Song, gp5: boolean): void {
             if (!h || h.type === "natural") continue;
             let fret = 12;
             if (h.type === "artificial") {
-              const k = HARMONIC_SEMIS.reduce((best, s, i) => (i >= 2 && Math.abs(s - h.fret) < Math.abs(HARMONIC_SEMIS[best] - h.fret) ? i : best), 2);
+              const semis = version === 4 ? (GP4_ARTIFICIAL[h.fret] ?? h.fret) : h.fret;
+              const k = HARMONIC_SEMIS.reduce((best, s, i) => (i >= 2 && Math.abs(s - semis) < Math.abs(HARMONIC_SEMIS[best] - semis) ? i : best), 2);
               fret = HARMONIC_FRETS[k];
             } else if (h.type === "tap" && gp5 && h.fret > n.fret) fret = h.fret - n.fret;
             n.harmonic = { ...h, fret };
