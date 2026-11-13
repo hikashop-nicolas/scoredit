@@ -1,6 +1,6 @@
 // oemer's post-processing, from the two networks' class maps to MusicXML.
 import { buildMusicXml } from "./build";
-import { dewarp, estimateCoords } from "./dewarp";
+import { coordsFromRows, dewarp, estimateCoords, type SampledLine } from "./dewarp";
 import { extractGroups } from "./group";
 import type { Img } from "./ndimage";
 import { extractNotes, pySlice } from "./notehead";
@@ -9,12 +9,14 @@ import { extractStaffs, Staffs, type Layers } from "./staff";
 import type { Classifiers } from "./svm";
 import { extractSymbols } from "./symbols";
 
-/** Class maps of the two networks at the same size (unet: 1 staff, 2 symbol; seg: 1 stem/rest, 2 notehead, 3 clef/key). */
+/** Class maps at the same size (unet or classic: 1 staff, 2 symbol, 3 both; seg: 1 stem/rest, 2 notehead, 3 clef/key). */
 export interface ClassMaps {
   w: number;
   h: number;
   unet: Uint8Array;
   seg: Uint8Array;
+  /** Staff lines already followed across the page (classic detector): deskew from them. */
+  lines?: SampledLine[];
 }
 
 /** The layers oemer works on; with deskew, each map straightened along the staff lines first. */
@@ -26,12 +28,13 @@ export function layersOf(m: ClassMaps, deskew = false): Layers {
     for (let i = 0; i < n; i++) d[i] = f(i);
     return { w, h, d };
   };
-  let staff = L((i) => +(m.unet[i] === 1));
-  let sym = L((i) => +(m.unet[i] === 2));
+  // Bit 1 staff, bit 2 symbol (the classic detector sets both where a symbol crosses a line).
+  let staff = L((i) => m.unet[i] & 1);
+  let sym = L((i) => (m.unet[i] >> 1) & 1);
   let stems = L((i) => +(m.seg[i] === 1));
   let notehead = L((i) => +(m.seg[i] === 2));
   let clefs = L((i) => +(m.seg[i] === 3));
-  const coords = deskew ? estimateCoords(staff) : null;
+  const coords = !deskew ? null : m.lines ? coordsFromRows(m.lines, w, h) : estimateCoords(staff);
   if (coords) [staff, sym, stems, notehead, clefs] = [staff, sym, stems, notehead, clefs].map((a) => dewarp(a, coords));
   const symbols = L((i) => Math.min(1, sym.d[i] + clefs.d[i] + stems.d[i]));
   return { staff, symbols, stems, notehead, clefs };

@@ -1,9 +1,12 @@
 // Scanned or photographed sheet music to MusicXML: a TypeScript port of oemer
-// (https://github.com/BreezeWhite/oemer, MIT). The host supplies oemer's models; nothing
-// of them ships with scoredit. Runs onnxruntime-web, loaded only when a page is read.
+// (https://github.com/BreezeWhite/oemer, MIT). Staff lines are found without machine
+// learning; the host supplies oemer's symbol network and classifiers, nothing of them ships
+// with scoredit. Runs onnxruntime-web, loaded only when a page is read.
 import { segment, type OrtLike, type OrtSession, type TileProgress } from "./infer";
 import { layersOf, recognise } from "./pipeline";
 import { modelSize, resizeBicubic } from "./resample";
+import type { SampledLine } from "./dewarp";
+import { classicStaffMap } from "./stafflines";
 import { classifiers, type ClassifiersJson } from "./svm";
 
 export type { OrtLike, TileProgress };
@@ -12,12 +15,15 @@ export type { OrtLike, TileProgress };
 export type ModelSource = string | URL | ArrayBuffer | Uint8Array | (() => Promise<ArrayBuffer | Uint8Array>);
 
 export interface ScanModels {
-  /** oemer's unet_big network (staff lines and symbols), ONNX. */
-  staff: ModelSource;
   /** oemer's seg_net network (stems and rests, noteheads, clefs and accidentals), ONNX. */
   symbols: ModelSource;
   /** oemer's four SVM classifiers as JSON (clef, rests, rests_above8, sfn). */
   classifiers: ModelSource;
+  /**
+   * oemer's unet_big network (staff lines and symbols), ONNX: only used with
+   * staffLines: "unet", for comparison. By default staff lines are found without a network.
+   */
+  staff?: ModelSource;
 }
 
 export interface ScanOptions {
@@ -35,7 +41,9 @@ export interface ScanOptions {
   /** Distance between tiles in pixels (oemer: 128; larger is faster, a little less sure). */
   step?: number;
   progress?: (p: TileProgress) => void;
-  /** Straighten skewed or bent staff lines first (default true, as oemer). */
+  /** "classic" (default): staff lines found by projection, no network; "unet": oemer's unet_big (needs models.staff). */
+  staffLines?: "classic" | "unet";
+  /** Straighten the page along its staff lines first (default: on with unet_big, as oemer; off with classic, which follows skew itself and reads better without). */
   deskew?: boolean;
   title?: string;
 }
@@ -80,7 +88,7 @@ async function prepare(image: ImageData | Blob): Promise<{ bgr: Uint8Array; w: n
 let ortModule: Promise<OrtLike> | null = null;
 const loadOrt = () => (ortModule ??= import("onnxruntime-web") as unknown as Promise<OrtLike>);
 
-/** The two networks' class maps for a prepared BGR image. */
+/** Class maps for a prepared BGR image: staff/symbol (classic or unet_big) and seg_net's. */
 export async function classMaps(bgr: Uint8Array, w: number, h: number, opts: ScanOptions) {
   const ort = opts.ort ?? (await loadOrt());
   if (ort.env?.wasm) {
@@ -95,9 +103,18 @@ export async function classMaps(bgr: Uint8Array, w: number, h: number, opts: Sca
       await session.release?.();
     }
   };
-  const unet = await run(opts.models.staff, 256, 3, "staff");
+  let unet: Uint8Array;
+  let lines: SampledLine[] | undefined;
+  if (opts.staffLines === "unet") {
+    if (!opts.models.staff) throw new Error('staffLines "unet" needs models.staff');
+    unet = await run(opts.models.staff, 256, 3, "staff");
+  } else {
+    const c = classicStaffMap(bgr, w, h);
+    unet = c.map;
+    lines = c.info.lines;
+  }
   const seg = await run(opts.models.symbols, 288, 4, "symbols");
-  return { w, h, unet, seg };
+  return { w, h, unet, seg, lines };
 }
 
 /** Reads one page of printed music from a scan or photo into MusicXML text. */
@@ -105,7 +122,7 @@ export async function scanToMusicXml(image: ImageData | Blob, opts: ScanOptions)
   const cls = classifiers(JSON.parse(new TextDecoder().decode(await bytesOf(opts.models.classifiers))) as ClassifiersJson);
   const { bgr, w, h } = await prepare(image);
   const maps = await classMaps(bgr, w, h, opts);
-  const r = recognise(layersOf(maps, opts.deskew ?? true), cls, opts.title);
+  const r = recognise(layersOf(maps, opts.deskew ?? opts.staffLines === "unet"), cls, opts.title);
   return { xml: r.xml, issues: r.issues };
 }
 

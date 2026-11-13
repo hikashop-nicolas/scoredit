@@ -5,6 +5,7 @@ import { fillConvex, houghLinesP } from "./geom";
 import { getBbox, type Img } from "./ndimage";
 import { resizeBicubic } from "./resample";
 import { findPeaks, uniqueSet, wardLabels } from "./sci";
+import { classicStaffMap } from "./stafflines";
 
 const grid = (w: number, h: number, on: (x: number, y: number) => boolean): Img<Uint8Array> => {
   const d = new Uint8Array(w * h);
@@ -74,5 +75,37 @@ describe("scan port primitives", () => {
     expect(px.length).toBe(400);
     expect(px[0]).toBe(55 * 100 + 62);
     expect(px[px.length - 1]).toBe(69 * 100 + 36);
+  });
+});
+
+describe("classic staff lines", () => {
+  // Two five-line staffs, a little skewed, with a filled notehead and a stem on the first.
+  const w = 600;
+  const h = 300;
+  const bgr = new Uint8Array(w * h * 3).fill(235);
+  const ink = (x: number, y: number) => {
+    if (x < 0 || y < 0 || x >= w || y >= h) return;
+    bgr.fill(20, (y * w + x) * 3, (y * w + x) * 3 + 3);
+  };
+  for (const top of [60, 180])
+    for (let k = 0; k < 5; k++)
+      for (let x = 40; x < 560; x++) {
+        const y = Math.round(top + k * 14 + x * 0.02);
+        ink(x, y);
+        ink(x, y + 1);
+      }
+  for (let y = -6; y <= 6; y++) for (let x = -8; x <= 8; x++) if ((x * x) / 64 + (y * y) / 36 <= 1) ink(300 + x, 94 + y);
+  for (let y = 50; y < 94; y++) ink(307, y);
+
+  it("finds both staffs, their thickness and spacing", () => {
+    const { map, info } = classicStaffMap(bgr, w, h);
+    expect(info.staffs.length).toBe(2);
+    expect(info.thickness).toBe(2);
+    expect(info.spacing).toBe(14);
+    expect(info.lines.length).toBe(10);
+    // A bare stretch of line is staff only; the notehead is symbol; a line under it is both.
+    expect(map[Math.round(60 + 100 * 0.02) * w + 100] & 3).toBe(1);
+    expect(map[94 * w + 296] & 2).toBe(2);
+    expect(map[Math.round(60 + 28 + 300 * 0.02) * w + 300]).toBe(3);
   });
 });

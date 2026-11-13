@@ -197,6 +197,18 @@ export function estimateCoords(staff: Img): Float32Array | null {
     });
     if (ty > 0 && ty < h - 1) rows.push({ y: ty, xs, vs });
   }
+  return coordsFromRows(rows, w, h);
+}
+
+/** A sampled line: the row it is straightened to, and its centre row at some columns. */
+export interface SampledLine {
+  y: number;
+  xs: number[];
+  vs: number[];
+}
+
+/** Source row for every output pixel, from lines sampled along the page. */
+export function coordsFromRows(rows: SampledLine[], w: number, h: number): Float32Array | null {
   if (!rows.length) return null;
   rows.sort((p, q) => p.y - q.y);
   const coords = new Float32Array(w * h);
