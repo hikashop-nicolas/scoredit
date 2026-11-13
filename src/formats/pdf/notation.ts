@@ -2,7 +2,7 @@
 // pitches, durations and voices. Font-agnostic: it only sees SMuFL code points.
 import { beamY, braceGroups, findBarlines, findBeams, findStaves, findSystems, horizontals, mergeVerticals, verticals, type HLine, type Staff, type VLine } from "./geometry";
 import type { MusicSymbol, NormPage, TextRun } from "./normalize";
-import { ACCIDENTALS, AUGMENTATION_DOT, CLEFS, DYNAMICS, HEAD_LENGTH, REPEAT_DOT, RESTS, REST_WHOLE, TIME_COMMON, TIME_CUT, flag, headKind, timeDigit, tupletDigit, type HeadKind } from "./glyphs";
+import { ACCIDENTALS, OTTAVAS, AUGMENTATION_DOT, CLEFS, DYNAMICS, HEAD_LENGTH, REPEAT_DOT, RESTS, REST_WHOLE, TIME_COMMON, TIME_CUT, flag, headKind, timeDigit, tupletDigit, type HeadKind } from "./glyphs";
 
 export interface Head {
   x: number;
@@ -15,6 +15,8 @@ export interface Head {
   pos: number;
   /** Accidental shown before it. */
   acc?: number;
+  /** Semitones an octave line moves it. */
+  shift?: number;
 }
 
 export interface Clef {
@@ -204,6 +206,13 @@ export function readPage(page: NormPage): PageResult {
       const cur = stemOf.get(h);
       const d = (v: VLine) => Math.min(Math.abs(v.x - h.x), Math.abs(v.x - h.x - h.w));
       if (!cur || d(s.v) < d(cur)) stemOf.set(h, s.v);
+    }
+  // Two voices on one note draw the head twice: one for each stem.
+  for (const s of stems)
+    for (const h of s.heads) {
+      if (stemOf.get(h) === s.v) continue;
+      const twin = heads.find((o) => o !== h && Math.abs(o.x - h.x) < 0.1 && Math.abs(o.y - h.y) < 0.1 && stemOf.get(o) === stemOf.get(h));
+      if (twin && !s.heads.some((o) => o !== h && o !== twin && stemOf.get(o) === s.v && Math.abs(o.y - h.y) < 0.1)) stemOf.set(h, s.v);
     }
   const isStemLine = (l: VLine) => heads.some((h) => attached(l, h, sp) && (Math.abs(h.y - l.y0) < sp * 0.75 || Math.abs(h.y - l.y1) < sp * 0.75));
 
@@ -431,6 +440,18 @@ export function readPage(page: NormPage): PageResult {
     }
   });
 
+  // Octave lines: from the 8 (or 15) to the end of the line after it, dashed or not.
+  for (const p of placed) {
+    const shift = OTTAVAS[p.cp];
+    if (!shift) continue;
+    const st = staffOf(p);
+    const sign = p.cp === 0xe510 || p.cp === 0xe514 ? (p.y < st.top ? 1 : -1) : Math.sign(shift);
+    let end = p.x + (p.w || st.space) + st.space;
+    const pieces = hl.filter((l) => Math.abs(l.y - (p.y - p.size * 0.15)) < st.space * 1.5 && l.x0 >= p.x && l.width < st.space * 0.3).sort((a, b) => a.x0 - b.x0);
+    for (const l of pieces) if (l.x0 <= end + st.space * 3) end = Math.max(end, l.x1);
+    for (const h of heads) if (h.sys === p.sys && h.staff === p.staff && h.x >= p.x - st.space && h.x <= end + st.space * 0.5) h.shift = sign * Math.abs(shift);
+  }
+
   // Text: names left of the systems, lyrics under staves, the header above the first system.
   const header: TextRun[] = [];
   const firstTop = systems[0].top - 4 * sp;
@@ -578,7 +599,7 @@ function lyricsOf(page: NormPage, systems: PSystem[], sp: number): void {
           }
         }
         // Rows that do not line up with notes are not lyrics (tempo or expression text).
-        if (matched < words.length * 0.6) return;
+        if (matched < words.length * 0.6 || words.every((w) => /^(cresc|dim|decresc|rit|rall|accel|poco|molto|sempre|espr|dolce|a tempo)\b/i.test(w.str.replace(/[().]/g, "")))) return;
         out.forEach(({ e, w }, i) => {
           const next = out[i + 1];
           const prev = out[i - 1];

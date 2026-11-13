@@ -46,17 +46,6 @@ interface Part {
   first: number;
 }
 
-function partsOf(sys: PSystem): Part[] {
-  const parts: Part[] = [];
-  for (let k = 0; k < sys.staves.length; ) {
-    const g = sys.groups.find(([a]) => a === k);
-    const n = g ? g[1] - g[0] + 1 : 1;
-    parts.push({ name: sys.names[k] ?? "", staves: n, first: k });
-    k += n;
-  }
-  return parts;
-}
-
 /** Title, subtitle, composer and lyricist from the text above the first system. */
 function credits(header: TextRun[], width: number) {
   const lines: { str: string; x: number; x1: number; y: number; size: number }[] = [];
@@ -75,34 +64,36 @@ function credits(header: TextRun[], width: number) {
 }
 
 function writeScore(systems: PSystem[], header: TextRun[], width: number, docTitle?: string): string {
-  // Systems without names join barline-linked staves as the named systems did.
-  const named = systems.filter((s) => s.names.some((n) => n) && s.barLinks.some((l) => l));
-  const joins = named.some((s) => s.barLinks.some((l, k) => l && s.groups.some(([a, b]) => k >= a && k < b)));
-  const splits = named.some((s) => s.barLinks.some((l, k) => l && !s.groups.some(([a, b]) => k >= a && k < b)));
-  if (joins && !splits)
-    for (const s of systems) {
-      if (s.names.some((n) => n)) continue;
-      for (let k = 0; k + 1 < s.staves.length; ) {
-        if (!s.barLinks[k] || s.groups.some(([a, b]) => k >= a && k <= b)) {
-          k++;
-          continue;
-        }
-        let e = k + 1;
-        while (s.barLinks[e] && e + 1 < s.staves.length) e++;
-        s.groups.push([k, e]);
-        k = e + 1;
-      }
-      s.groups.sort((a, b) => a[0] - b[0]);
-    }
-  // The parts are those of the fullest system; others may hide empty staves.
+  // The staves are those of the fullest system; others may hide empty ones.
   const full = systems.reduce((a, b) => (b.staves.length > a.staves.length ? b : a));
-  const parts = partsOf(full);
   const total = full.staves.length;
-  const maps = systems.map((sys) => (sys.staves.length === total && sys !== full ? matchStaves(parts, sys, true) : matchStaves(parts, sys, false)));
+  // Staves with lyrics in any full system (a voice), to tell it from an instrument.
+  const lyrics = (s: PSystem, k: number) => s.measures.reduce((n, m) => n + m.events[k].filter((e) => e.lyrics.length).length, 0) >= 3;
+  const fulls = systems.filter((s) => s.staves.length === total);
+  const sung = full.staves.map((_, k) => fulls.filter((s) => lyrics(s, k)).length > fulls.length * 0.3);
+  // How often each clef starts each staff of the full systems.
+  const clefShare = full.staves.map((_, k) => (sign: string) => fulls.filter((s) => clefSign(s, k) === sign).length / fulls.length);
+  const maps = systems.map((sys) => alignStaves(sys, full, (i, j) => 2 * clefShare[j](clefSign(sys, i)) + (lyrics(sys, i) === sung[j] ? 1.5 : 0)));
+  // Instruments (brace or named groups) as any system shows them.
+  const groups: [number, number][] = [];
+  systems.forEach((sys, i) => {
+    for (const [a, b] of sys.groups) {
+      const ga = maps[i].indexOf(a);
+      const gb = maps[i].indexOf(b);
+      if (ga >= 0 && gb - ga === b - a && !groups.some(([x, y]) => ga <= y && gb >= x)) groups.push([ga, gb]);
+    }
+  });
+  const parts: Part[] = [];
+  for (let k = 0; k < total; ) {
+    const g = groups.find(([a]) => a === k);
+    const n = g ? g[1] - g[0] + 1 : 1;
+    parts.push({ name: "", staves: n, first: k });
+    k += n;
+  }
   // Names as the first system that shows the part has them.
   parts.forEach((p) => {
     for (let i = 0; i < systems.length; i++) {
-      const k = maps[i].indexOf(p.first);
+      const k = maps[i][p.first];
       if (k >= 0 && systems[i].names[k]) {
         p.name = systems[i].names[k];
         break;
@@ -200,7 +191,7 @@ function writeScore(systems: PSystem[], header: TextRun[], width: number, docTit
             if (h.acc !== undefined) alter = h.acc;
             else if (alters.has(d)) alter = alters.get(d)!;
             else alter = keyAlter(fifths ?? 0, ((d % 7) + 7) % 7);
-            return { step: STEPS[((d % 7) + 7) % 7], octave: Math.floor(d / 7), alter, shown: h.acc, pos: h.pos };
+            return { step: STEPS[((d % 7) + 7) % 7], octave: Math.floor(d / 7) + Math.round((h.shift ?? 0) / 12), alter, shown: h.acc, pos: h.pos };
           });
         }
         while (ci < mid.length) clef = mid[ci++].clef!;
@@ -260,19 +251,34 @@ function leading(a: PAttr, m: PMeasure): boolean {
   return !evs.length || a.x < Math.min(...evs.map((e) => e.x));
 }
 
-/** For each staff of the score, the system's staff showing it (or -1): parts matched in order by staff count and name. */
-function matchStaves(parts: Part[], sys: PSystem, same: boolean): number[] {
-  const total = parts.reduce((n, p) => n + p.staves, 0);
-  const map: number[] = Array(total).fill(-1);
-  if (same) return map.map((_, k) => k);
-  let j = 0;
-  for (const sp of partsOf(sys)) {
-    const name = sys.names[sp.first] ?? "";
-    let r = parts.findIndex((p, i) => i >= j && p.staves === sp.staves && nameFits(name, p.name));
-    if (r < 0) r = parts.findIndex((p, i) => i >= j && p.staves === sp.staves);
-    if (r < 0) continue;
-    for (let k = 0; k < sp.staves; k++) map[parts[r].first + k] = sp.first + k;
-    j = r + 1;
+/** For each staff of the fullest system, the staff of this system showing it (or -1): clefs and sizes aligned in order. */
+const clefSign = (s: PSystem, k: number) => s.measures[0]?.attrs[k].find((a) => a.clef)?.clef?.sign ?? "?";
+
+function alignStaves(sys: PSystem, full: PSystem, fit: (i: number, j: number) => number): number[] {
+  const n = full.staves.length;
+  if (sys.staves.length === n) return full.staves.map((_, k) => k);
+  const score = (i: number, j: number) => fit(i, j) + (Math.abs(sys.staves[i].space - full.staves[j].space) < 0.05 ? 1 : 0) + (nameFits(sys.names[i], full.names[j]) ? 0.5 : 0);
+  const m = sys.staves.length;
+  const gap = (s: PSystem, k: number) => s.staves[k + 1].top - s.staves[k].bottom;
+  // Best order-keeping assignment of m staves among n; neighbours at the same distance score too.
+  const dp: number[][] = Array.from({ length: m }, () => Array(n).fill(-Infinity));
+  const from: number[][] = Array.from({ length: m }, () => Array(n).fill(-1));
+  for (let j = 0; j < n; j++) dp[0][j] = score(0, j);
+  for (let i = 1; i < m; i++)
+    for (let j = i; j < n; j++)
+      for (let p = i - 1; p < j; p++) {
+        const near = p === j - 1 && Math.abs(gap(sys, i - 1) - gap(full, p)) < 0.15 * gap(full, p) ? 1.5 : 0;
+        const v = dp[i - 1][p] + score(i, j) + near;
+        if (v > dp[i][j]) {
+          dp[i][j] = v;
+          from[i][j] = p;
+        }
+      }
+  const map: number[] = Array(n).fill(-1);
+  let j = dp[m - 1].indexOf(Math.max(...dp[m - 1]));
+  for (let i = m - 1; i >= 0 && j >= 0; i--) {
+    map[j] = i;
+    j = from[i][j];
   }
   return map;
 }
@@ -291,6 +297,7 @@ function nameFits(a: string, b: string): boolean {
 /** Onsets: voices one after the other; a voice starting late lines up with the column it stands in. */
 function timeMeasure(m: PMeasure, mlen: number, space: number): void {
   const cols: { x: number; at: number }[] = [];
+  for (const evs of m.events) for (const v of new Set(evs.map((e) => e.voice))) hiddenTuplets(evs.filter((e) => e.voice === v && !e.grace), mlen);
   for (const pass of [1, 2]) {
     m.events.forEach((evs) => {
       const voices = [...new Set(evs.map((e) => e.voice))];
@@ -313,6 +320,23 @@ function timeMeasure(m: PMeasure, mlen: number, space: number): void {
   }
   for (const evs of m.events)
     for (const e of evs) if (e.grace) e.onset = evs.find((n) => !n.grace && n.voice === e.voice && n.x > e.x)?.onset ?? 0;
+}
+
+/** A voice too long for its measure has tuplets without a number: its shortest notes, scaled to fit. */
+function hiddenTuplets(line: PEvent[], mlen: number): void {
+  const isRest = (e: PEvent) => e.rest && e.base === 4 && line.length === 1;
+  const total = line.reduce((t, e) => t + (isRest(e) ? mlen : length(e)), 0);
+  if (total <= mlen + 1e-6 || line.some((e) => e.tuplet)) return;
+  const min = Math.min(...line.map((e) => e.base));
+  const short = line.filter((e) => e.base === min);
+  const sum = short.reduce((t, e) => t + length(e), 0);
+  const r = (sum - (total - mlen)) / sum;
+  for (const [actual, normal] of [[3, 2], [5, 4], [6, 4], [7, 4], [9, 8], [7, 8], [5, 2], [10, 8], [11, 8], [12, 8], [13, 8], [15, 8]]) {
+    if (Math.abs(normal / actual - r) > 1e-3) continue;
+    const tup = { actual, normal };
+    for (const e of short) e.tuplet = tup;
+    return;
+  }
 }
 
 /** Whether a chord starts or ends its tuplet group. */
