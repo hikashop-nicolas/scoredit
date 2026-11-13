@@ -281,6 +281,19 @@ export function readPage(page: NormPage): PageResult {
     };
   }
 
+  // Two stems drawn for one chord (a wide chord, or one split by a gap): one chord.
+  events.sort((a, b) => a.sys - b.sys || a.staff - b.staff || a.x - b.x);
+  for (let i = events.length - 1; i > 0; i--) {
+    const a = events[i - 1];
+    const b = events[i];
+    if (a.sys !== b.sys || a.staff !== b.staff || a.up === undefined || a.up !== b.up || a.base !== b.base || a.grace !== b.grace) continue;
+    if (Math.abs(a.x - b.x) > sp * 0.3 || !a.stemLine || !b.stemLine || Math.abs(a.stemLine.x - b.stemLine.x) > sp * 0.2) continue;
+    a.heads = [...a.heads, ...b.heads].sort((p, q) => q.y - p.y);
+    a.y = Math.min(a.y, b.y);
+    a.x1 = Math.max(a.x1, b.x1);
+    events.splice(i, 1);
+  }
+
   // Rests.
   for (const p of placed) {
     const len = RESTS[p.cp];
@@ -338,7 +351,7 @@ export function readPage(page: NormPage): PageResult {
     const at = (x: number) => raw.findIndex((m) => x >= m.x0 - space * 0.2 && x < m.x1 + space * 0.2);
     for (const e of events) {
       if (e.sys !== si) continue;
-      const m = at(e.x);
+      const m = at((e.x + e.x1) / 2);
       if (m >= 0) raw[m].events[e.staff].push(e);
     }
     // Clefs, key and time signatures.
@@ -517,6 +530,9 @@ function keySignature(lead: MusicSymbol[], st: Staff, top: number, hs: Head[]): 
   let i = 0;
   const used = new Set<MusicSymbol>();
   while (i < lead.length && ACCIDENTALS[lead[i].cp] === 0) used.add(lead[i++]);
+  // Cancelling naturals follow the order of the sharps or flats they cancel.
+  const nat = lead.slice(0, i).map(letter);
+  if (nat.length && !nat.every((l, k) => l === SHARPS[k]) && !nat.every((l, k) => l === FLATS[k])) return null;
   const type = i < lead.length ? ACCIDENTALS[lead[i].cp] : 0;
   const order = type > 0 ? SHARPS : FLATS;
   let n = 0;
