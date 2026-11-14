@@ -15,6 +15,10 @@
     "./scan-worker": {
       "types": "./dist/formats/scan/scan-worker.d.ts",
       "import": "./dist/formats/scan/scan-worker.js"
+    },
+    "./scan-detect": {
+      "types": "./dist/formats/scan/detect.d.ts",
+      "import": "./dist/formats/scan/detect.js"
     }
   },
   "files": [
