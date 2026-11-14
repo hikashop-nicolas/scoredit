@@ -109,6 +109,8 @@ export interface PMeasure {
   leftRepeat?: boolean;
   /** Volta bracket: its number on the first measure, how it ends on the last. */
   ending?: { number: string; start: boolean; end?: "stop" | "discontinue" };
+  /** A multi-measure rest: how many measures of rest this one drawn measure stands for. */
+  multiRest?: number;
 }
 
 export interface PSystem {
@@ -469,6 +471,7 @@ export function readPage(page: NormPage): PageResult {
         for (const a of accs) if (a.x >= m.x0 - space && a.x < m.x1 + space * 0.2 && !key?.used.has(a)) takeAcc(a);
       }
     });
+    multiRests(page, sys, raw, syms, space);
     // Measures with nothing to play (a clef and key before a start repeat) give what they hold to the next.
     const kept: PMeasure[] = [];
     let carry: PMeasure | null = null;
@@ -590,6 +593,67 @@ export function readPage(page: NormPage): PageResult {
 }
 
 type Placed = MusicSymbol & { sys: number; staff: number };
+
+const MULTI_REST = 0xe4ee;
+const MULTI_REST_LEFT = 0xe4ef;
+const MULTI_REST_RIGHT = 0xe4f1;
+
+/**
+ * Multi-measure rests: a thick bar on the middle line (or church rests) with a number above, in a
+ * measure where every staff rests. The measure keeps one measure rest per staff and the count.
+ */
+function multiRests(page: NormPage, sys: PSystem, raw: PMeasure[], syms: Placed[], sp: number): void {
+  const bars: { x0: number; x1: number; y: number }[] = [];
+  const thickOk = (t: number) => t > sp * 0.3 && t < sp * 1.2;
+  for (const s of page.segments) if (Math.abs(s.y0 - s.y1) < 0.1 && thickOk(s.width) && Math.abs(s.x1 - s.x0) > sp * 2.5) bars.push({ x0: Math.min(s.x0, s.x1), x1: Math.max(s.x0, s.x1), y: s.y0 });
+  for (const sh of page.shapes) {
+    const { x0, x1, y0, y1 } = sh.box;
+    const rect = sh.points.length <= 5 && sh.points.every((p) => Math.abs(p[1] - y0) < 0.05 || Math.abs(p[1] - y1) < 0.05);
+    if (sh.filled && !sh.curved && rect && thickOk(y1 - y0) && x1 - x0 > sp * 2.5) bars.push({ x0, x1, y: (y0 + y1) / 2 });
+  }
+  for (const s of syms) {
+    if (s.cp === MULTI_REST) bars.push({ x0: s.x, x1: s.x + s.w, y: s.y });
+    if (s.cp !== MULTI_REST_LEFT) continue;
+    const r = syms.filter((q) => q.cp === MULTI_REST_RIGHT && q.staff === s.staff && Math.abs(q.y - s.y) < 0.5 && q.x > s.x).sort((a, b) => a.x - b.x)[0];
+    if (r) bars.push({ x0: s.x, x1: r.x + r.w, y: s.y });
+  }
+  // Numbers above the staff: digit glyphs side by side, or digits in a text font.
+  const digits = syms.filter((s) => timeDigit(s.cp) >= 0 || tupletDigit(s.cp) >= 0).sort((a, b) => a.x - b.x);
+  const numbers: { n: number; x: number; y: number }[] = [];
+  for (let i = 0; i < digits.length; ) {
+    let j = i + 1;
+    while (j < digits.length && Math.abs(digits[j].y - digits[i].y) < 0.5 && digits[j].x - (digits[j - 1].x + digits[j - 1].w) < digits[i].size * 0.15) j++;
+    const run = digits.slice(i, j);
+    numbers.push({ n: Number(run.map((d) => Math.max(timeDigit(d.cp), tupletDigit(d.cp))).join("")), x: (run[0].x + run[j - i - 1].x + run[j - i - 1].w) / 2, y: run[0].y });
+    i = j;
+  }
+  for (const t of page.texts) if (/^\d{1,3}$/.test(t.str) && t.words.length === 1) numbers.push({ n: Number(t.str), x: (t.words[0].x + t.words[0].x1) / 2, y: t.y - t.size * 0.35 });
+  for (const m of raw) {
+    let count = 0;
+    let all = true;
+    sys.staves.forEach((st, k) => {
+      const evs = m.events[k];
+      if (evs.some((e) => !e.rest)) return void (all = false);
+      if (st.lines !== 5) return;
+      const mid = (st.top + st.bottom) / 2;
+      const bar = bars.find((b) => Math.abs(b.y - mid) < sp * 0.3 && b.x0 > m.x0 - sp * 0.5 && b.x1 < m.x1 + sp * 0.5);
+      // Church rests (longa and breve rests) stand for several measures too.
+      const church = !bar && evs.length > 0 && evs.some((e) => e.base >= 8);
+      if (!bar && !church) return;
+      const x0 = bar ? bar.x0 : Math.min(...evs.map((e) => e.x)) - sp;
+      const x1 = bar ? bar.x1 : Math.max(...evs.map((e) => e.x1)) + sp;
+      const num = numbers.find((q) => q.x > x0 && q.x < x1 && q.y < st.top + sp * 0.6 && q.y > st.top - sp * 5);
+      if (num || bar) count = Math.max(count, num?.n || 1);
+    });
+    if (!count || !all) continue;
+    m.multiRest = count;
+    const x = (m.x0 + m.x1) / 2;
+    m.events = m.events.map((_, k) => {
+      const st = sys.staves[k];
+      return [{ rest: true, x: x - sp * 0.5, x1: x + sp * 0.5, y: (st.top + st.bottom) / 2, staff: k, base: 4, dots: 0, grace: false, heads: [], notes: [], measureRest: true, voice: 1, onset: 0, lyrics: [] }];
+    });
+  }
+}
 
 /** Metronome marks: a note outside the staff (and its flag and dots) right before "= 100". */
 function metronomes(texts: TextRun[], placed: Placed[], staffOf: (p: Placed) => Staff, sp: number) {

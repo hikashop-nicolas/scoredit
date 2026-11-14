@@ -124,7 +124,16 @@ function writeScore(systems: PSystem[], header: TextRun[], width: number, docTit
   // Every measure of every system, with where each staff of the score is in it.
   const measures: { m: PMeasure; sys: PSystem; staffMap: number[] }[] = [];
   systems.forEach((sys, i) => {
-    for (const m of sys.measures) measures.push({ m, sys, staffMap: maps[i] });
+    for (const m of sys.measures) {
+      const n = m.multiRest ?? 1;
+      // A multi-measure rest: as many measures of rest, the barline and volta end on the last.
+      for (let r = 0; r < n; r++) {
+        const last = r === n - 1;
+        const copy: PMeasure = r === 0 && last ? m : r === 0 ? { ...m, right: undefined, ending: m.ending?.start ? { ...m.ending, end: undefined } : undefined } : { ...m, attrs: m.attrs.map(() => []), dirs: [], leftRepeat: false, multiRest: undefined, right: last ? m.right : undefined, ending: last && m.ending?.end ? { ...m.ending, start: false } : undefined };
+        if (r > 0) copy.events = m.events.map((evs) => evs.map((e) => ({ ...e })));
+        measures.push({ m: copy, sys, staffMap: maps[i] });
+      }
+    }
   });
   // Time first: measure lengths need the time signature, voices their onsets.
   let time = { beats: 4, type: 4 } as NonNullable<PAttr["time"]>;
@@ -178,6 +187,7 @@ function writeScore(systems: PSystem[], header: TextRun[], width: number, docTit
         lines.forEach((n, k) => {
           if (n !== 5) attrs.push(staffDetails(n, part.staves > 1 ? k + 1 : 0));
         });
+      if (m.multiRest && m.multiRest > 1) attrs.push(`<measure-style><multiple-rest>${m.multiRest}</multiple-rest></measure-style>`);
       if (attrs.length) out.push(`<attributes>${attrs.join("")}</attributes>`);
 
       const mlen = (t.beats * 4) / t.type;

@@ -67,6 +67,17 @@ describe("notation", () => {
     expect(systems[0].measures[0].events[0].map((e) => e.voice).sort()).toEqual([1, 2]);
   });
 
+  it("reads a multi-measure rest: a thick bar on the middle line and its number", () => {
+    const notes = [quarter(80, 120), quarter(120, 117.5), quarter(160, 115), quarter(195, 110)];
+    const bar: PdfSegment = { x0: 240, y0: 110, x1: 380, y1: 110, width: 3.5 };
+    const serifs: PdfSegment[] = [240, 380].map((x) => ({ x0: x, y0: 105, x1: x, y1: 115, width: 1 }));
+    const p = page([sym(0xe050, 45, 115, 13), ...notes.map((n) => n[0]), sym(0xe081, 302, 92.5, 5.5), sym(0xe082, 308, 92.5, 5.5)], [...notes.map((n) => n[1]), bar, ...serifs]);
+    const [m1, m2] = readPage(p).systems[0].measures;
+    expect(m1.multiRest).toBeUndefined();
+    expect(m2.multiRest).toBe(12);
+    expect(m2.events[0].map((e) => e.rest && e.measureRest)).toEqual([true]);
+  });
+
   it("drops the note of a metronome mark and keeps the tempo", () => {
     const notes = [quarter(80, 120), quarter(120, 117.5), quarter(160, 115), quarter(195, 110)];
     const tempo: [MusicSymbol, PdfSegment] = [sym(0xe0a4, 80, 85), { x0: 85.6, y0: 67.5, x1: 85.6, y1: 84.5, width: 0.55 }];
