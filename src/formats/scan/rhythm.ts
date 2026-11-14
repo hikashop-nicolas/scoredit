@@ -416,6 +416,10 @@ export function extractRhythm(
   parseDot(L, S, groups, notes, noteId);
   const poly = parseBeams(L, S, groupMap);
   const { out, info } = overlapRegions(L, poly, groupMap, barlines);
-  parseRhythm(out, refineInfo(info, groups, groupMap), S, groups, notes, 0.15, issues);
-  return { poly, out };
+  const regions = refineInfo(info, groups, groupMap);
+  parseRhythm(out, regions, S, groups, notes, 0.15, issues);
+  // The groups hanging from one beam: a region holding two or more of them.
+  const beamOf = new Map<number, number>();
+  for (const [reg, inf] of regions) if (inf.gids.size > 1) for (const g of inf.gids) beamOf.set(g, reg);
+  return { maps: { poly, out }, beamOf };
 }

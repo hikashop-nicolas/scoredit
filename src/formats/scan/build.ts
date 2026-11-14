@@ -302,8 +302,8 @@ function noteXml(n: NoteHead, clef: ClefType, chord: boolean, voice: number): st
   const dura = n.hasDot ? pyRound(r.duration * 1.5) : r.duration;
   return (
     `<note>${chord ? "<chord/>" : ""}<pitch><step>${step}</step><alter>${alter}</alter><octave>${octave}</octave></pitch>` +
-    `<duration>${dura}</duration><type>${r.name}</type>${n.hasDot ? "<dot/>" : ""}<stem>${n.stemUp ? "up" : "down"}</stem>` +
-    `<staff>${n.track + 1}</staff><voice>${voice}</voice></note>`
+    `<duration>${dura}</duration><voice>${voice}</voice><type>${r.name}</type>${n.hasDot ? "<dot/>" : ""}<stem>${n.stemUp ? "up" : "down"}</stem>` +
+    `<staff>${n.track + 1}</staff></note>`
   );
 }
 
@@ -315,7 +315,7 @@ function restXml(r: Rest): string {
 }
 
 /** Builds the MusicXML text (oemer's MusicXMLBuilder). */
-export function buildMusicXml(notes: NoteHead[], groups: NoteGroup[], sym: Symbols, unit: number, tracks: number, title = "Scan"): string {
+export function buildMusicXml(notes: NoteHead[], groups: NoteGroup[], sym: Symbols, unit: number, tracks: number, title = "Scan", beamOf?: Map<number, number>): string {
   const c = new Ctx(notes, tracks, unit);
   const voices: Voice[] = [];
   const addVoice = (g: NoteGroup, ids: number[], up: boolean | null) => {
@@ -417,6 +417,32 @@ export function buildMusicXml(notes: NoteHead[], groups: NoteGroup[], sym: Symbo
     const x = noteXml(n, clef, chord, voice);
     if (x) cur.body.push(x);
   };
+  // Beams: consecutive short notes of one staff and voice hanging from the same beam, within a bar.
+  const runs = new Map<string, { reg: number; idx: number[] }>();
+  const flush = (k: string) => {
+    const r = runs.get(k);
+    runs.delete(k);
+    if (!r || r.idx.length < 2) return;
+    r.idx.forEach((bi, i) => {
+      const kind = i === 0 ? "begin" : i === r.idx.length - 1 ? "end" : "continue";
+      cur.body[bi] = cur.body[bi].replace(/<\/note>$/, `<beam number="1">${kind}</beam></note>`);
+    });
+  };
+  const addVoiceNotes = (s: Voice, voice: number) => {
+    const at = cur.body.length;
+    addNote(notes[s.noteIds[0]], false, voice);
+    for (const n of s.noteIds.slice(1)) addNote(notes[n], true, voice);
+    const k = `${s.track}:${voice}`;
+    const reg = beamOf?.get(s.groupId);
+    const short = s.label >= NoteType.EIGHTH && s.label <= NoteType.SIXTY_FOURTH;
+    if (reg === undefined || !short || cur.body.length === at) return flush(k);
+    const r = runs.get(k);
+    if (r && r.reg === reg) r.idx.push(at);
+    else {
+      flush(k);
+      runs.set(k, { reg, idx: [at] });
+    }
+  };
   const backup = (d: number) => d && cur.body.push(`<backup><duration>${d}</duration></backup>`);
   const forward = (d: number) => d && cur.body.push(`<forward><duration>${d}</duration></forward>`);
   for (const [, ms] of systems.map(([g]) => [g, measures.get(g)!] as const)) {
@@ -471,19 +497,18 @@ export function buildMusicXml(notes: NoteHead[], groups: NoteGroup[], sym: Symbo
           one = true;
         }
         if (s.kind === "rest") {
+          flush(`${tr}:1`);
           cur.body.push(restXml(s));
           lastPos = total[tr];
           lastD = d;
           lastT = tidx;
         } else if (s.duration === minD && one) {
-          addNote(notes[s.noteIds[0]]);
-          for (const n of s.noteIds.slice(1)) addNote(notes[n], true);
+          addVoiceNotes(s, 1);
           lastPos = total[tr];
           lastD = d;
           lastT = tidx;
         } else {
-          addNote(notes[s.noteIds[0]], false, 2);
-          for (const n of s.noteIds.slice(1)) addNote(notes[n], true, 2);
+          addVoiceNotes(s, 2);
           let pos = total[tr] + s.duration;
           if (minAdded[tr]) pos -= minD;
           const df = lastPos - pos;
@@ -491,6 +516,7 @@ export function buildMusicXml(notes: NoteHead[], groups: NoteGroup[], sym: Symbo
           else if (df < 0) backup(Math.trunc(-df));
         }
       }
+      for (const k of [...runs.keys()]) flush(k);
     }
   }
   // oemer drops the break between the opening attributes and the first measure.

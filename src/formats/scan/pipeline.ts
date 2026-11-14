@@ -65,9 +65,9 @@ export function recognise(L: Layers, cls: Classifiers, title = "Scan"): Recognis
   const { groups, map: groupMap } = extractGroups(L, S, notes, noteId);
   const sym = extractSymbols(L, S, cls, notes, noteId, groupMap, issues);
   const restsBefore = sym.rests.map((r) => ({ bbox: r.bbox, label: r.label, dot: r.hasDot }));
-  const maps = extractRhythm(L, S, groups, notes, noteId, groupMap, sym.barlines, issues);
+  const { maps, beamOf } = extractRhythm(L, S, groups, notes, noteId, groupMap, sym.barlines, issues);
   const rhythm = notes.map((n) => ({ label: n.rawLabel, dot: n.hasDot, invalid: n.invalid, stem_up: n.stemUp }));
-  const xml = buildMusicXml(notes, groups, sym, S.globalUnitSize(), S.tracks(), title);
+  const xml = buildMusicXml(notes, groups, sym, S.globalUnitSize(), S.tracks(), title, beamOf);
   const debug = {
     zones: zones.map((z) => [z[0], z[1] - 1]),
     staffs: staffs.map((col) => col.map((st) => ({ y: st.yCenter, x: st.xCenter, unit: st.unitSize, track: st.track, group: st.group }))),
