@@ -1,4 +1,5 @@
 import { t } from "./i18n";
+import { measureOfLabel } from "./seek-bar";
 
 export type LayoutMode = "page" | "line" | "keys";
 
@@ -36,6 +37,10 @@ export interface PracticeState {
   echo: boolean;
   /** In time: ms taken off every key's time, for the delay of the instrument and the ear (the host calibrates it). */
   latencyMs: number;
+  /** Measures played over and over (indices from 0, both included); null: no loop. */
+  loop: { from: number; to: number } | null;
+  /** With a loop: each clean pass plays the next one a little faster, up to the speed as written. */
+  speedUp: boolean;
   /** One bar of clicks before playing (not in wait mode, which waits for you anyway). */
   countIn: boolean;
   /** A click on every beat while playing. */
@@ -45,7 +50,7 @@ export interface PracticeState {
 }
 
 /** Practice settings before the user or the host changes them. */
-export const PRACTICE_DEFAULTS: PracticeState = { mode: "off", hand: "both", echo: false, latencyMs: 0, countIn: false, metronome: false, accompany: true };
+export const PRACTICE_DEFAULTS: PracticeState = { mode: "off", hand: "both", echo: false, latencyMs: 0, loop: null, speedUp: false, countIn: false, metronome: false, accompany: true };
 
 /** What the end of an in-time run shows. */
 export interface PracticeSummaryView {
@@ -57,6 +62,9 @@ export interface PracticeSummaryView {
   accuracy: number | null;
   /** Average of played notes against their time, ms (positive late). */
   meanOffsetMs?: number | null;
+  /** A pass of a loop (the loop goes on), and the speed of the next pass. */
+  pass?: boolean;
+  nextSpeed?: number;
 }
 
 export interface BarOptions {
@@ -89,6 +97,8 @@ export interface BarOptions {
   onPractice?(p: PracticeState): void;
   /** Asks the host for a MIDI instrument: Practice then shows even without one, with a button for it. */
   onConnectMidi?(): void;
+  /** The measure (index) playback is at, where a new loop starts. */
+  currentMeasure?(): number;
 }
 
 export interface Bar {
@@ -101,8 +111,13 @@ export interface Bar {
   /** The parts of the score and those shown (null: all); no button for a single part. */
   setParts(names: string[], shown: number[] | null): void;
   setFretboard(available: boolean): void;
-  /** The practice button: whether an instrument is connected, whether a hand can be chosen, and the settings. */
-  setPractice(available: boolean, hands: boolean, state: PracticeState): void;
+  /**
+   * The practice button: whether an instrument is connected, whether a hand can be chosen, the
+   * settings, and the number of measures and the numbers the score prints for them (for the loop).
+   */
+  setPractice(available: boolean, hands: boolean, state: PracticeState, measures?: number, labels?: string[]): void;
+  /** Shows a speed set from elsewhere (a loop speeding up). */
+  setSpeed(speed: number): void;
   /** The end-of-run summary pop-up (null hides it). */
   showSummary(s: PracticeSummaryView | null): void;
 }
@@ -297,6 +312,10 @@ export function createBar(o: BarOptions): Bar {
   pracPop.className = "sv-pop sv-pop-parts sv-pop-practice";
   pracPop.hidden = true;
   let prac: PracticeState = { ...PRACTICE_DEFAULTS };
+  let measures = 1;
+  // The bar numbers the score prints, by measure index (empty: counted from 1).
+  let labels: string[] = [];
+  const labelOf = (m: number) => labels[m] ?? String(m + 1);
   const choice = (name: string, options: [string, string][], pick: (v: string) => void) => {
     const box = document.createElement("div");
     box.className = "sv-choice";
@@ -316,7 +335,7 @@ export function createBar(o: BarOptions): Bar {
     return { box, set: (v: string) => inputs.forEach((r) => (r.checked = r.value === v)) };
   };
   const emit = () => {
-    pracBtn.classList.toggle("is-on", prac.mode !== "off");
+    pracBtn.classList.toggle("is-on", prac.mode !== "off" || !!prac.loop);
     pracBtn.setAttribute("aria-pressed", String(prac.mode !== "off"));
     o.onPractice?.({ ...prac });
   };
@@ -335,6 +354,51 @@ export function createBar(o: BarOptions): Bar {
   const accompany = tick(t("practiceAccompany"), (on) => ((prac.accompany = on), emit()));
   const countInTick = tick(t("practiceCountIn"), (on) => ((prac.countIn = on), emit()));
   const metronome = tick(t("practiceMetronome"), (on) => ((prac.metronome = on), emit()));
+  // The loop: a tick, then the first and last bars (numbered as the score prints them).
+  const loopTick = tick(t("practiceLoop"), (on) => {
+    if (on) {
+      const at = Math.max(0, Math.min(measures - 1, o.currentMeasure?.() ?? 0));
+      prac.loop = { from: at, to: Math.min(measures - 1, at + 3) };
+    } else prac.loop = null;
+    syncLoop();
+    emit();
+  });
+  const bars = document.createElement("div");
+  bars.className = "sv-loop-bars";
+  const barInput = (label: string) => {
+    const i = document.createElement("input");
+    // Text, not a number field: a pickup is bar 0 and some bars are numbered "12a".
+    i.type = "text";
+    i.inputMode = "numeric";
+    i.autocomplete = "off";
+    i.setAttribute("aria-label", label);
+    i.addEventListener("change", () => {
+      if (!prac.loop) return;
+      const all = Array.from({ length: measures }, (_, m) => labelOf(m));
+      const a = measureOfLabel(all, fromInput.value, prac.loop.from) ?? prac.loop.from;
+      const b = measureOfLabel(all, toInput.value, Math.max(a, prac.loop.to)) ?? prac.loop.to;
+      const from = Math.max(0, Math.min(measures - 1, a));
+      prac.loop = { from, to: Math.max(from, Math.min(measures - 1, b)) };
+      syncLoop();
+      emit();
+    });
+    return i;
+  };
+  const fromInput = barInput(t("loopFrom"));
+  const toInput = barInput(t("loopTo"));
+  bars.append(document.createTextNode(`${t("loopFrom")} `), fromInput, document.createTextNode(` ${t("loopTo")} `), toInput);
+  const speedUp = tick(t("practiceSpeedUp"), (on) => ((prac.speedUp = on), emit()));
+  const loopBox = document.createElement("div");
+  loopBox.className = "sv-loop";
+  loopBox.append(loopTick.label, bars, speedUp.label);
+  const syncLoop = () => {
+    loopTick.box.checked = !!prac.loop;
+    bars.hidden = speedUp.label.hidden = !prac.loop;
+    if (prac.loop) {
+      fromInput.value = labelOf(prac.loop.from);
+      toInput.value = labelOf(prac.loop.to);
+    }
+  };
   // Without an instrument: a button asking the host for one.
   const connectBtn = document.createElement("button");
   connectBtn.type = "button";
@@ -343,9 +407,11 @@ export function createBar(o: BarOptions): Bar {
   connectBtn.addEventListener("click", () => o.onConnectMidi?.());
   const hint = document.createElement("p");
   hint.className = "sv-hint";
-  pracPop.append(connectBtn, modeChoice.box, handChoice.box, accompany.label, echo.label, countInTick.label, metronome.label, hint);
-  const setPractice = (available: boolean, hands: boolean, state: PracticeState) => {
+  pracPop.append(connectBtn, modeChoice.box, handChoice.box, accompany.label, echo.label, countInTick.label, metronome.label, loopBox, hint);
+  const setPractice = (available: boolean, hands: boolean, state: PracticeState, count?: number, numbers?: string[]) => {
     prac = { ...PRACTICE_DEFAULTS, ...state };
+    if (count) measures = count;
+    if (numbers) labels = numbers;
     pracBtn.hidden = !o.onPractice || (!available && !o.onConnectMidi);
     if (pracBtn.hidden) pracPop.hidden = true;
     connectBtn.hidden = available;
@@ -361,7 +427,9 @@ export function createBar(o: BarOptions): Bar {
     accompany.label.hidden = !available || prac.mode === "off";
     countInTick.box.checked = prac.countIn;
     metronome.box.checked = prac.metronome;
-    pracBtn.classList.toggle("is-on", prac.mode !== "off");
+    speedUp.box.checked = prac.speedUp;
+    syncLoop();
+    pracBtn.classList.toggle("is-on", prac.mode !== "off" || !!prac.loop);
     pracBtn.setAttribute("aria-pressed", String(prac.mode !== "off"));
   };
   // The end of an in-time run: counts and accuracy, until closed or played again.
@@ -376,7 +444,7 @@ export function createBar(o: BarOptions): Bar {
     const head = document.createElement("div");
     head.className = "sv-sum-head";
     const title = document.createElement("strong");
-    title.textContent = t("summaryTitle");
+    title.textContent = t(s.pass ? "summaryPass" : "summaryTitle");
     const close = button(ICON_CLOSE, t("close"), () => (sumPop.hidden = true));
     close.classList.add("sv-sum-close");
     head.append(title, close);
@@ -390,6 +458,7 @@ export function createBar(o: BarOptions): Bar {
       ["accuracy", t("summaryAccuracy"), s.accuracy === null ? "-" : `${s.accuracy}%`],
     ];
     if (s.meanOffsetMs != null) rows.push(["offset", t("summaryOffset"), `${s.meanOffsetMs > 0 ? "+" : ""}${s.meanOffsetMs} ms`]);
+    if (s.nextSpeed != null) rows.push(["speed", t("summarySpeed"), `${Math.round(s.nextSpeed * 100)}%`]);
     for (const [k, label, value] of rows) {
       const dt = document.createElement("dt");
       dt.textContent = label;
@@ -526,6 +595,11 @@ export function createBar(o: BarOptions): Bar {
     setParts,
     setPractice,
     showSummary,
+    setSpeed(v: number) {
+      const pct = Math.round(v * 100);
+      speedRange.value = String(pct);
+      speedLabel(pct);
+    },
     setFretboard(available: boolean) {
       fretAvailable = available;
       fretBtn.hidden = mode === "keys" || !available;

@@ -29,7 +29,14 @@ export function noteColors(score: ScoreDoc): (e: NoteEvent) => string {
 
 // Falling notes: no score, the notes drop from the top onto a piano keyboard and sound as
 // they reach it, one colour per hand. Driven by the player's time.
-export function createKeysView(score: ScoreDoc, timeline: () => Timeline, opts: ViewOptions): View & { showTime(t: number): void; readonly keyboard: Keyboard } {
+export function createKeysView(
+  score: ScoreDoc,
+  timeline: () => Timeline,
+  opts: ViewOptions,
+): View & { showTime(t: number): void; readonly keyboard: Keyboard; setLoop(range: { start: number; end: number } | null): void } {
+  // The loop (piece seconds): a green line where it starts, a red one where it ends, and the
+  // notes past its end dimmed (they are not played: the loop starts again).
+  let loop: { start: number; end: number } | null = null;
   let zoom = opts.zoom;
   const root = document.createElement("div");
   root.className = "sv-falls";
@@ -133,7 +140,7 @@ export function createKeysView(score: ScoreDoc, timeline: () => Timeline, opts: 
       const y0 = Math.max(-4, top);
       const y1 = Math.min(h + 4, bottom);
       const r = Math.min(5, bw / 3);
-      g.globalAlpha = on ? 1 : 0.92;
+      g.globalAlpha = loop && e.time >= loop.end - 1e-6 ? 0.25 : on ? 1 : 0.92;
       // A body lit from the left, so a bar reads as a solid piece.
       g.fillStyle = bodyOf(g, black ? darken(c, 0.18) : c, bw);
       g.translate(x, 0);
@@ -160,6 +167,16 @@ export function createKeysView(score: ScoreDoc, timeline: () => Timeline, opts: 
     }
     for (const i of blacks) drawNote(tl.events[i], true);
     g.globalAlpha = 1;
+    if (loop) {
+      const line = (at: number, colour: string) => {
+        const y = h - (at - time) * pps;
+        if (y < -2 || y > h + 2) return;
+        g.fillStyle = colour;
+        g.fillRect(0, Math.round(y) - 1, w, 3);
+      };
+      line(loop.start, "#22c55e");
+      line(loop.end, "#ef4444");
+    }
     kb.draw();
   }
 
@@ -173,6 +190,10 @@ export function createKeysView(score: ScoreDoc, timeline: () => Timeline, opts: 
       return zoom;
     },
     keyboard: kb,
+    setLoop(r) {
+      loop = r ? { ...r } : null;
+      draw();
+    },
     showTime(t: number) {
       time = t;
       draw();

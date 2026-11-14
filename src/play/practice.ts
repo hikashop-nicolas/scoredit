@@ -340,10 +340,25 @@ export function heardWhen(t: number, clock: { audio: number; perf: number }, sta
   return clock.perf + (startAt + t / speed + latency - clock.audio) * 1000;
 }
 
-// Count-in and metronome. Rules:
+// Loop, count-in and metronome. Rules:
+// - A loop runs from the start of a measure to the end of another, both counted as written
+//   (indices, from 0); with repeats it takes their first passes, the end at or after the start.
 // - A click falls on each beat of a measure, the bar's first beat accented; a pickup's clicks
 //   are the last beats of a full bar, so they land where its notes are.
 // - The count-in is one full bar of the measure playback starts in, at its tempo there.
+// - Speed-up: after a clean pass (something played, no wrong key, nothing missed) the speed
+//   goes up by SPEED_STEP, never past the target (the speed as written, 1, by default).
+
+/** The piece times a loop over measures `from` to `to` covers, or null when they are not played. */
+export function loopRange(spans: MeasureSpan[], from: number, to: number): { start: number; end: number } | null {
+  const a = Math.min(from, to);
+  const b = Math.max(from, to);
+  const i = spans.findIndex((s) => s.measure === a);
+  if (i < 0) return null;
+  const j = spans.findIndex((s, k) => k >= i && s.measure === b);
+  if (j < 0) return null;
+  return { start: spans[i].start, end: spans[j].end };
+}
 
 /** One metronome click: its piece time and whether it starts a bar. */
 export interface Click {
@@ -373,4 +388,18 @@ export function countIn(spans: MeasureSpan[], t: number): { beats: number; beatS
   const q = Math.max(0, secToQuarter(s, t - s.start));
   const spq = s.tempo.filter(([from]) => from <= q + 1e-9).pop()?.[1] ?? s.tempo[0]?.[1] ?? 0.6;
   return { beats: Math.max(1, Math.round(bar / beat)), beatSec: beat * spq };
+}
+
+/** How much a clean pass speeds a loop up. */
+export const SPEED_STEP = 0.05;
+
+/** Whether a pass of a loop was clean: something played, no wrong key, nothing missed. */
+export function cleanPass(c: { played: number; wrong: number; missed: number }): boolean {
+  return c.played > 0 && c.wrong === 0 && c.missed === 0;
+}
+
+/** The speed after a pass: one step up after a clean one, up to `target`. */
+export function nextSpeed(speed: number, clean: boolean, target = 1): number {
+  if (!clean || speed >= target - 1e-9) return speed;
+  return Math.min(target, Math.round((speed + SPEED_STEP) * 100) / 100);
 }

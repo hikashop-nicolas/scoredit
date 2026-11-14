@@ -1,14 +1,15 @@
 import type { SystemRange } from "../layout/systems";
 import type { ScoreDoc } from "../model/score";
 import { PRACTICE_DEFAULTS, clampZoom, createBar, type LayoutMode, type PracticeState } from "../ui/bar";
-import { Player, getVolume, setVolume } from "../play/player";
+import { Player, getVolume, positionAt, setVolume } from "../play/player";
 import type { SoundDownloads } from "../play/sounds";
 import { buildTimeline, type Timeline } from "../play/timeline";
 import { Fretboard, fretTuning, position } from "../ui/fretboard";
 import { createEditing } from "../ui/editing";
 import { Keyboard, MISSED, PRESSED_NEAR, PRESSED_RIGHT, PRESSED_WRONG, flash } from "../ui/keyboard";
 import { parseNote, type MidiInput, type MidiMessage } from "../play/midi";
-import { TimeMatcher, WaitMatcher, handParts, practiceGroups, practisedBy, type ExpectedNote, type PracticeCounts } from "../play/practice";
+import { createSeekBar } from "../ui/seek-bar";
+import { TimeMatcher, WaitMatcher, cleanPass, handParts, loopRange, nextSpeed, practiceGroups, practisedBy, type ExpectedNote, type PracticeCounts } from "../play/practice";
 import { createKeysView, noteColors } from "./keys-view";
 import { createLineView, type LineView } from "./line-view";
 import { markKey, noteKey, writtenMidi, type NoteMark } from "./positions";
@@ -179,7 +180,55 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
     onEdit: opts.editable ? () => setEditing(true) : undefined,
     onPractice: (p) => setPractice(p),
     onConnectMidi: opts.connectMidi ? () => opts.connectMidi?.() : undefined,
+    currentMeasure: () => {
+      const spans = getTimeline().spans;
+      return spans[positionAt(spans, player?.time ?? 0).span]?.measure ?? 0;
+    },
   });
+
+  // The timeline over the bar: where playback is, a track to move it, the loop's handles.
+  const seek = createSeekBar({
+    measureLabel: (m) => score.measureLabel(m),
+    onSeek: (t) => {
+      followPaused = 0;
+      ensurePlayer().seek(t);
+    },
+    onLoop: (from, to) => setPractice({ loop: { from, to } }),
+  });
+  // Hidden while editing; filled once the timeline is built (soon after the score shows).
+  let seekOff = false;
+  // Building the timeline of a long score takes a while on a phone: it waits for the page to be
+  // idle (at most two seconds) unless it is built already.
+  let cancelSeek = () => {};
+  function refreshSeek(): void {
+    cancelSeek();
+    if (seekOff) {
+      seek.setTimeline([], 0);
+      return;
+    }
+    const fill = () => {
+      const tl = getTimeline();
+      seek.setTimeline(tl.spans, tl.duration);
+      seek.setTime(player?.time ?? 0);
+      showLoop();
+    };
+    if (timeline) {
+      const id = window.setTimeout(fill, 0);
+      cancelSeek = () => clearTimeout(id);
+    } else if (typeof window.requestIdleCallback === "function") {
+      const id = window.requestIdleCallback(fill, { timeout: 2000 });
+      cancelSeek = () => window.cancelIdleCallback(id);
+    } else {
+      const id = window.setTimeout(fill, 300);
+      cancelSeek = () => clearTimeout(id);
+    }
+  }
+  // The loop on the timeline and on the falling notes.
+  function showLoop(): void {
+    const r = practice.loop && timeline ? loopRange(timeline.spans, practice.loop.from, practice.loop.to) : null;
+    seek.setLoop(r);
+    falls?.setLoop(r);
+  }
 
   // Edit mode: the palette takes the bar's place; edits draw again what they changed.
   let editingOn = false;
@@ -198,6 +247,7 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
       bar.setPlaying(false);
       if (shownParts) shownScore = score.only(shownParts);
       if (mode === "page") (view as PageView).refresh(shownScore, c.from, c.appended ? score.measureCount : c.to);
+      refreshSeek();
       opts.onChange?.();
     },
     done: () => setEditing(false),
@@ -212,6 +262,8 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
       editing.start();
     } else editing.stop();
     bar.el.hidden = on;
+    seekOff = on;
+    refreshSeek();
     shell.focus({ preventScroll: true });
   }
   shell.addEventListener("keydown", (e) => {
@@ -245,7 +297,7 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
       const wrap = document.createElement("div");
       wrap.className = "sv-kbd";
       wrap.append(frets.canvas);
-      shell.insertBefore(wrap, bar.el);
+      shell.insertBefore(wrap, seek.el);
       requestAnimationFrame(() => frets?.draw());
     } else if (!on && frets) {
       frets.canvas.parentElement?.remove();
@@ -261,7 +313,7 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
       const wrap = document.createElement("div");
       wrap.className = "sv-kbd";
       wrap.append(kbd.canvas);
-      shell.insertBefore(wrap, bar.el);
+      shell.insertBefore(wrap, seek.el);
       const tl = getShownTimeline();
       let lo = 127;
       let hi = 0;
@@ -287,6 +339,7 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
       sounds: opts.sounds,
       onPosition: (p) => {
         const span = tl.spans[p.span];
+        seek.setTime(p.time);
         if (timeMatcher && player?.isPlaying) tick();
         if (falls) falls.showTime(p.time);
         else if (span) view.showPosition(span.measure, p.quarter, span.quarters, performance.now() > followPaused);
@@ -319,12 +372,17 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
         runState(on);
       },
       onSeek: (t) => {
+        passWrong = 0;
         if (timeMatcher) startRun(t);
+        if (passSummary) bar.showSummary(passSummary);
+        passSummary = null;
         if (!matcher || !player) return;
         matcher.seek(t);
-        player.setGate(matcher.current?.time ?? null);
+        passFrom = matcher.index;
+        player.setGate(gateOf(matcher));
         refreshMarks();
       },
+      onLoop: () => endPass(),
     });
     player.setSpeed(speed);
     applyPractice(player);
@@ -349,17 +407,21 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
   const handMap = () => (handsOf?.score === score ? handsOf.map : (handsOf = { score, map: handParts(score.parts.map((p) => p.name)) }).map);
   const target = () => ({ parts: shownParts, hand: practice.hand, hands: handMap() });
   const multiStaff = (p: number) => Number(score.measures[p]?.[0]?.getElementsByTagName("staves")[0]?.textContent) > 1 || score.attributesAt(p, Math.min(1, score.measureCount - 1)).some((a) => a.tagName === "staves" && Number(a.textContent) > 1);
+  // The bar numbers the score prints (a pickup is 0), for the loop's fields.
+  const measureLabels = () => Array.from({ length: score.measureCount }, (_, m) => score.measureLabel(m));
   function syncPracticeBar(): void {
     // A hand can be chosen for a piano part, or when both hand parts are shown.
     const shown = shownParts ?? score.parts.map((_, i) => i);
     const hm = handMap();
     const handKinds = new Set(shown.map((p) => hm.get(p)).filter(Boolean));
     const hands = handKinds.size === 2 || shown.some((p) => !hm.has(p) && multiStaff(p));
-    bar.setPractice(!!midiIn, hands, practice);
+    bar.setPractice(!!midiIn, hands, practice, score.measureCount, measureLabels());
   }
-  // The clicks and which notes the app plays: settings that change nothing of a run.
+  // The loop, the clicks and which notes the app plays: settings that change nothing of a run.
   function applyPlayback(p: Player): void {
     const tl = getTimeline();
+    p.setLoop(practice.loop ? loopRange(tl.spans, practice.loop.from, practice.loop.to) : null);
+    showLoop();
     // Wait mode waits for the player anyway: no count-in there.
     p.setClicks({ countIn: practice.countIn && !waitOn(), metronome: practice.metronome });
     // Outside practice the app plays every part, whatever "Play the other parts" says.
@@ -368,6 +430,36 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
       const mine = practisedBy(tl, target());
       p.setSkip(practice.accompany ? mine : () => true);
     }
+  }
+  // Wait mode holds before the group waited for, unless it lies past the loop's end: the
+  // loop then plays to its end and starts again.
+  function gateOf(m: WaitMatcher): number | null {
+    const t = m.current?.time ?? null;
+    const end = player?.loopRange?.end;
+    return t !== null && end !== undefined && t >= end - 1e-6 ? null : t;
+  }
+  // A pass of the loop: in-time counts, or in wait mode the groups played and the wrong keys.
+  let passWrong = 0;
+  let passFrom = 0;
+  let passSummary: (PracticeCounts & { pass: true; nextSpeed?: number }) | null = null;
+  function endPass(): number | void {
+    const p = player;
+    if (!p) return;
+    let clean = false;
+    if (timeOn() && timeMatcher) {
+      const end = p.loopRange?.end ?? Infinity;
+      for (const n of timeMatcher.advance(end, p.getSpeed())) setMark(n, "miss");
+      const c = timeMatcher.counts;
+      clean = cleanPass({ played: c.onTime + c.early + c.late, wrong: c.wrong, missed: c.missed });
+      passSummary = { ...c, pass: true };
+    } else if (waitOn() && matcher) clean = cleanPass({ played: matcher.index - passFrom, wrong: passWrong, missed: 0 });
+    if (!practice.speedUp || !practising()) return;
+    const next = nextSpeed(p.getSpeed(), clean);
+    if (passSummary) passSummary.nextSpeed = next;
+    if (next === p.getSpeed()) return;
+    speed = next;
+    bar.setSpeed(next);
+    return next;
   }
   function applyPractice(p: Player): void {
     applyPlayback(p);
@@ -385,7 +477,8 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
       clearMarks();
       matcher ??= new WaitMatcher(practiceGroups(tl, target()));
       matcher.seek(p.time);
-      p.setGate(matcher.current?.time ?? null);
+      passFrom = matcher.index;
+      p.setGate(gateOf(matcher));
     } else {
       matcher = null;
       p.setGate(null);
@@ -482,13 +575,18 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
   function setPractice(p: Partial<PracticeState>): void {
     const was = practice;
     practice = { ...practice, ...p };
-    // Hearing the keys and the latency offset change nothing of a run under way; the clicks
-    // and the accompaniment apply at once.
+    // Hearing the keys and the latency offset change nothing of a run under way; the loop,
+    // the clicks and the accompaniment apply at once.
     if (practice.mode !== was.mode || practice.hand !== was.hand) resetPractice();
     else {
-      if (player && (practice.countIn !== was.countIn || practice.metronome !== was.metronome || practice.accompany !== was.accompany)) applyPlayback(player);
+      const loopChanged = JSON.stringify(practice.loop) !== JSON.stringify(was.loop);
+      if (player && (loopChanged || practice.countIn !== was.countIn || practice.metronome !== was.metronome || practice.accompany !== was.accompany)) {
+        applyPlayback(player);
+        if (matcher) player.setGate(gateOf(matcher));
+      } else if (!player && loopChanged && practice.loop) applyPractice(ensurePlayer());
       syncPracticeBar();
     }
+    showLoop();
     opts.practice?.onChange?.({ ...practice });
   }
   function setMidiInput(input: MidiInput | null): void {
@@ -542,8 +640,9 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
     else pressed.delete(n.pitch);
     // Keys count only while playing: a paused score does not move on.
     const m = player?.isPlaying ? w : null;
+    if (m && n.on && !m.expects(n.pitch)) passWrong++;
     if (practice.echo) echo(n.pitch, n.on ? n.velocity : 0);
-    if (m && n.on && m.noteOn(n.pitch)) player!.setGate(m.current?.time ?? null);
+    if (m && n.on && m.noteOn(n.pitch)) player!.setGate(gateOf(m));
     else if (m && !n.on) m.noteOff(n.pitch);
     refreshMarks();
   }
@@ -592,6 +691,7 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
     falls = null;
     if (mode === "keys") {
       falls = createKeysView(score, getShownTimeline, { ...common, zoom: 1 });
+      falls.setLoop(practice.loop ? loopRange(getTimeline().spans, practice.loop.from, practice.loop.to) : null);
       falls.showTime(player?.time ?? 0);
       view = falls;
     } else view = mode === "page" ? createPageView(shownScore, { ...common, zoom: pageZoom, onSystemRendered: opts.onSystemRendered }) : createLineView(shownScore, { ...common, zoom: pageZoom });
@@ -623,6 +723,7 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
     bar.setParts(score.parts.map((p) => p.name), shownParts);
     remount();
     syncPracticeBar();
+    refreshSeek();
   }
 
   // Shows other parts: playback goes on, the views and strips are built again.
@@ -705,7 +806,8 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
     el.addEventListener("touchcancel", end, { passive: true });
   }
 
-  shell.append(editing.el, bar.el);
+  shell.append(editing.el, seek.el, bar.el);
+  refreshSeek();
   mount();
   setMidiInput(opts.midi ?? null);
 

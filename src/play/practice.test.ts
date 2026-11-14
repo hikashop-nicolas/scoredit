@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { ScoreDoc } from "../model/score";
 import { noteColors } from "../render/keys-view";
-import { TimeMatcher, WaitMatcher, beatClicks, countIn, handParts, heardAt, heardWhen, practiceGroups, practisedBy, timeWindow, type PracticeGroup } from "./practice";
+import { TimeMatcher, WaitMatcher, beatClicks, cleanPass, countIn, handParts, heardAt, heardWhen, loopRange, nextSpeed, practiceGroups, practisedBy, timeWindow, type PracticeGroup } from "./practice";
 import { buildTimeline } from "./timeline";
 
 const n = (step: string, dur: number, extra = "", octave = 4, staff = 0) =>
@@ -306,5 +306,29 @@ describe("clicks", () => {
     expect(six.beats).toBe(2);
     expect(six.beatSec).toBeCloseTo(0.9);
     expect(countIn([], 0)).toEqual({ beats: 0, beatSec: 0 });
+  });
+});
+
+describe("loop and speed-up", () => {
+  it("loops from the start of one measure to the end of another", () => {
+    const spans = buildTimeline(bars(4, 4, 4)).spans;
+    const r = loopRange(spans, 1, 2)!;
+    expect([r.start, r.end].map((x) => +x.toFixed(3))).toEqual([2.4, 7.2]);
+    expect(loopRange(spans, 2, 1)).toEqual(r);
+    expect(loopRange(spans, 3, 3)!.end).toBeCloseTo(9.6);
+    expect(loopRange(spans, 7, 8)).toBeNull();
+  });
+
+  it("speeds up one step after a clean pass, never past the target", () => {
+    expect(cleanPass({ played: 5, wrong: 0, missed: 0 })).toBe(true);
+    expect(cleanPass({ played: 5, wrong: 1, missed: 0 })).toBe(false);
+    expect(cleanPass({ played: 5, wrong: 0, missed: 1 })).toBe(false);
+    expect(cleanPass({ played: 0, wrong: 0, missed: 0 })).toBe(false);
+    expect(nextSpeed(0.5, true)).toBe(0.55);
+    expect(nextSpeed(0.5, false)).toBe(0.5);
+    expect(nextSpeed(0.98, true)).toBe(1);
+    expect(nextSpeed(1, true)).toBe(1);
+    expect(nextSpeed(1.2, true)).toBe(1.2);
+    expect(nextSpeed(0.6, true, 0.8)).toBe(0.65);
   });
 });
