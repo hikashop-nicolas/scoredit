@@ -24,8 +24,12 @@ export interface Staff {
   space: number;
   x0: number;
   x1: number;
-  /** 5 for a staff of notes, 6 (or 4) for a tablature. */
+  /** 5 for a staff of notes; a tablature has one per string (4 to 8). */
   lines: number;
+  /** A tablature (set by the notation reader). */
+  tab?: boolean;
+  /** Tuning stated on the page, MIDI pitches from the top line (set by the notation reader). */
+  tuning?: number[];
 }
 
 export interface Beam {
@@ -68,7 +72,7 @@ export function mergeVerticals(lines: VLine[], gap = 1): VLine[] {
 }
 
 /**
- * Staves: runs of five (or six) evenly spaced horizontal lines of one width spanning the same
+ * Staves: runs of four to eight (five for notes) evenly spaced horizontal lines of one width spanning the same
  * x range, then the pieces of one staff (drawn measure by measure) joined left to right.
  */
 export function findStaves(hl: HLine[]): Staff[] {
@@ -92,7 +96,7 @@ export function findStaves(hl: HLine[]): Staff[] {
       const n = j - i + 1;
       const x0 = Math.min(...g.map((l) => l.x0));
       const x1 = Math.max(...g.map((l) => l.x1));
-      if (sp >= 1.5 && sp <= 25 && (n === 5 || n === 6 || n === 4) && x1 - x0 > Math.min(3 * sp, 40)) {
+      if (sp >= 1.5 && sp <= 25 && n >= 4 && n <= 8 && x1 - x0 > Math.min(3 * sp, 40)) {
         pieces.push({ top: ys[i], bottom: ys[j], space: sp, x0, x1, lines: n });
         i = j + 1;
       } else i++;

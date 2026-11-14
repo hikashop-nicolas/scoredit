@@ -148,10 +148,11 @@ export function readPage(page: NormPage): PageResult {
   const vRaw = verticals(page.segments);
   const vl = mergeVerticals(vRaw);
   const allStaves = findStaves(hl);
-  const staves = allStaves.filter((s) => s.lines === 5 || s.lines === 6);
-  if (!staves.some((s) => s.lines === 5 || s.lines === 6)) return { systems: [], header: page.texts };
+  for (const s of allStaves) s.tab = isTab(s, page);
+  const staves = allStaves.filter((s) => s.lines === 5 || s.tab);
+  if (!staves.length) return { systems: [], header: page.texts };
   const sysIdx = findSystems(staves, vl, page.symbols);
-  const sp = median(staves.filter((s) => s.lines === 5).map((s) => s.space)) || median(staves.map((s) => s.space));
+  const sp = median(staves.filter((s) => !s.tab).map((s) => s.space)) || median(staves.map((s) => s.space));
   const beams = findBeams(page.shapes, page.segments, sp);
 
   // Which system and staff a point belongs to.
@@ -163,7 +164,7 @@ export function readPage(page: NormPage): PageResult {
     sysIdx.forEach((idx, si) =>
       idx.forEach((i, k) => {
         const s = staves[i];
-        if (x < s.x0 - 6 * s.space || x > s.x1 + s.space || (s.lines !== 5 && !tabOk)) return;
+        if (x < s.x0 - 6 * s.space || x > s.x1 + s.space || (s.tab && !tabOk)) return;
         const d = staffDist(s, y);
         if (d < bd) {
           bd = d;
@@ -204,7 +205,7 @@ export function readPage(page: NormPage): PageResult {
       const w = p.w || sp;
       const ledgerTo = (k: number) => {
         const st = sys.staves[k];
-        if (!st || st.lines !== 5) return false;
+        if (!st || st.tab) return false;
         const y = p.y < st.top ? st.top - st.space : st.bottom + st.space;
         return hl.some((l) => Math.abs(l.y - y) < st.space * 0.15 && l.x1 - l.x0 < st.space * 4 && l.x0 < p.x + w && l.x1 > p.x);
       };
@@ -606,6 +607,7 @@ export function readPage(page: NormPage): PageResult {
   }
   lyricsOf(page, systems, sp);
   tuplets(page, systems);
+  tunings(page, systems, sp);
   for (const sys of systems)
     for (const m of sys.measures)
       for (const e of m.events.flat()) if (e.link) Object.assign(e, { base: e.link.base, dots: e.link.dots, tuplet: e.link.tuplet, voice: e.link.voice });
@@ -617,6 +619,92 @@ export function readPage(page: NormPage): PageResult {
 }
 
 type Placed = MusicSymbol & { sys: number; staff: number };
+
+const TAB_CLEFS = new Set([0xe06d, 0xe06e]);
+
+// Standard tunings by number of strings, MIDI pitches from the top line (highest string) down.
+const STANDARD: Record<number, number[]> = {
+  4: [43, 38, 33, 28],
+  5: [43, 38, 33, 28, 23],
+  6: [64, 59, 55, 50, 45, 40],
+  7: [64, 59, 55, 50, 45, 40, 35],
+  8: [64, 59, 55, 50, 45, 40, 35, 30],
+};
+export const standardTuning = (lines: number) => STANDARD[lines] ?? STANDARD[6];
+
+const NOTE_PC: Record<string, number> = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+const CIRCLED = "①②③④⑤⑥⑦⑧⑨";
+/** "D", "F#", "Bb", "E♭": pitch class, or -1. */
+function pitchClass(s: string): number {
+  const m = /^([A-G])(#|♯|b|♭)?$/.exec(s);
+  if (!m) return -1;
+  return (NOTE_PC[m[1]] + (m[2] === "#" || m[2] === "♯" ? 1 : m[2] ? -1 : 0) + 12) % 12;
+}
+/** The pitch of that class nearest the string's standard pitch. */
+const nearest = (pc: number, std: number) => std + ((((pc - std) % 12) + 18) % 12) - 6;
+
+/**
+ * Tunings of the tablatures: note names left of the staff lines, else a text such as "Tuning: D A D G B E",
+ * "Drop D" or "6 = D" above the music. Sets Staff.tuning.
+ */
+function tunings(page: NormPage, systems: PSystem[], sp: number): void {
+  const tabs = systems.flatMap((sys) => sys.staves.filter((st) => st.tab));
+  if (!tabs.length) return;
+  // Texts above the first system or just above a tablature.
+  const above = page.texts.filter((t) => t.y < systems[0].top || tabs.some((st) => t.y < st.top && t.y > st.top - 10 * sp && t.x < st.x1));
+  const all = above.map((t) => t.str).join("  ");
+  const seq = /tuning\s*[:=]?\s*((?:[A-G](?:#|♯|b|♭)?[\s,-]*){4,8})/i.exec(all)?.[1].match(/[A-G](?:#|♯|b|♭)?/g) ?? [];
+  const byString = new Map<number, number>();
+  for (const m of all.matchAll(/(?:^|[\s(,])([1-9①-⑨])\)?\s*=\s*([A-G](?:#|♯|b|♭)?)(?![a-z])/g)) {
+    const n = CIRCLED.includes(m[1]) ? CIRCLED.indexOf(m[1]) + 1 : Number(m[1]);
+    byString.set(n, pitchClass(m[2]));
+  }
+  const drop = /\bdrop\s+([A-G](?:#|♯|b|♭)?)(?![a-z])/i.exec(all);
+  for (const st of tabs) {
+    const std = standardTuning(st.lines);
+    // Note names at the left end of the lines, one per string.
+    const left = new Map<number, number>();
+    for (const t of page.texts) {
+      const pc = pitchClass(t.str);
+      const cy = t.y - t.size * 0.35;
+      const line = Math.round((cy - st.top) / st.space);
+      if (pc < 0 || t.x > st.x0 + 2 * st.space || t.x < st.x0 - 4 * st.space || line < 0 || line >= st.lines || Math.abs(cy - (st.top + line * st.space)) > st.space * 0.4) continue;
+      left.set(line, pc);
+    }
+    let pcs: number[] | null = null;
+    if (left.size === st.lines) pcs = std.map((_, i) => left.get(i)!);
+    else if (seq.length === st.lines) pcs = seq.map(pitchClass).reverse();
+    else if (byString.size || drop) {
+      pcs = std.map((p, i) => byString.get(i + 1) ?? p % 12);
+      if (drop && !byString.size) pcs[st.lines - 1] = pitchClass(drop[1]);
+    }
+    if (pcs && pcs.every((pc) => pc >= 0)) st.tuning = pcs.map((pc, i) => nearest(pc, std[i]));
+  }
+}
+
+/** Fret numbers (text digits) centred on the lines of a staff. */
+function fretTexts(st: Staff, texts: TextRun[]): { x: number; string: number; fret: number; font: string }[] {
+  const out: { x: number; string: number; fret: number; font: string }[] = [];
+  for (const t of texts)
+    for (const w of t.words) {
+      const m = /^\(?(\d{1,2})\)?$/.exec(w.str);
+      const cy = t.y - t.size * 0.35;
+      if (!m || cy < st.top - st.space * 0.5 || cy > st.bottom + st.space * 0.5 || w.x < st.x0 || w.x > st.x1) continue;
+      const line = Math.round((cy - st.top) / st.space);
+      if (Math.abs(cy - (st.top + line * st.space)) > st.space * 0.3) continue;
+      out.push({ x: (w.x + w.x1) / 2, string: line + 1, fret: Number(m[1]), font: `${t.font} ${Math.round(t.size * 10)}` });
+    }
+  return out;
+}
+
+/** A tablature: a TAB clef, six lines, or fret numbers on the lines of a staff with no clef or notes. */
+function isTab(st: Staff, page: NormPage): boolean {
+  const at = (q: MusicSymbol) => q.y > st.top - st.space && q.y < st.bottom + st.space;
+  if (page.symbols.some((q) => TAB_CLEFS.has(q.cp) && at(q) && q.x > st.x0 - 2 * st.space && q.x < st.x0 + 6 * st.space)) return true;
+  if (st.lines === 6) return true;
+  if (st.lines === 5 && page.symbols.some((q) => at(q) && q.x > st.x0 - 2 * st.space && q.x < st.x1 && (CLEFS[q.cp] || headKind(q.cp)))) return false;
+  return fretTexts(st, page.texts).length >= 3;
+}
 
 /**
  * Beamed groups drawn across two braced staves: the whole group goes to one staff's voice, the
@@ -703,7 +791,7 @@ function multiRests(page: NormPage, sys: PSystem, raw: PMeasure[], syms: Placed[
     sys.staves.forEach((st, k) => {
       const evs = m.events[k];
       if (evs.some((e) => !e.rest)) return void (all = false);
-      if (st.lines !== 5) return;
+      if (st.tab) return;
       const mid = (st.top + st.bottom) / 2;
       const bar = bars.find((b) => Math.abs(b.y - mid) < sp * 0.3 && b.x0 > m.x0 - sp * 0.5 && b.x1 < m.x1 + sp * 0.5);
       // Church rests (longa and breve rests) stand for several measures too.
@@ -750,17 +838,8 @@ function tablature(page: NormPage, systems: PSystem[], n: number, vRaw: VLine[],
   for (let si = 0; si < n; si++) {
     const sys = systems[si];
     sys.staves.forEach((st, k) => {
-      if (st.lines === 5) return;
-      let frets: { x: number; string: number; fret: number; font: string }[] = [];
-      for (const t of page.texts)
-        for (const w of t.words) {
-          const m = /^\(?(\d{1,2})\)?$/.exec(w.str);
-          const cy = t.y - t.size * 0.35;
-          if (!m || cy < st.top - st.space * 0.5 || cy > st.bottom + st.space * 0.5 || w.x < st.x0 || w.x > st.x1) continue;
-          const line = Math.round((cy - st.top) / st.space);
-          if (Math.abs(cy - (st.top + line * st.space)) > st.space * 0.3) continue;
-          frets.push({ x: (w.x + w.x1) / 2, string: line + 1, fret: Number(m[1]), font: `${t.font} ${Math.round(t.size * 10)}` });
-        }
+      if (!st.tab) return;
+      let frets = fretTexts(st, page.texts);
       // Fret numbers share one font; fingerings and string numbers use others.
       const count = new Map<string, number>();
       for (const f of frets) count.set(f.font, (count.get(f.font) ?? 0) + 1);
@@ -770,7 +849,7 @@ function tablature(page: NormPage, systems: PSystem[], n: number, vRaw: VLine[],
       const stems = vRaw.filter((v) => v.y0 > st.bottom - st.space * 0.2 && v.y0 < st.bottom + st.space * 3 && v.x > st.x0 && v.x < st.x1);
       const lens = stems.map((v) => v.y1 - v.y0);
       const full = Math.max(0, ...lens);
-      const above = k > 0 && sys.staves[k - 1].lines === 5 ? events.filter((e) => e.sys === si && e.staff === k - 1 && !e.rest && !e.grace) : [];
+      const above = k > 0 && !sys.staves[k - 1].tab ? events.filter((e) => e.sys === si && e.staff === k - 1 && !e.rest && !e.grace) : [];
       for (let i = 0; i < frets.length; ) {
         let j = i + 1;
         while (j < frets.length && frets[j].x - frets[i].x < st.space * 0.6) j++;

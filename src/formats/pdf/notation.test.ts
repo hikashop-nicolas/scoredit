@@ -119,6 +119,34 @@ describe("notation", () => {
     expect(m.events[1].map((e) => e.base)).toEqual([4]);
   });
 
+  describe("tablature tunings", () => {
+    // A tablature of n lines (top at 100, space 6), a TAB clef, fret numbers and extra texts.
+    const tabPage = (n: number, texts: [string, number, number][]) => {
+      const lines = Array.from({ length: n }, (_, i) => ({ x0: 40, y0: 100 + 6 * i, x1: 400, y1: 100 + 6 * i, width: 0.5 }));
+      const bars = [220, 400].map((x) => ({ x0: x, y0: 100, x1: x, y1: 100 + 6 * (n - 1), width: 0.9 }));
+      const run = (str: string, x: number, y: number, size = 9) => ({ str, x, y, size, font: "Sans", bold: false, italic: false, words: [{ str, x, x1: x + 5 * str.length }] });
+      const frets = [0, 2, 3].map((f, i) => run(String(f), 80 + 40 * i, 100 + 6 * (n - 1) + 9 * 0.35));
+      return { width: 595, height: 842, symbols: [{ cp: 0xe06d, x: 45, y: 100 + 3 * (n - 1), size: 24, w: 9 }], texts: [...frets, ...texts.map(([s, x, y]) => run(s, x, y))], segments: [...lines, ...bars], shapes: [], images: 0, unknownFonts: [], unmapped: {} } as NormPage;
+    };
+    const tuningOf = (p: NormPage) => readPage(p).systems[0].staves[0].tuning;
+
+    it("reads note names at the left of the lines", () => {
+      const names = ["E", "B", "G", "D", "A", "D"].map((s, i): [string, number, number] => [s, 30, 100 + 6 * i + 3.15]);
+      expect(tuningOf(tabPage(6, names))).toEqual([64, 59, 55, 50, 45, 38]);
+    });
+
+    it("reads a tuning text above the first system", () => {
+      expect(tuningOf(tabPage(6, [["Tuning: D A D G A D", 60, 60]]))).toEqual([62, 57, 55, 50, 45, 38]);
+      expect(tuningOf(tabPage(6, [["6 = D 5 = G", 60, 60]]))).toEqual([64, 59, 55, 50, 43, 38]);
+    });
+
+    it("reads bass and seven-string tablatures", () => {
+      expect(readPage(tabPage(5, [])).systems[0].staves[0].tab).toBe(true);
+      expect(tuningOf(tabPage(4, [["4 = D", 60, 60]]))).toEqual([43, 38, 33, 26]);
+      expect(tuningOf(tabPage(7, [["7 = A", 60, 60]]))).toEqual([64, 59, 55, 50, 45, 40, 33]);
+    });
+  });
+
   it("detects PDFs by their magic", () => {
     expect(detectFormat(new TextEncoder().encode("%PDF-1.7\n%âã"))).toBe("pdf");
   });

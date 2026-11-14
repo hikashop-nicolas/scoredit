@@ -24,6 +24,8 @@ interface Expect {
   measure1?: string[];
   /** Metronome marks read. */
   metronomes?: number;
+  /** Tuning of the first tablature, lowest string first. */
+  tuning?: string[];
 }
 
 const SAMPLES: Expect[] = [
@@ -51,7 +53,7 @@ const SAMPLES: Expect[] = [
   // LilyPond 2.24 examples in its own manual (Commons: LilyPond 2.24.4 Changes).
   { file: "cm-LilyPond_2_24_4_Changes.pdf", coverage: 1, counts: { 0xe939: 3 }, chords: ["Bb", "Eb7", "A7/C#", "Bbm7", "Cm7", "Em7"] },
   // LilyPond guitar sheets with chord names in plain text (Commons: major-thirds tuning charts).
-  { file: "cm-Sevenths_chords_on_C_M3_tuning.pdf", coverage: 1, counts: {}, harmonies: 5 },
+  { file: "cm-Sevenths_chords_on_C_M3_tuning.pdf", coverage: 1, counts: {}, harmonies: 5, tuning: ["G#2", "C3", "E3", "G#3", "C4", "E4"] },
   { file: "cm-Major_thirds_tuning_guitar_chords_1.pdf", coverage: 1, counts: {}, harmonies: 7 },
   // Guitar Pro (Qt PDF): music drawn as shapes, no music font; chord names in Arial.
   { file: "cm-New_Standard_Tuning_-_C_major_scale_harmonized_in_sevenths_and_triads__arpeggios.pdf", coverage: 1, counts: {}, harmonies: 46 },
@@ -79,10 +81,14 @@ describe("sample PDFs", () => {
       if (mapped + missed) expect(mapped / (mapped + missed)).toBeGreaterThanOrEqual(s.coverage);
       for (const [cp, count] of Object.entries(s.counts)) expect(hist.get(Number(cp)) ?? 0, `U+${Number(cp).toString(16)}`).toBe(count);
       for (const c of s.chords ?? []) expect([...chords]).toContain(c);
-      if (s.harmonies === undefined && !s.measure1 && s.metronomes === undefined) return;
+      if (s.harmonies === undefined && !s.measure1 && s.metronomes === undefined && !s.tuning) return;
       const xml = await readPdfScore(new Uint8Array(readFileSync(path)));
       if (s.harmonies !== undefined) expect(xml.getElementsByTagName("harmony").length).toBe(s.harmonies);
       if (s.metronomes !== undefined) expect(xml.getElementsByTagName("metronome").length).toBe(s.metronomes);
+      if (s.tuning) {
+        const tun = [...xml.getElementsByTagName("staff-tuning")].map((t) => `${t.getElementsByTagName("tuning-step")[0].textContent}${t.getElementsByTagName("tuning-alter")[0] ? "#" : ""}${t.getElementsByTagName("tuning-octave")[0].textContent}`);
+        expect(tun.slice(0, s.tuning.length)).toEqual(s.tuning);
+      }
       if (s.measure1) {
         const m = xml.getElementsByTagName("measure")[0];
         const ps = [...m.getElementsByTagName("pitch")].map((p) => `${p.getElementsByTagName("step")[0].textContent}${p.getElementsByTagName("octave")[0].textContent}`);

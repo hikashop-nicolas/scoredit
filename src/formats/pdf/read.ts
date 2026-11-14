@@ -5,7 +5,7 @@ import { parseXml } from "../../model/xml";
 import { readEmbeddedScore } from "./embed";
 import { extractPdf } from "./extract";
 import { normalizePage, type TextRun } from "./normalize";
-import { length, readPage, type Clef, type PAttr, type PEvent, type PMeasure, type PSystem } from "./notation";
+import { length, readPage, standardTuning, type Clef, type PAttr, type PEvent, type PMeasure, type PSystem } from "./notation";
 
 const DIV = 10080;
 const STEPS = ["C", "D", "E", "F", "G", "A", "B"];
@@ -56,7 +56,9 @@ interface Part {
 /** Title, subtitle, composer and lyricist from the text above the first system. */
 function credits(header: TextRun[], width: number) {
   const lines: { str: string; x: number; x1: number; y: number; size: number }[] = [];
-  for (const t of [...header].sort((a, b) => a.y - b.y || a.x - b.x)) {
+  // A tablature's tuning is not a credit.
+  const tuning = /^tuning\b|^drop\s+[A-G]|^\(?[1-9①-⑨]\)?\s*=\s*[A-G]/i;
+  for (const t of [...header].filter((h) => !tuning.test(h.str)).sort((a, b) => a.y - b.y || a.x - b.x)) {
     const x1 = t.words.length ? t.words[t.words.length - 1].x1 : t.x + t.size * 0.5 * t.str.length;
     const l = lines.find((q) => Math.abs(q.y - t.y) < 1 && Math.abs(q.size - t.size) < 1 && t.x > q.x1 - 1 && t.x - q.x1 < t.size * 2);
     if (l) {
@@ -148,7 +150,10 @@ function writeScore(systems: PSystem[], header: TextRun[], width: number, docTit
   parts.forEach((part, pi) => {
     out.push(`<part id="P${pi + 1}">`);
     const lines = Array.from({ length: part.staves }, (_, k) => full.staves[part.first + k].lines);
-    const clefs: Clef[] = lines.map((n) => (n === 5 ? TREBLE : TAB));
+    const tabs = Array.from({ length: part.staves }, (_, k) => full.staves[part.first + k].tab ?? lines[k] !== 5);
+    // A tuning the PDF states (on any system), else the standard one.
+    const tunings = lines.map((n, k) => systems.map((sys, i) => sys.staves[maps[i][part.first + k]]?.tuning).find((t) => t?.length === n) ?? standardTuning(n));
+    const clefs: Clef[] = tabs.map((t) => (t ? TAB : TREBLE));
     // Alterations carried by ties, per staff and diatonic step.
     const tied = lines.map(() => new Map<number, number>());
     let fifths: number | null = null;
@@ -174,7 +179,7 @@ function writeScore(systems: PSystem[], header: TextRun[], width: number, docTit
       if (mi === 0 && part.staves > 1) attrs.push(`<staves>${part.staves}</staves>`);
       lead.forEach((as, k) => {
         const c = as.filter((a) => a.clef).pop()?.clef;
-        if (lines[k] !== 5) {
+        if (tabs[k]) {
           if (mi === 0) attrs.push(clefXml(TAB, part.staves > 1 ? k + 1 : 0));
           return;
         }
@@ -184,8 +189,8 @@ function writeScore(systems: PSystem[], header: TextRun[], width: number, docTit
         }
       });
       if (mi === 0)
-        lines.forEach((n, k) => {
-          if (n !== 5) attrs.push(staffDetails(n, part.staves > 1 ? k + 1 : 0));
+        tabs.forEach((tab, k) => {
+          if (tab) attrs.push(staffDetails(tunings[k], part.staves > 1 ? k + 1 : 0));
         });
       if (m.multiRest && m.multiRest > 1) attrs.push(`<measure-style><multiple-rest>${m.multiRest}</multiple-rest></measure-style>`);
       if (attrs.length) out.push(`<attributes>${attrs.join("")}</attributes>`);
@@ -197,7 +202,7 @@ function writeScore(systems: PSystem[], header: TextRun[], width: number, docTit
         if (k < 0) return;
         for (const e of m.events[k]) {
           e.notes = [];
-          if (e.tab) e.notes = e.tab.map((t) => ({ ...spell(tuning(lines[sk])[t.string - 1] + t.fret, fifths ?? 0), pos: 0, tab: t }));
+          if (e.tab) e.notes = e.tab.map((t) => ({ ...spell(tunings[sk][t.string - 1] + t.fret, fifths ?? 0), pos: 0, tab: t }));
           else
             e.heads.forEach((h, i) => {
               const d = ks.indexOf(h.staff);
@@ -280,9 +285,6 @@ function writeScore(systems: PSystem[], header: TextRun[], width: number, docTit
 }
 
 const TAB: Clef = { sign: "TAB", line: 5, octave: 0, top: 0 };
-const TUNING: Record<number, number[]> = { 6: [64, 59, 55, 50, 45, 40], 4: [43, 38, 33, 28], 5: [43, 38, 33, 28, 23], 7: [64, 59, 55, 50, 45, 40, 35] };
-// Standard tunings, top line first: a PDF does not say which tuning a tablature uses.
-const tuning = (lines: number) => TUNING[lines] ?? TUNING[6];
 
 function spell(midi: number, fifths: number): { step: string; octave: number; alter: number } {
   const pc = ((midi % 12) + 12) % 12;
@@ -293,8 +295,9 @@ function spell(midi: number, fifths: number): { step: string; octave: number; al
   return { step: STEPS[[0, 2, 4, 5, 7, 9, 11].indexOf(pc + 1)], octave, alter: -1 };
 }
 
-function staffDetails(lines: number, staff: number): string {
-  const tun = [...tuning(lines)].reverse();
+function staffDetails(tuning: number[], staff: number): string {
+  const lines = tuning.length;
+  const tun = [...tuning].reverse();
   const tunes = tun.map((m, i) => {
     const p = spell(m, 0);
     return `<staff-tuning line="${i + 1}"><tuning-step>${p.step}</tuning-step>${p.alter ? `<tuning-alter>${p.alter}</tuning-alter>` : ""}<tuning-octave>${p.octave}</tuning-octave></staff-tuning>`;
