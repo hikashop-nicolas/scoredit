@@ -32,7 +32,7 @@ const SAMPLES: Expect[] = [
   // Sibelius 7.1, choir with tuplet ratios and x heads (Commons: Orestes chorus).
   { file: "cm-Orestes_Chorus_Score.pdf", coverage: 1, counts: { 0xe0a4: 636, 0xe88a: 20, 0xe0a9: 11, 0xe4cf: 7 } },
   // Finale 2002 (Maestro) with chord symbols in Helvetica (Commons: Internationale piano arrangement).
-  { file: "cm-Internationale_piano_arrangement_2001.pdf", coverage: 1, counts: { 0xe0a4: 768, 0xe250: 8 }, chords: ["F#m", "C#7", "Bm7", "F#7", "Cm7b5", "Bb7"], harmonies: 62 },
+  { file: "cm-Internationale_piano_arrangement_2001.pdf", coverage: 1, counts: { 0xe0a4: 768, 0xe250: 8 }, chords: ["F#m", "C#7", "Bm7", "F#7", "Cm7b5", "Bb7"], harmonies: 100 },
   // Finale 2007 (Maestro) and Finale on macOS (Commons: Anna Bon flute sonatas; Hino patriotico).
   { file: "cm-6_Flute_Sonatas_Op_1_IA_imslp_flute_sona.pdf", coverage: 1, counts: { 0xe0a4: 10818, 0xe566: 110, 0xe56c: 22 } },
   { file: "cm-Hino_patri_tico_da_Na_o_Portuguesa_Marco.pdf", coverage: 1, counts: { 0xe0a4: 2609, 0xe52f: 42, 0xe4ac: 25 } },
@@ -46,6 +46,10 @@ const SAMPLES: Expect[] = [
   { file: "cm-Flohwalzer.pdf", coverage: 1, counts: { 0xe0a4: 197, 0xe260: 36, 0xe000: 3 } },
   // LilyPond 2.24 examples in its own manual (Commons: LilyPond 2.24.4 Changes).
   { file: "cm-LilyPond_2_24_4_Changes.pdf", coverage: 1, counts: { 0xe939: 3 }, chords: ["Bb", "Eb7", "A7/C#", "Bbm7", "Cm7", "Em7"] },
+  // LilyPond guitar sheets with chord names in plain text (the last draws its music as outlines) (Commons: Kiefer Wolfowitz's tuning charts).
+  { file: "cm-Sevenths_chords_on_C_M3_tuning.pdf", coverage: 1, counts: {}, harmonies: 5 },
+  { file: "cm-Major_thirds_tuning_guitar_chords_1.pdf", coverage: 1, counts: {}, harmonies: 7 },
+  { file: "cm-New_Standard_Tuning_-_C_major_scale_harmonized_in_sevenths_and_triads__arpeggios.pdf", coverage: 1, counts: {}, harmonies: 46 },
   // LilyPond 1.x feta fonts through dvips (Commons: BWV 269).
   { file: "cm-Johann_Sebastian_Bach_BWV_269_Aus_meines.pdf", coverage: 1, counts: { 0xe0a4: 184, 0xe0a3: 45 } },
 ];
@@ -67,7 +71,7 @@ describe("sample PDFs", () => {
         missed += Object.values(n.unmapped).reduce((a, b) => a + b, 0);
         for (const f of n.unknownFonts) missed += p.glyphs.filter((g) => g.font === f).length;
       }
-      expect(mapped / (mapped + missed)).toBeGreaterThanOrEqual(s.coverage);
+      if (mapped + missed) expect(mapped / (mapped + missed)).toBeGreaterThanOrEqual(s.coverage);
       for (const [cp, count] of Object.entries(s.counts)) expect(hist.get(Number(cp)) ?? 0, `U+${Number(cp).toString(16)}`).toBe(count);
       for (const c of s.chords ?? []) expect([...chords]).toContain(c);
       if (s.harmonies !== undefined) expect((await readPdfScore(new Uint8Array(readFileSync(path)))).getElementsByTagName("harmony").length).toBe(s.harmonies);

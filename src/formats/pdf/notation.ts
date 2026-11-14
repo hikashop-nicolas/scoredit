@@ -2,6 +2,7 @@
 // pitches, durations and voices. Font-agnostic: it only sees SMuFL code points.
 import { beamY, braceGroups, type Beam, findBarlines, findBeams, findStaves, findSystems, horizontals, mergeVerticals, verticals, type HLine, type Staff, type VLine } from "./geometry";
 import type { PdfShape } from "./extract";
+import { asciiChord, CHORD_TEXT } from "./chords";
 import type { MusicSymbol, NormPage, TextRun } from "./normalize";
 import { ACCIDENTALS, OTTAVAS, AUGMENTATION_DOT, CLEFS, DYNAMICS, HEAD_LENGTH, REPEAT_DOT, RESTS, REST_WHOLE, TIME_COMMON, TIME_CUT, flag, headKind, timeDigit, tupletDigit, type HeadKind } from "./glyphs";
 
@@ -521,6 +522,7 @@ export function readPage(page: NormPage): PageResult {
     for (const h of heads) if (h.sys === p.sys && h.staff === p.staff && h.x >= p.x - st.space && h.x <= end + st.space * 0.5) h.shift = sign * Math.abs(shift);
   }
 
+  plainChords(page, systems, sp);
   // Text: names left of the systems, lyrics under staves, the header above the first system.
   const header: TextRun[] = [];
   const firstTop = systems[0].top - 4 * sp;
@@ -681,6 +683,33 @@ function words(page: NormPage, systems: PSystem[], sp: number): void {
       break;
     }
   }
+}
+
+/**
+ * Chord names set in a plain text font (LilyPond's ChordNames, some Finale files): words above a
+ * staff that all read as chords, at least two in a system, become chord runs.
+ */
+function plainChords(page: NormPage, systems: PSystem[], sp: number): void {
+  const found = new Map<TextRun, { run: TextRun; sys: number }[]>();
+  const perSys = new Map<number, number>();
+  for (const t of page.texts) {
+    if (t.kind || t.bold || !t.words.length) continue;
+    const si = systems.findIndex((sys) => t.x >= sys.x0 - sp && sys.staves.some((st) => t.y < st.top + sp * 0.5 && t.y > st.top - 9 * sp));
+    if (si < 0) continue;
+    const runs: { run: TextRun; sys: number }[] = [];
+    for (const w of t.words) {
+      const { str } = asciiChord([...w.str.replace(/Ø/g, "ø")].map((c) => ({ text: c, sup: false })));
+      if (!CHORD_TEXT.test(str)) break;
+      runs.push({ run: { ...t, str, x: w.x, words: [{ str, x: w.x, x1: w.x1 }], kind: "chord", superscript: [] }, sys: si });
+    }
+    if (runs.length !== t.words.length) continue;
+    found.set(t, runs);
+    perSys.set(si, (perSys.get(si) ?? 0) + runs.length);
+  }
+  const keep = [...found].filter(([, runs]) => (perSys.get(runs[0].sys) ?? 0) >= 2);
+  if (!keep.length) return;
+  const drop = new Set(keep.map(([t]) => t));
+  page.texts = [...page.texts.filter((t) => !drop.has(t)), ...keep.flatMap(([, runs]) => runs.map((r) => r.run))];
 }
 
 /** A chord symbol: a harmony at the measure of the staff under it (over the top staff when between). */
