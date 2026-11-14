@@ -7,7 +7,7 @@ import { buildTimeline, type Timeline } from "../play/timeline";
 import { Fretboard, fretTuning, position } from "../ui/fretboard";
 import { createEditing } from "../ui/editing";
 import { Keyboard, MISSED, PRESSED_NEAR, PRESSED_RIGHT, PRESSED_WRONG, flash } from "../ui/keyboard";
-import { parseNote, type MidiInput, type MidiMessage } from "../play/midi";
+import { parseNote, type MidiInput, type MidiMessage, type MidiOutput } from "../play/midi";
 import { createSeekBar } from "../ui/seek-bar";
 import { TimeMatcher, WaitMatcher, cleanPass, handParts, loopRange, nextSpeed, practiceGroups, practisedBy, type ExpectedNote, type PracticeCounts } from "../play/practice";
 import { createKeysView, noteColors } from "./keys-view";
@@ -114,6 +114,11 @@ export interface ScoreViewerHandle {
   readonly player: Player | null;
   /** Uses another MIDI instrument (null: none; the Practice button hides). */
   setMidiInput(input: MidiInput | null): void;
+  /**
+   * Where the app's notes may sound on the instrument (see webMidiOutput; null: none). Practice
+   * then offers "Sound: from the MIDI keyboard".
+   */
+  setMidiOutput(output: MidiOutput | null): void;
   readonly practice: PracticeState;
   setPractice(p: Partial<PracticeState>): void;
   /** Practice's state while a mode is on and playback was used, else null. */
@@ -415,11 +420,13 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
     const hm = handMap();
     const handKinds = new Set(shown.map((p) => hm.get(p)).filter(Boolean));
     const hands = handKinds.size === 2 || shown.some((p) => !hm.has(p) && multiStaff(p));
-    bar.setPractice(!!midiIn, hands, practice, score.measureCount, measureLabels());
+    bar.setPractice(!!midiIn, hands, practice, score.measureCount, measureLabels(), !!midiOut);
   }
-  // The loop, the clicks and which notes the app plays: settings that change nothing of a run.
+  // The loop, the clicks, which notes the app plays and where they sound: settings that change
+  // nothing of a run.
   function applyPlayback(p: Player): void {
     const tl = getTimeline();
+    p.setOutput(practice.sound === "instrument" && midiIn && midiOut ? midiOut : null);
     p.setLoop(practice.loop ? loopRange(tl.spans, practice.loop.from, practice.loop.to) : null);
     showLoop();
     // Wait mode waits for the player anyway: no count-in there.
@@ -580,7 +587,7 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
     if (practice.mode !== was.mode || practice.hand !== was.hand) resetPractice();
     else {
       const loopChanged = JSON.stringify(practice.loop) !== JSON.stringify(was.loop);
-      if (player && (loopChanged || practice.countIn !== was.countIn || practice.metronome !== was.metronome || practice.accompany !== was.accompany)) {
+      if (player && (loopChanged || practice.countIn !== was.countIn || practice.metronome !== was.metronome || practice.accompany !== was.accompany || practice.sound !== was.sound)) {
         applyPlayback(player);
         if (matcher) player.setGate(gateOf(matcher));
       } else if (!player && loopChanged && practice.loop) applyPractice(ensurePlayer());
@@ -596,6 +603,13 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
     pressed.clear();
     if (input) unsubscribe = input.subscribe(onMidi);
     resetPractice();
+  }
+  // Where the app's notes can sound on the instrument (null: nowhere but the computer).
+  let midiOut: MidiOutput | null = null;
+  function setMidiOutput(out: MidiOutput | null): void {
+    midiOut = out;
+    if (player) applyPlayback(player);
+    syncPracticeBar();
   }
   // Expected keys outlined, keys held filled; in the score, the notes waited for lit.
   function refreshMarks(): void {
@@ -638,6 +652,9 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
       }
     } else if (n.on) pressed.set(n.pitch, !w ? flash(PRESSED_RIGHT, 0.3) : w.expects(n.pitch) ? PRESSED_RIGHT : PRESSED_WRONG);
     else pressed.delete(n.pitch);
+    // Wait mode, paused: striking a key waited for starts playback (once sound was allowed,
+    // which takes a click or tap: a key alone does not let the browser play).
+    if (w && n.on && player && !player.isPlaying && player.audioReady && w.expects(n.pitch)) player.play();
     // Keys count only while playing: a paused score does not move on.
     const m = player?.isPlaying ? w : null;
     if (m && n.on && !m.expects(n.pitch)) passWrong++;
@@ -847,6 +864,7 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
       return player;
     },
     setMidiInput,
+    setMidiOutput,
     get practice() {
       return { ...practice };
     },
