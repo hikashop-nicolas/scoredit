@@ -139,8 +139,10 @@ vector PDF (OSMD's paged layout drawn with jsPDF and svg2pdf.js, both MIT, loade
 time (OSMD gets a slice of measures, its pages are kept but the last, where the next slice starts),
 and each page is drawn and compressed as it comes, so `onProgress` moves steadily from 0 to 1 and
 the page stays responsive: on a 153-page orchestral score it is never busy for more than about two
-seconds (it was 13 seconds at a time before), for the same total time. A slice starts on a new page,
-where a slur, tie or hairpin coming from the page before may lose its continuation.
+seconds (it was 13 seconds at a time before), for about the same total time. A slice ends at a
+page turn that no tie, slur, hairpin or octave line crosses; when every page turn of the slice is
+crossed, the next slice lays out again (up to three pages) from where the oldest of them began. On
+that score every tie and slur matches a layout of the whole score at once.
 
 The standard PDF fonts only draw Western European letters. For titles, part names, lyrics, words
 and chord text in other scripts, give `fonts`: a TrueType or OpenType (CFF) font per script, as a

@@ -99,6 +99,8 @@ interface Chunk {
 const MIN_PAGES = 4;
 const MAX_PAGES = 8;
 const CHUNK_MS = 1000;
+/** Pages laid out again at most, to give a slice the start of a tie or slur it would cut. */
+const MAX_REDO = 3;
 
 /**
  * Lays the score out a few pages at a time. Each run of OSMD gets a slice of measures and keeps
@@ -114,6 +116,9 @@ async function* layOut(score: ScoreDoc, opts: PageOptions): AsyncGenerator<Chunk
   document.body.append(host);
   try {
     let start = 0;
+    // Pages laid out again at the start of a slice, then dropped (see `crossing`).
+    let skip = 0;
+    const crossing = crossingBoundaries(score);
     // A first guess, a few pages of a score with this many parts; then measured.
     let size = Math.max(8, Math.round(240 / Math.max(1, score.parts.length)));
     for (;;) {
@@ -145,7 +150,7 @@ async function* layOut(score: ScoreDoc, opts: PageOptions): AsyncGenerator<Chunk
         // The slice's last system is laid out as an end, and may go to a page of its own: pages are
         // kept up to the one with the system before it, which the next slice starts with.
         keep = pages[pages.length - 1].MusicSystems.length > 1 ? pages.length - 1 : pages.length - 2;
-        if (keep < 1) {
+        if (keep - skip < 1) {
           // Nothing can be kept yet: take more measures.
           osmd.clear();
           size *= 2;
@@ -153,8 +158,17 @@ async function* layOut(score: ScoreDoc, opts: PageOptions): AsyncGenerator<Chunk
           continue;
         }
         next = start + firstMeasure(pages[keep]);
+        // End on the latest page turn no tie or slur crosses: a slice cut inside one loses its start.
+        for (let j = keep; j > skip; j--) {
+          const m = start + firstMeasure(pages[j]);
+          if (crossing[m] < 0) {
+            keep = j;
+            next = m;
+            break;
+          }
+        }
       }
-      const svgs = osmd.Drawer.Backends.slice(0, keep).map((b) => {
+      const svgs = osmd.Drawer.Backends.slice(skip, keep).map((b) => {
         const svg = (b as unknown as { getSvgElement(): SVGSVGElement }).getSvgElement();
         const page = svg.cloneNode(true) as SVGSVGElement;
         // svg2pdf reads font sizes as pixels: OSMD gives some in points.
@@ -169,7 +183,18 @@ async function* layOut(score: ScoreDoc, opts: PageOptions): AsyncGenerator<Chunk
       const perPage = (next - start) / keep;
       const perMeasure = took / (end - start);
       size = Math.round(Math.max(perPage * (MIN_PAGES + 1), Math.min(perPage * (MAX_PAGES + 1), CHUNK_MS / perMeasure)));
-      start = next;
+      // Every page turn crossed: the next slice starts again from the page where the oldest span began.
+      skip = 0;
+      let back = next;
+      if (crossing[next] >= 0) {
+        for (let j = keep - 1; j >= Math.max(0, keep - MAX_REDO); j--) {
+          if (start + firstMeasure(pages[j]) > crossing[next]) continue;
+          back = start + firstMeasure(pages[j]);
+          skip = keep - j;
+          break;
+        }
+      }
+      start = back;
       await pause();
     }
   } finally {
@@ -179,6 +204,49 @@ async function* layOut(score: ScoreDoc, opts: PageOptions): AsyncGenerator<Chunk
 
 interface LaidOutPage {
   MusicSystems: { GraphicalMeasures: ({ parentSourceMeasure: { measureListIndex: number } } | undefined)[][] }[];
+}
+
+/**
+ * For each measure, where the oldest tie chain, slur, hairpin or octave line running into it from
+ * before began (a measure index), or -1 when nothing does.
+ */
+export function crossingBoundaries(score: ScoreDoc): number[] {
+  const out = new Array<number>(score.measureCount + 1).fill(-1);
+  for (const measures of score.measures) {
+    // Open spans by key: how many, and the measure the oldest began in.
+    const open = new Map<string, { n: number; from: number }>();
+    // Spans closed in the bar: a tie that stops and starts again on one note goes on as one chain.
+    const closed = new Map<string, { at: number; from: number }>();
+    const turn = (key: string, by: number, at: number) => {
+      const o = open.get(key);
+      const n = (o?.n ?? 0) + by;
+      const c = closed.get(key);
+      const from = o?.from ?? (c?.at === at ? c.from : at);
+      if (n > 0) open.set(key, { n, from });
+      else {
+        open.delete(key);
+        if (o) closed.set(key, { at, from: o.from });
+      }
+    };
+    measures.forEach((m, i) => {
+      for (const el of m.getElementsByTagName("*")) {
+        const type = el.getAttribute("type");
+        if (el.localName === "tied") {
+          const note = el.closest("note");
+          const pitch = note?.getElementsByTagName("pitch")[0]?.textContent ?? note?.getElementsByTagName("unpitched")[0]?.textContent ?? "";
+          const key = `tie ${pitch} ${note?.getElementsByTagName("staff")[0]?.textContent ?? ""}`;
+          if (type === "start") turn(key, 1, i);
+          else if (type === "stop") turn(key, -1, i);
+        } else if (el.localName === "slur" || el.localName === "wedge" || el.localName === "octave-shift") {
+          const key = `${el.localName} ${el.getAttribute("number") ?? "1"}`;
+          if (type === "stop") turn(key, -1, i);
+          else if (type !== "continue") turn(key, 1, i);
+        }
+      }
+      for (const o of open.values()) if (out[i + 1] < 0 || o.from < out[i + 1]) out[i + 1] = o.from;
+    });
+  }
+  return out;
 }
 
 /** Index in its slice of the first measure on a laid out page. */
