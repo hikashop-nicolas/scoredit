@@ -4,6 +4,9 @@ import { OpenSheetMusicDisplay } from "opensheetmusicdisplay";
 import type { ScoreDoc } from "../model/score";
 import { attachFile, MXL_MIME } from "../formats/pdf/embed";
 import { writeMxl } from "../formats/mxl";
+import { applyFonts, planFonts, registerFonts, scoreText, type PdfFonts } from "./pdf-fonts";
+
+export type { FontScript, FontSource, PdfFonts } from "./pdf-fonts";
 
 export type Paper = "a4" | "letter";
 
@@ -107,17 +110,25 @@ export async function renderPages(score: ScoreDoc, opts: PageOptions = {}): Prom
 export interface PdfExportOptions extends PageOptions {
   /** Attach the score as compressed MusicXML, so the PDF opens again as this score. Default true. */
   embedScore?: boolean;
+  /**
+   * Fonts for text the standard PDF fonts lack (Western European only), by script: a URL, bytes or a
+   * function giving them, used only when the score has such text. Without one, that text keeps the standard font.
+   */
+  fonts?: PdfFonts;
 }
 
 /** The score as a vector PDF, one page per OSMD page. */
 export async function exportPdf(score: ScoreDoc, opts: PdfExportOptions = {}): Promise<Uint8Array> {
   const paper = PAPER[opts.paper ?? "a4"];
   const progress = opts.onProgress;
-  const pages = await renderPages(score, { ...opts, onProgress: (f) => progress?.(f * 0.6) });
   const { jsPDF } = await import("jspdf");
   await import("svg2pdf.js");
+  const shape = (jsPDF.API as unknown as { processArabic(s: string): string }).processArabic;
+  const fonts = await planFonts(scoreText(score.root), opts.fonts, shape);
+  const pages = await renderPages(score, { ...opts, onProgress: (f) => progress?.(f * 0.6) });
   const doc = new jsPDF({ unit: "pt", format: [paper.w, paper.h], compress: true });
   doc.setProperties({ title: score.title || "Score", creator: "scoredit" });
+  registerFonts(doc, fonts);
   // svg2pdf reads the SVG's layout, so each page is in the document while it is drawn.
   const holder = document.createElement("div");
   holder.style.cssText = "position:absolute;left:-100000px;top:0";
@@ -125,6 +136,7 @@ export async function exportPdf(score: ScoreDoc, opts: PdfExportOptions = {}): P
   try {
     for (let i = 0; i < pages.length; i++) {
       if (i) doc.addPage([paper.w, paper.h]);
+      applyFonts(pages[i], fonts);
       holder.replaceChildren(pages[i]);
       await doc.svg(pages[i], { x: 0, y: 0, width: paper.w, height: paper.h });
       progress?.(0.6 + (0.4 * (i + 1)) / pages.length);

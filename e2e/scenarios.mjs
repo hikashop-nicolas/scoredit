@@ -233,6 +233,51 @@ async function pdfRoundTrip(d) {
   d.check("The pages still draw in a PDF reader", r.pages >= 1 && r.ink > 500, `${r.pages} pages, ${r.ink} dark pixels on page 1`);
 }
 
+// Exports a score with Japanese, Russian, Arabic, Hebrew and Greek text, with the host's fonts.
+async function pdfFonts(d) {
+  let r;
+  await d.step("Export the score to PDF with fonts for its scripts, then read the PDF's text with pdf.js", async () => {
+    r = await d.eval(`(async () => {
+      const lib = scoreditLib;
+      const asked = [];
+      const file = (f) => () => (asked.push(f), fetch("fixtures/fonts/" + f).then((r) => r.arrayBuffer()));
+      const sans = file("test-sans.ttf");
+      const fonts = { japanese: file("test-japanese.ttf"), chinese: file("test-chinese.ttf"), korean: "", cyrillic: sans, greek: sans, arabic: "fixtures/fonts/test-arabic.ttf", hebrew: file("test-hebrew.ttf") };
+      const pdf = await lib.exportPdf(viewer.score, { fonts });
+      const fetched = asked.slice();
+      // Reading it back first also sets up pdf.js's worker.
+      const back = await lib.loadScoreAsync(pdf);
+      const pdfjs = await scoreditPdfjs();
+      const task = pdfjs.getDocument({ data: pdf.slice() });
+      const doc = await task.promise;
+      const page = await doc.getPage(1);
+      const text = (await page.getTextContent()).items.map((i) => i.str).join("|").normalize("NFKC");
+      const vp = page.getViewport({ scale: 1 });
+      const canvas = document.createElement("canvas");
+      canvas.width = vp.width;
+      canvas.height = vp.height;
+      await page.render({ canvasContext: canvas.getContext("2d"), canvas, viewport: vp }).promise;
+      await task.destroy();
+      const raw = new TextDecoder("latin1").decode(pdf);
+      const strip = (x) => x.replace(/^<\\?xml[^>]*>\\s*/, "");
+      // A Latin-only score asks for no font and comes out as without the option.
+      asked.length = 0;
+      const melody = (await lib.loadScoreAsync(new Uint8Array(await (await fetch("fixtures/melody.musicxml")).arrayBuffer()))).score;
+      const withFonts = await lib.exportPdf(melody, { fonts, embedScore: false });
+      const without = await lib.exportPdf(melody, { embedScore: false });
+      return { fetched, text, embedded: (raw.match(/\\/FontFile2/g) || []).length, names: [...new Set(raw.match(/scoredit-[a-z]+/g) || [])].sort(), same: back.format === "pdf" && strip(back.score.serialize()) === strip(viewer.score.serialize()), latinAsked: asked.length, latinSame: withFonts.length === without.length };
+    })()`);
+  });
+  const has = (s) => r.text.includes(s);
+  d.check("Only the fonts the score needs are fetched (no Chinese, no Korean)", JSON.stringify(r.fetched.sort()) === JSON.stringify(["test-hebrew.ttf", "test-japanese.ttf", "test-sans.ttf"]), r.fetched.join(", "));
+  d.check("The Japanese title, composer and lyrics read back as text", has("春の歌") && has("作者不詳") && ["さ", "く", "ら", "見"].every(has), r.text);
+  d.check("The Russian part names read back as text", has("Скрипка") && has("Виолончель"), r.text);
+  d.check("The Arabic, Hebrew and Greek words read back in reading order", has("بهدوء") && has("לאט") && has("Ήσυχα"), r.text);
+  d.check("Four fonts are embedded, each cut down to the characters used", r.embedded === 4 && r.names.length === 4, `${r.embedded} fonts: ${r.names.join(", ")}`);
+  d.check("Opening the PDF gives back the same MusicXML", r.same);
+  d.check("A Latin-only score fetches no font and gives the same PDF as without fonts", r.latinAsked === 0 && r.latinSame);
+}
+
 const EMPTY = "whole-bar rest";
 
 
@@ -366,6 +411,16 @@ export const scenarios = [
     why: "The same round trip on a real piece several pages long: the PDF reopens as the exact score.",
     look: "Für Elise, as it was opened.",
     run: pdfRoundTrip,
+  },
+  {
+    id: "pdf-fonts",
+    title: "Japanese, Russian, Arabic, Hebrew and Greek text comes out in the PDF as text",
+    device: "desktop",
+    fixture: "world.musicxml",
+    edit: false,
+    why: "The standard PDF fonts only draw Western European letters. With a font for each script from the host, the title, part names, lyrics and words come out in the right letters, and can be selected and searched.",
+    look: "A short duet titled in Japanese, with Russian part names, Japanese lyrics and Arabic, Hebrew and Greek words above the staff.",
+    run: pdfFonts,
   },
   {
     id: "palette-desktop",

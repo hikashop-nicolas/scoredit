@@ -137,6 +137,33 @@ an MP3 is made.
 vector PDF (OSMD's paged layout drawn with jsPDF and svg2pdf.js, both MIT, loaded on first use);
 `renderPages` gives the same pages as SVG, for printing.
 
+The standard PDF fonts only draw Western European letters. For titles, part names, lyrics, words
+and chord text in other scripts, give `fonts`: a TrueType or OpenType (CFF) font per script, as a
+URL, bytes or a function giving them.
+
+```ts
+await exportPdf(score, {
+  fonts: {
+    japanese: "/fonts/BIZUDPGothic-Regular.ttf",
+    chinese: () => fetchFont("OmnitextHans-Regular.otf"),
+    korean: koreanBytes,
+    cyrillic: sans, greek: sans, latin: sans, // Latin beyond Western European
+    arabic: arabicUrl, hebrew: hebrewUrl,
+  },
+});
+```
+
+Nothing is fetched for a score whose text the standard fonts draw (its PDF is the same as without
+`fonts`), and otherwise only the fonts of the scripts it uses: a function is called, or a URL
+fetched, when its script is needed. Han characters go to `japanese` when the score has kana and to
+`chinese` otherwise, then to the other font when the first lacks them. Each font is cut down to the
+characters used and embedded, so the text can be selected and searched; Arabic is shaped into its
+joined forms and right-to-left text is put in reading order. A script without a font (left out, `""`
+or `null`), or a font that fails to load, keeps the standard font for its characters. Bold and italic
+text in an embedded font is drawn upright. Fonts with complex shaping (Thai, Indic scripts) are not
+handled. scoredit ships no font; OFL fonts such as BIZ UDPGothic, Noto Sans, Noto Sans Arabic and
+Noto Sans Hebrew allow embedding.
+
 ## Scans and photos (experimental)
 
 ```ts
