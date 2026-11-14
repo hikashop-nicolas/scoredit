@@ -235,6 +235,37 @@ async function pdfRoundTrip(d) {
 
 const EMPTY = "whole-bar rest";
 
+
+// Practice: a two-bar piano piece (right hand C, E+G, C, C | D; left hand C | G) and a
+// simulated MIDI keyboard the scenario strikes keys on.
+const PRACTICE_RH = (step, oct, dur, chord = false) => `<note>${chord ? "<chord/>" : ""}<pitch><step>${step}</step><octave>${oct}</octave></pitch><duration>${dur}</duration><voice>1</voice><type>${dur === 4 ? "whole" : "quarter"}</type><staff>1</staff></note>`;
+const PRACTICE_LH = (step, oct) => `<backup><duration>4</duration></backup><note><pitch><step>${step}</step><octave>${oct}</octave></pitch><duration>4</duration><voice>5</voice><type>whole</type><staff>2</staff></note>`;
+const PRACTICE_ATTR =`<attributes><divisions>1</divisions><key><fifths>0</fifths></key><time><beats>4</beats><beat-type>4</beat-type></time><staves>2</staves><clef number="1"><sign>G</sign><line>2</line></clef><clef number="2"><sign>F</sign><line>4</line></clef></attributes>`;
+const PRACTICE_XML =`<score-partwise version="4.0"><part-list><score-part id="P1"><part-name>Piano</part-name></score-part></part-list><part id="P1"><measure number="1">${PRACTICE_ATTR}${PRACTICE_RH("C", 5, 1)}${PRACTICE_RH("E", 5, 1)}${PRACTICE_RH("G", 5, 1, true)}${PRACTICE_RH("C", 5, 1)}${PRACTICE_RH("C", 5, 1)}${PRACTICE_LH("C", 3)}</measure><measure number="2">${PRACTICE_RH("D", 5, 4)}${PRACTICE_LH("G", 2)}</measure></part></score-partwise>`;
+async function practiceSetup(d) {
+  await d.run("Open a two-bar piano piece", `(viewer.setScore(new scoreditLib.ScoreDoc(${JSON.stringify(PRACTICE_XML)})), new Promise((r) => setTimeout(r, 1200)))`);
+  await d.run(
+    "Connect a simulated MIDI keyboard",
+    `(() => { const cbs = new Set(); window.fakeMidi = { subscribe(cb) { cbs.add(cb); return () => cbs.delete(cb); }, key(p, on = true) { for (const cb of cbs) cb({ data: new Uint8Array([on ? 0x90 : 0x80, p, on ? 100 : 0]), time: performance.now(), source: "fake" }); } }; viewer.setMidiInput(window.fakeMidi); })()`,
+  );
+}
+const practiceKey = (d, p, on = true) => d.run(`${on ? "Strike" : "Release"} ${["C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B"][p % 12]}${Math.floor(p / 12) - 1}`, `fakeMidi.key(${p}, ${on})`);
+// Wait mode's state, the play time and the cursor's place.
+const practiceStatus = (d) =>
+  d.eval(`(() => { const s = viewer.practiceStatus; const c = document.querySelector(".sv-cursor"); return s && { ...s, time: viewer.player.time, x: c && !c.hidden ? Number(/translateX\\(([-\\d.]+)px/.exec(c.style.transform)?.[1]) : null, lit: document.querySelectorAll(".sv-on").length }; })()`);
+// Waits (up to 4 s) for playback to hold at group `index`, or for every group to be played.
+async function practiceWaitFor(d, index) {
+  for (let i = 0; i < 40; i++) {
+    const s = await practiceStatus(d);
+    if (s && s.index === index && (s.waiting || s.count === index)) return s;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  return practiceStatus(d);
+}
+// The colour of a key of the falling-notes keyboard, as [r, g, b], low on white keys.
+const practiceKeyColor = (d, midi, edge = false) =>
+  d.eval(`(() => { const c = document.querySelector(".sv-keys-big"); const [lo, hi] = scoreditKeys.keyRange(43, 79); const k = scoreditKeys.layoutKeys(lo, hi, c.clientWidth).get(${midi}); const dpr = c.width / c.clientWidth; const x = ${edge} ? k.x + 2 : k.x + k.w / 2; const y = c.clientHeight * (k.black ? 0.3 : 0.8); return [...c.getContext("2d").getImageData(Math.round(x * dpr), Math.round(y * dpr), 1, 1).data].slice(0, 3); })()`);
+
 export const scenarios = [
   {
     id: "open-pdf",
@@ -1063,6 +1094,95 @@ export const scenarios = [
       d.check("Everything could be typed", !problems.length, problems.slice(0, 5).join("; "));
       const not = Object.entries(prep.skipped).map(([k, n]) => `${n} ${k}`).join(", ");
       if (not) d.note(`Left out on purpose (not in edit mode yet): ${not}`);
+    },
+  },
+  {
+    id: "practice-wait",
+    title: "Wait mode holds playback until the right keys are played on a MIDI keyboard",
+    device: "desktop",
+    fixture: "melody.musicxml",
+    edit: false,
+    why: "A piano piece is practised with the right hand on a (simulated) MIDI keyboard: C, then the chord E G, then C twice, then D. Playback must stop before each of them and go on only once its keys are struck; a wrong key changes nothing, and a C still held from before must be struck again. The left hand is played for you.",
+    look: "The piece played through: the cursor at the end of the second bar.",
+    async run(d) {
+      await practiceSetup(d);
+      await d.button("Practice");
+      const label = (text) => `(() => { const l = [...document.querySelectorAll(".sv-pop-practice label")].find((x) => x.textContent === ${JSON.stringify(text)} && x.offsetParent); if (!l) return null; const r = l.getBoundingClientRect(); return { x: r.left + 12, y: r.top + r.height / 2 }; })()`;
+      for (const text of ["Wait for me", "Right hand"]) {
+        await d.step(`Choose "${text}"`, async () => {
+          const p = await d.eval(label(text));
+          if (!p) throw new Error(`no "${text}" choice`);
+          await d.click(p);
+        });
+      }
+      d.check("Wait mode is on, for the right hand", await d.eval(`viewer.practice.mode === "wait" && viewer.practice.hand === "right"`));
+      await d.button("Practice");
+      await d.button("Play");
+      const status = () => practiceStatus(d);
+      const waitFor = (index) => practiceWaitFor(d, index);
+      const key = (p, on) => practiceKey(d, p, on);
+      let s = await waitFor(0);
+      d.check("Playback holds before the first C, waiting for it", s?.waiting && s.index === 0 && s.time < 0.05 && JSON.stringify(s.expected) === "[72]", JSON.stringify(s));
+      d.check("The note waited for is lit in the score", s?.lit > 0, `lit: ${s?.lit}`);
+      await key(61);
+      await new Promise((r) => setTimeout(r, 500));
+      const after = await status();
+      d.check("A wrong key (C♯) changes nothing: still waiting at the start", after.index === 0 && after.waiting && after.time < 0.05, JSON.stringify(after));
+      await key(72);
+      s = await waitFor(1);
+      d.check("C played: the cursor moves on to the chord and holds there", s?.waiting && s.index === 1 && Math.abs(s.time - 0.6) < 0.02 && s.x > after.x, JSON.stringify(s));
+      const x1 = s.x;
+      await key(76);
+      await new Promise((r) => setTimeout(r, 500));
+      s = await status();
+      d.check("Half the chord (E only) is not enough", s.index === 1 && s.waiting && s.x === x1, JSON.stringify(s));
+      await key(79);
+      s = await waitFor(2);
+      d.check("The whole chord played: on to the next C", s?.waiting && s.index === 2 && Math.abs(s.time - 1.2) < 0.02 && s.x > x1, JSON.stringify(s));
+      await key(72);
+      s = await waitFor(3);
+      d.check("C struck: on to the repeated C", s?.waiting && s.index === 3 && Math.abs(s.time - 1.8) < 0.02, JSON.stringify(s));
+      await new Promise((r) => setTimeout(r, 400));
+      s = await status();
+      d.check("The C still held does not count for the repeated C", s.index === 3 && s.waiting, JSON.stringify(s));
+      await key(72, false);
+      await key(72);
+      s = await waitFor(4);
+      d.check("C struck again: on to the D of bar 2", s?.waiting && s.index === 4 && Math.abs(s.time - 2.4) < 0.02, JSON.stringify(s));
+      await key(74);
+      s = await waitFor(5);
+      d.check("Every note played: playback runs on to the end", s && s.index === 5 && !s.waiting, JSON.stringify(s));
+    },
+  },
+  {
+    id: "practice-keys",
+    title: "In falling notes, wait mode outlines the keys to play and colours the keys pressed",
+    device: "desktop",
+    fixture: "melody.musicxml",
+    edit: false,
+    why: "The same piano piece in the falling-notes layout, both hands practised. While playback waits, the keys of the next notes are outlined on the keyboard; a key pressed that is not expected turns red, one that is expected turns green.",
+    look: "Falling notes stopped above the keyboard: the chord's keys E and G outlined, C green (played), F red (wrong).",
+    async run(d) {
+      await practiceSetup(d);
+      await d.button("Falling notes");
+      await d.run("Turn wait mode on (both hands) from the host", `viewer.setPractice({ mode: "wait", hand: "both" })`);
+      await d.button("Play");
+      let s = await practiceWaitFor(d, 0);
+      d.check("Playback holds for the first chord: C of both hands", s?.waiting && JSON.stringify(s.expected) === "[48,72]", JSON.stringify(s));
+      const near = (c, rgb) => c && c.every((v, i) => Math.abs(v - rgb[i]) < 40);
+      const GREEN = [34, 197, 94];
+      const RED = [239, 68, 68];
+      d.check("The key C5 is outlined", near(await practiceKeyColor(d, 72, true), GREEN), JSON.stringify(await practiceKeyColor(d, 72, true)));
+      await practiceKey(d, 77);
+      d.check("F5, not expected, shows red", near(await practiceKeyColor(d, 77), RED), JSON.stringify(await practiceKeyColor(d, 77)));
+      await practiceKey(d, 48);
+      await practiceKey(d, 72);
+      s = await practiceWaitFor(d, 1);
+      d.check("Both Cs played: playback moves on and holds for E G", s?.waiting && JSON.stringify(s.expected) === "[76,79]", JSON.stringify(s));
+      d.check("C5, played when expected, stays green while held", near(await practiceKeyColor(d, 72), GREEN), JSON.stringify(await practiceKeyColor(d, 72)));
+      d.check("E5, expected next, is outlined", near(await practiceKeyColor(d, 76, true), GREEN), JSON.stringify(await practiceKeyColor(d, 76, true)));
+      await practiceKey(d, 77, false);
+      d.check("F5 released: no longer red", !near(await practiceKeyColor(d, 77), RED), JSON.stringify(await practiceKeyColor(d, 77)));
     },
   },
 ];
