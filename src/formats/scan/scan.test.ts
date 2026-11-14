@@ -7,6 +7,7 @@ import { resizeBicubic } from "./resample";
 import { findPeaks, uniqueSet, wardLabels } from "./sci";
 import { classicStaffMap } from "./stafflines";
 import { scanToMusicXml, type ScanReply, type ScanRequest } from "./index";
+import { segment, staffTiles, type OrtLike } from "./infer";
 import { handleScan } from "./scan-worker";
 
 const grid = (w: number, h: number, on: (x: number, y: number) => boolean): Img<Uint8Array> => {
@@ -109,6 +110,46 @@ describe("classic staff lines", () => {
     expect(map[Math.round(60 + 100 * 0.02) * w + 100] & 3).toBe(1);
     expect(map[94 * w + 296] & 2).toBe(2);
     expect(map[Math.round(60 + 28 + 300 * 0.02) * w + 300]).toBe(3);
+  });
+});
+
+describe("staff tiles", () => {
+  // A grand staff (two close staffs) and a lone staff far below, on a 1600 x 2300 page.
+  const staffs = [
+    { x0: 150, x1: 1450, top: 300, bot: 352 },
+    { x0: 150, x1: 1450, top: 420, bot: 472 },
+    { x0: 150, x1: 1450, top: 1200, bot: 1252 },
+  ];
+
+  it("covers each band of staffs with one row of tiles and skips the rest", () => {
+    const t = staffTiles(staffs, 13, 1600, 2300, 288);
+    const rows = [...new Set(t.map(([y]) => y))].sort((a, b) => a - b);
+    expect(rows.length).toBe(2);
+    for (const s of staffs) expect(rows.some((y) => y <= s.top - 52 && y + 288 >= s.bot + 52)).toBe(true);
+    const xs = t.filter(([y]) => y === rows[0]).map(([, x]) => x);
+    expect(Math.min(...xs)).toBeLessThanOrEqual(150 - 26);
+    expect(Math.max(...xs) + 288).toBeGreaterThanOrEqual(1450 + 26);
+    expect(t.length).toBeLessThan(2 * 7);
+  });
+
+  it("leaves pixels outside the tiles as background", async () => {
+    // A fake network that calls every pixel a notehead.
+    const ort = { InferenceSession: { create: async () => session }, Tensor: class { constructor(public type: string, public data: Uint8Array, public dims: number[]) {} } };
+    const session = {
+      inputNames: ["input"],
+      outputNames: ["output"],
+      run: async (f: Record<string, { dims: number[] }>) => {
+        const n = f.input.dims[0] * 288 * 288;
+        const out = new Float32Array(n * 4);
+        for (let p = 0; p < n; p++) out[p * 4 + 2] = 1;
+        return { output: { data: out, dims: [f.input.dims[0], 288, 288, 4] } };
+      },
+    };
+    const w = 600, h = 700;
+    const map = await segment(ort as unknown as OrtLike, session, new Uint8Array(w * h * 3), w, h, 288, 4, { tiles: [[100, 0]] });
+    expect(map[150 * w + 10]).toBe(2);
+    expect(map[50 * w + 10]).toBe(0);
+    expect(map[150 * w + 400]).toBe(0);
   });
 });
 

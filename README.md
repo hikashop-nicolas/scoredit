@@ -170,11 +170,15 @@ oemer's staff network (unet_big) is not needed and is not shipped: it was traine
 CVC-MUSCIMA, a non-commercial dataset. For comparison it can still be used
 (`staffLines: "unet"`, `models.staff`, `scan-models.py --staff`).
 
-The symbol network is the slow part: it runs on about 200 overlapping tiles per page. On a
-2019 laptop that is about 70 seconds with WebGPU, 4 minutes in WebAssembly with eight
-threads and 20 minutes with one. `step: 256` (63 tiles) with the int8 copy brings that to
-80 seconds with eight threads and 4 minutes with one, reading about as well. Staff lines
-take about a second and the post-processing 5 to 7 seconds.
+The symbol network is the slow part: over the whole page it runs on about 200 overlapping
+tiles. On a 2019 laptop that is about 70 seconds with WebGPU, 4 minutes in WebAssembly with
+eight threads and 20 minutes with one. By default (`tiles: "staffs"`) it only runs on tiles
+over the staffs the staff-line step found, 4 line spacings above and below, overlapping by
+32 pixels: 38 tiles on average on the test bed's pages where `step: 256` over the page needs
+63, for the same reading (80% and 72%). `tiles: "page"` covers the whole page every `step`
+pixels, as oemer does. With the int8 copy one thread then takes about 3 minutes on that
+laptop and about 8 on a mid-range phone. Staff lines take about a second and the
+post-processing 5 to 7 seconds.
 
 ### Off the main thread
 

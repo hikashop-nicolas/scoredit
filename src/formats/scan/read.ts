@@ -1,6 +1,6 @@
 // Reading one page on the current thread: image to class maps (onnxruntime-web, loaded on
 // first use) to MusicXML. index.ts adds the worker path on top.
-import { segment, type OrtLike, type OrtSession, type TileProgress } from "./infer";
+import { segment, staffTiles, type OrtLike, type OrtSession, type TileProgress } from "./infer";
 import { layersOf, recognise } from "./pipeline";
 import { modelSize, resizeBicubic } from "./resample";
 import type { SampledLine } from "./dewarp";
@@ -38,6 +38,12 @@ export interface ScanOptions {
   batch?: number;
   /** Distance between tiles in pixels (oemer: 128; larger is faster, a little less sure). */
   step?: number;
+  /**
+   * Where the symbol network runs: "staffs" (default with classic staff lines) only on tiles
+   * over the staffs found, about half a page's tiles for the same reading; "page": the whole
+   * page every `step` pixels, as oemer.
+   */
+  tiles?: "staffs" | "page";
   /** Progress: network tiles ("symbols", "staff"), then "lines" and "post" (post-processing) as 0 or 1 of 1. */
   progress?: (p: TileProgress) => void;
   /**
@@ -111,16 +117,17 @@ export async function classMaps(bgr: Uint8Array, w: number, h: number, opts: Sca
     if (opts.wasmPaths) ort.env.wasm.wasmPaths = opts.wasmPaths;
     if (opts.threads) ort.env.wasm.numThreads = opts.threads;
   }
-  const run = async (src: ModelSource, win: number, classes: number, name: string) => {
+  const run = async (src: ModelSource, win: number, classes: number, name: string, tiles?: [number, number][]) => {
     const session: OrtSession = await ort.InferenceSession.create(await bytesOf(src), opts.session);
     try {
-      return await segment(ort, session, bgr, w, h, win, classes, { batch: opts.batch, step: opts.step, name, progress: opts.progress });
+      return await segment(ort, session, bgr, w, h, win, classes, { batch: opts.batch, step: opts.step, name, tiles, progress: opts.progress });
     } finally {
       await session.release?.();
     }
   };
   let unet: Uint8Array;
   let lines: SampledLine[] | undefined;
+  let tiles: [number, number][] | undefined;
   if (opts.staffLines === "unet") {
     if (!opts.models.staff) throw new Error('staffLines "unet" needs models.staff');
     unet = await run(opts.models.staff, 256, 3, "staff");
@@ -129,10 +136,14 @@ export async function classMaps(bgr: Uint8Array, w: number, h: number, opts: Sca
     const c = classicStaffMap(bgr, w, h);
     unet = c.map;
     lines = c.info.lines;
+    if (opts.tiles !== "page" && c.info.staffs.length) {
+      const boxes = c.info.staffs.map((s) => ({ x0: Math.min(...s.xs), x1: Math.max(...s.xs), top: Math.min(...s.ys[0]), bot: Math.max(...s.ys[4]) }));
+      tiles = staffTiles(boxes, c.info.spacing, w, h, 288);
+    }
     opts.progress?.({ model: "lines", done: 1, total: 1 });
   }
   opts.signal?.throwIfAborted();
-  const seg = await run(opts.models.symbols, 288, 4, "symbols");
+  const seg = await run(opts.models.symbols, 288, 4, "symbols", tiles);
   return { w, h, unet, seg, lines };
 }
 
