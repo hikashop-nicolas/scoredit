@@ -1,12 +1,14 @@
 import type { SystemRange } from "../layout/systems";
 import type { ScoreDoc } from "../model/score";
-import { clampZoom, createBar, type LayoutMode } from "../ui/bar";
+import { clampZoom, createBar, type LayoutMode, type PracticeState } from "../ui/bar";
 import { Player, getVolume, setVolume } from "../play/player";
 import type { SoundDownloads } from "../play/sounds";
 import { buildTimeline, type Timeline } from "../play/timeline";
 import { Fretboard, fretTuning, position } from "../ui/fretboard";
 import { createEditing } from "../ui/editing";
-import { Keyboard, flash } from "../ui/keyboard";
+import { Keyboard, PRESSED_RIGHT, PRESSED_WRONG, flash } from "../ui/keyboard";
+import { parseNote, type MidiInput, type MidiMessage } from "../play/midi";
+import { WaitMatcher, practiceGroups, practisedBy } from "../play/practice";
 import { createKeysView, noteColors } from "./keys-view";
 import { createLineView, type LineView } from "./line-view";
 import { noteKey } from "./positions";
@@ -14,7 +16,7 @@ import { createPageView, type PageView } from "./page-view";
 import { injectStyles } from "./styles";
 import type { View } from "./view";
 
-export type { LayoutMode } from "../ui/bar";
+export type { LayoutMode, PracticeState } from "../ui/bar";
 
 export interface ScoreViewerOptions {
   /** "page": lines stacked down the page (default). "line": one long line, sideways, sized to the height. */
@@ -49,6 +51,21 @@ export interface ScoreViewerOptions {
   editable?: boolean;
   /** The score changed by an edit (the host marks the file modified; score.serialize() has it). */
   onChange?(): void;
+  /** A MIDI instrument to play along with (see webMidiInput): the bar then shows Practice. */
+  midi?: MidiInput | null;
+  /** Practice settings as they start; `onChange` hears the user's (to keep them). */
+  practice?: Partial<PracticeState> & { onChange?(p: PracticeState): void };
+}
+
+/** Wait mode as it stands: the group of notes waited for and whether playback holds for it. */
+export interface PracticeStatus {
+  index: number;
+  count: number;
+  /** MIDI pitches of the group waited for (empty once all are played). */
+  expected: number[];
+  /** Pitches of it not struck yet. */
+  missing: number[];
+  waiting: boolean;
 }
 
 export interface ScoreViewerHandle {
@@ -78,6 +95,12 @@ export interface ScoreViewerHandle {
   togglePlay(): void;
   /** The player, once playback was used. */
   readonly player: Player | null;
+  /** Uses another MIDI instrument (null: none; the Practice button hides). */
+  setMidiInput(input: MidiInput | null): void;
+  readonly practice: PracticeState;
+  setPractice(p: Partial<PracticeState>): void;
+  /** Wait mode's state while it is on and playback was used, else null. */
+  readonly practiceStatus: PracticeStatus | null;
   getZoom(): number;
   setZoom(zoom: number): void;
   /** The end of the bottom bar, where a host can put its own buttons. */
@@ -138,6 +161,7 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
     onFullscreen: opts.onFullscreen,
     onParts: opts.parts ? (p) => setParts(p, true) : undefined,
     onEdit: opts.editable ? () => setEditing(true) : undefined,
+    onPractice: (p) => setPractice(p),
   });
 
   // Edit mode: the palette takes the bar's place; edits draw again what they changed.
@@ -151,6 +175,7 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
       player = null;
       timeline = null;
       shownTimeline = null;
+      matcher = null;
       bar.setPlaying(false);
       if (shownParts) shownScore = score.only(shownParts);
       if (mode === "page") (view as PageView).refresh(shownScore, c.from, c.appended ? score.measureCount : c.to);
@@ -270,9 +295,104 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
         }
       },
       onStateChange: (on) => bar.setPlaying(on),
+      onSeek: (t) => {
+        if (!matcher || !player) return;
+        matcher.seek(t);
+        player.setGate(matcher.current?.time ?? null);
+        refreshMarks();
+      },
     });
     player.setSpeed(speed);
+    applyPractice(player);
     return player;
+  }
+
+  // Practice with a MIDI instrument. Wait mode: playback holds before each group of the
+  // practised notes (the parts shown, or a hand) until they are struck; the rest accompanies.
+  let practice: PracticeState = { mode: opts.practice?.mode ?? "off", hand: opts.practice?.hand ?? "both", echo: opts.practice?.echo ?? false };
+  let midiIn: MidiInput | null = null;
+  let unsubscribe: (() => void) | null = null;
+  let matcher: WaitMatcher | null = null;
+  // Keys down on the instrument, with their colour: right or wrong when struck.
+  const pressed = new Map<number, string>();
+  let litKeys: string[] = [];
+  const practising = () => practice.mode === "wait" && !!midiIn;
+  const target = () => ({ parts: shownParts, hand: practice.hand });
+  const multiStaff = (p: number) => Number(score.measures[p]?.[0]?.getElementsByTagName("staves")[0]?.textContent) > 1 || score.attributesAt(p, Math.min(1, score.measureCount - 1)).some((a) => a.tagName === "staves" && Number(a.textContent) > 1);
+  function syncPracticeBar(): void {
+    const hands = (shownParts ?? score.parts.map((_, i) => i)).some(multiStaff);
+    bar.setPractice(!!midiIn, hands, practice);
+  }
+  function applyPractice(p: Player): void {
+    if (!practising()) {
+      matcher = null;
+      p.setSkip(null);
+      p.setGate(null);
+      refreshMarks();
+      return;
+    }
+    const tl = getTimeline();
+    matcher ??= new WaitMatcher(practiceGroups(tl, target()));
+    p.setSkip(practisedBy(tl, target()));
+    matcher.seek(p.time);
+    p.setGate(matcher.current?.time ?? null);
+    refreshMarks();
+  }
+  // The practised notes or settings changed: wait mode starts again from where playback is.
+  function resetPractice(): void {
+    matcher = null;
+    if (player || practising()) applyPractice(ensurePlayer());
+    else refreshMarks();
+    syncPracticeBar();
+  }
+  function setPractice(p: Partial<PracticeState>): void {
+    practice = { ...practice, ...p };
+    resetPractice();
+    opts.practice?.onChange?.({ ...practice });
+  }
+  function setMidiInput(input: MidiInput | null): void {
+    unsubscribe?.();
+    unsubscribe = null;
+    midiIn = input;
+    pressed.clear();
+    if (input) unsubscribe = input.subscribe(onMidi);
+    resetPractice();
+  }
+  // Expected keys outlined, keys held filled; in the score, the notes waited for lit.
+  function refreshMarks(): void {
+    const m = practising() ? matcher : null;
+    const expected = m?.current?.pitches ?? [];
+    for (const k of [kbd, falls?.keyboard]) {
+      if (!k) continue;
+      k.setPractice(expected, pressed);
+      k.draw();
+    }
+    const keys = m?.current ? [...new Set(m.current.events.filter(visible).map((e) => noteKey(e.measure, e.onset)))] : [];
+    if (keys.join() === litKeys.join()) return;
+    view.highlight(litKeys, false);
+    view.highlight(keys, true);
+    litKeys = keys;
+  }
+  function onMidi(msg: MidiMessage): void {
+    const n = parseNote(msg.data);
+    if (!n) return;
+    const w = practising() ? matcher : null;
+    if (n.on) pressed.set(n.pitch, !w ? flash(PRESSED_RIGHT, 0.3) : w.expects(n.pitch) ? PRESSED_RIGHT : PRESSED_WRONG);
+    else pressed.delete(n.pitch);
+    // Keys count only while playing: a paused score does not move on.
+    const m = player?.isPlaying ? w : null;
+    if (practice.echo) echo(n.pitch, n.on ? n.velocity : 0);
+    if (m && n.on && m.noteOn(n.pitch)) player!.setGate(m.current?.time ?? null);
+    else if (m && !n.on) m.noteOff(n.pitch);
+    refreshMarks();
+  }
+  // The key sounds with the practised part's instrument.
+  function echo(pitch: number, velocity: number): void {
+    const p = ensurePlayer();
+    const tl = getTimeline();
+    const mine = practisedBy(tl, target());
+    const e = tl.events.find(mine) ?? tl.events[0];
+    p.live(e && e.channel !== 9 ? e.channel : 0, e && e.channel !== 9 ? e.program : 0, pitch, velocity);
   }
   function togglePlay(): void {
     ensurePlayer().toggle();
@@ -306,6 +426,7 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
 
   let falls: ReturnType<typeof createKeysView> | null = null;
   function mount(): void {
+    litKeys = [];
     const common = { onError: opts.onError, onZoom: (z: number) => ((shown = z), bar.sync(z)) };
     falls = null;
     if (mode === "keys") {
@@ -322,12 +443,14 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
     bindPinch(view.root);
     bindTap(view.root);
     if (editingOn) editing.attach(mode === "page" ? (view as PageView) : null);
+    refreshMarks();
   }
 
   function setScore(next: ScoreDoc): void {
     player?.dispose();
     player = null;
     timeline = null;
+    matcher = null;
     bar.setPlaying(false);
     score = next;
     editing.reset();
@@ -335,6 +458,7 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
     shownParts = validParts(shownParts, score);
     bar.setParts(score.parts.map((p) => p.name), shownParts);
     remount();
+    syncPracticeBar();
   }
 
   // Shows other parts: playback goes on, the views and strips are built again.
@@ -342,6 +466,7 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
     shownParts = validParts(next, score);
     if (!fromBar) bar.setParts(score.parts.map((p) => p.name), shownParts);
     remount();
+    resetPractice();
     opts.parts?.onChange?.(shownParts);
   }
 
@@ -418,6 +543,7 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
 
   shell.append(editing.el, bar.el);
   mount();
+  setMidiInput(opts.midi ?? null);
 
   return {
     get score() {
@@ -454,6 +580,15 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
     get player() {
       return player;
     },
+    setMidiInput,
+    get practice() {
+      return { ...practice };
+    },
+    setPractice: (p) => setPractice(p),
+    get practiceStatus() {
+      if (!practising() || !matcher) return null;
+      return { index: matcher.index, count: matcher.groups.length, expected: matcher.current?.pitches ?? [], missing: matcher.missing, waiting: !!player?.waiting };
+    },
     getZoom: () => view.zoom,
     setZoom(z: number) {
       previewZoom(z);
@@ -466,6 +601,7 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
     },
     relayout: () => view.relayout(),
     destroy() {
+      unsubscribe?.();
       player?.dispose();
       kbd = null;
       clearTimeout(zoomTimer);

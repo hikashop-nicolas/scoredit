@@ -77,6 +77,9 @@ const CSS = `
 .sv-pop-parts{max-height:min(60vh,420px);overflow-y:auto;display:flex;flex-direction:column;gap:2px;min-width:180px;max-width:calc(100% - 16px)}
 .sv-pop-parts label{flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:6px 4px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .sv-pop-parts input{width:auto;margin:0;flex:0 0 auto}
+.sv-pop-practice .sv-choice{display:flex;flex-direction:column;border-bottom:1px solid var(--sv-btn-border,#4a4f57);margin-bottom:4px;padding-bottom:4px}
+.sv-pop-practice .sv-choice[hidden]{display:none}
+.sv-pop-practice .sv-hint{margin:4px 4px 0;max-width:220px;white-space:normal;font-size:12px;opacity:.75}
 .sv-pop-parts .sv-all{border-bottom:1px solid var(--sv-btn-border,#4a4f57);margin-bottom:4px;padding-bottom:8px}
 .sv-bar-end{display:contents}
 .sv-reading .sv-bar-end{display:none}

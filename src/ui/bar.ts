@@ -25,7 +25,15 @@ const ICON_PARTS = svgIcon('<line x1="9" x2="21" y1="6" y2="6"/><line x1="9" x2=
 const ICON_EDIT = svgIcon('<path d="M4 20h4L19 9l-4-4L4 16z"/><line x1="13.5" x2="17.5" y1="6.5" y2="10.5"/>');
 const ICON_VOL = svgIcon('<path d="M4 9v6h3.5L12 19V5L7.5 9H4z" fill="currentColor"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/>');
 const ICON_MUTED = svgIcon('<path d="M4 9v6h3.5L12 19V5L7.5 9H4z" fill="currentColor"/><line x1="16" x2="21" y1="9.5" y2="14.5"/><line x1="21" x2="16" y1="9.5" y2="14.5"/>');
+const ICON_PRACTICE = svgIcon('<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4.5"/><circle cx="12" cy="12" r="1" fill="currentColor"/>');
 const ICON_LINE = svgIcon('<line x1="2" x2="22" y1="9" y2="9"/><line x1="2" x2="22" y1="15" y2="15"/><polyline points="17 5 21 12 17 19"/>');
+
+/** Practice with a MIDI instrument: off, or wait for the player; the hand, and hearing the keys. */
+export interface PracticeState {
+  mode: "off" | "wait";
+  hand: "both" | "right" | "left";
+  echo: boolean;
+}
 
 export interface BarOptions {
   zoom: number;
@@ -53,6 +61,8 @@ export interface BarOptions {
   onParts?(shown: number[] | null): void;
   /** An Edit button, for scores that can be edited. */
   onEdit?(): void;
+  /** The practice settings changed (the button shows once setPractice makes it available). */
+  onPractice?(p: PracticeState): void;
 }
 
 export interface Bar {
@@ -65,6 +75,8 @@ export interface Bar {
   /** The parts of the score and those shown (null: all); no button for a single part. */
   setParts(names: string[], shown: number[] | null): void;
   setFretboard(available: boolean): void;
+  /** The practice button (shown when available), whether a hand can be chosen, and the settings. */
+  setPractice(available: boolean, hands: boolean, state: PracticeState): void;
 }
 
 /** Puts a pop-up of the bar over its button, kept inside the bar. */
@@ -244,7 +256,70 @@ export function createBar(o: BarOptions): Bar {
     });
     syncParts();
   };
+  // Practice: a button opening the mode, the hand and the echo of the keys.
+  const pracBtn = button(ICON_PRACTICE, t("practice"), () => {
+    pracPop.hidden = !pracPop.hidden;
+    pracBtn.setAttribute("aria-expanded", String(!pracPop.hidden));
+    if (!pracPop.hidden) placePop(pracPop, pracBtn);
+  });
+  pracBtn.classList.add("sv-bb-practice");
+  pracBtn.setAttribute("aria-expanded", "false");
+  pracBtn.hidden = true;
+  const pracPop = document.createElement("div");
+  pracPop.className = "sv-pop sv-pop-parts sv-pop-practice";
+  pracPop.hidden = true;
+  let prac: PracticeState = { mode: "off", hand: "both", echo: false };
+  const choice = (name: string, options: [string, string][], pick: (v: string) => void) => {
+    const box = document.createElement("div");
+    box.className = "sv-choice";
+    box.setAttribute("role", "radiogroup");
+    box.setAttribute("aria-label", name);
+    const inputs = options.map(([value, label]) => {
+      const l = document.createElement("label");
+      const r = document.createElement("input");
+      r.type = "radio";
+      r.name = `sv-${name}-${Math.random().toString(36).slice(2)}`;
+      r.value = value;
+      r.addEventListener("change", () => r.checked && pick(value));
+      l.append(r, document.createTextNode(label));
+      box.append(l);
+      return r;
+    });
+    return { box, set: (v: string) => inputs.forEach((r) => (r.checked = r.value === v)) };
+  };
+  const emit = () => {
+    pracBtn.classList.toggle("is-on", prac.mode !== "off");
+    pracBtn.setAttribute("aria-pressed", String(prac.mode !== "off"));
+    o.onPractice?.({ ...prac });
+  };
+  const modeChoice = choice(t("practice"), [["off", t("practiceOff")], ["wait", t("practiceWait")]], (v) => ((prac.mode = v as PracticeState["mode"]), emit()));
+  const handChoice = choice(t("practiceHand"), [["both", t("handsBoth")], ["right", t("handRight")], ["left", t("handLeft")]], (v) => ((prac.hand = v as PracticeState["hand"]), emit()));
+  handChoice.box.classList.add("sv-hands");
+  const echoLabel = document.createElement("label");
+  const echoBox = document.createElement("input");
+  echoBox.type = "checkbox";
+  echoBox.addEventListener("change", () => ((prac.echo = echoBox.checked), emit()));
+  echoLabel.append(echoBox, document.createTextNode(t("practiceEcho")));
+  const hint = document.createElement("p");
+  hint.className = "sv-hint";
+  hint.textContent = t("practiceHint");
+  pracPop.append(modeChoice.box, handChoice.box, echoLabel, hint);
+  const setPractice = (available: boolean, hands: boolean, state: PracticeState) => {
+    prac = { ...state };
+    pracBtn.hidden = !available || !o.onPractice;
+    if (pracBtn.hidden) pracPop.hidden = true;
+    modeChoice.set(prac.mode);
+    handChoice.set(prac.hand);
+    handChoice.box.hidden = !hands;
+    echoBox.checked = prac.echo;
+    pracBtn.classList.toggle("is-on", prac.mode !== "off");
+    pracBtn.setAttribute("aria-pressed", String(prac.mode !== "off"));
+  };
   document.addEventListener("pointerdown", (e) => {
+    if (!pracPop.hidden && !pracPop.contains(e.target as Node) && !pracBtn.contains(e.target as Node)) {
+      pracPop.hidden = true;
+      pracBtn.setAttribute("aria-expanded", "false");
+    }
     if (!pop.hidden && !pop.contains(e.target as Node) && e.target !== speedBtn) {
       pop.hidden = true;
       speedBtn.setAttribute("aria-expanded", "false");
@@ -325,7 +400,7 @@ export function createBar(o: BarOptions): Bar {
     el.append(tabBtn);
   }
   if (o.onEdit) el.append(button(ICON_EDIT, t("edit"), () => o.onEdit?.()));
-  el.append(partsBtn, partsPop, grow, slider, label);
+  el.append(partsBtn, partsPop, pracBtn, pracPop, grow, slider, label);
   let fs: HTMLButtonElement | null = null;
   if (o.onFullscreen) {
     fs = button(ICON_FS, t("fullscreen"), () => o.onFullscreen?.());
@@ -363,6 +438,7 @@ export function createBar(o: BarOptions): Bar {
       playBtn.setAttribute("aria-label", lbl);
     },
     setParts,
+    setPractice,
     setFretboard(available: boolean) {
       fretAvailable = available;
       fretBtn.hidden = mode === "keys" || !available;

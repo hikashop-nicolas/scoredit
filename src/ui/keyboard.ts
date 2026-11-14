@@ -4,6 +4,10 @@
 const BLACK = new Set([1, 3, 6, 8, 10]);
 export const isBlack = (midi: number) => BLACK.has(((midi % 12) + 12) % 12);
 
+/** Practice: a key played that was expected, and one that was not. */
+export const PRESSED_RIGHT = "#22c55e";
+export const PRESSED_WRONG = "#ef4444";
+
 /** Right hand, left hand, then one colour per further part. */
 export const HAND_COLORS = ["#3b82f6", "#f59e0b", "#10b981", "#ec4899", "#8b5cf6", "#ef4444"];
 
@@ -70,6 +74,9 @@ export class Keyboard {
   private hi = 84;
   private lit = new Map<number, string>();
   private keys = new Map<number, KeyGeom>();
+  // Practice: keys to play next (outlined) and keys held on the instrument (filled).
+  private expected = new Set<number>();
+  private pressed = new Map<number, string>();
 
   constructor(className = "sv-keys") {
     this.canvas = document.createElement("canvas");
@@ -103,6 +110,16 @@ export class Keyboard {
     this.lit.clear();
   }
 
+  /** Practice marks: the keys expected next, and the keys held with their colour. */
+  setPractice(expected: Iterable<number>, pressed: Map<number, string>): void {
+    this.expected = new Set(expected);
+    this.pressed = new Map(pressed);
+  }
+
+  get practiceMarks(): { expected: number[]; pressed: [number, string][] } {
+    return { expected: [...this.expected], pressed: [...this.pressed] };
+  }
+
   draw(): void {
     const c = this.canvas;
     const w = c.clientWidth;
@@ -121,8 +138,9 @@ export class Keyboard {
     g.fillRect(0, 0, w, h);
     for (const [m, k] of this.keys) {
       if (k.black) continue;
-      g.fillStyle = this.lit.get(m) ?? "#fbfbf8";
+      g.fillStyle = this.pressed.get(m) ?? this.lit.get(m) ?? "#fbfbf8";
       g.fillRect(k.x + 0.5, 0, k.w - 1, h - 1);
+      if (this.expected.has(m)) this.outline(g, k.x + 2, 2, k.w - 4, h - 5);
       if (m % 12 === 0 && k.w > 9) {
         g.fillStyle = "#8a8f98";
         g.font = `${Math.min(11, k.w * 0.55)}px system-ui, sans-serif`;
@@ -132,8 +150,15 @@ export class Keyboard {
     }
     for (const [m, k] of this.keys) {
       if (!k.black) continue;
-      g.fillStyle = this.lit.get(m) ?? "#22252b";
+      g.fillStyle = this.pressed.get(m) ?? this.lit.get(m) ?? "#22252b";
       g.fillRect(k.x, 0, k.w, h * 0.62);
+      if (this.expected.has(m)) this.outline(g, k.x + 1.5, 1.5, k.w - 3, h * 0.62 - 3);
     }
+  }
+
+  private outline(g: CanvasRenderingContext2D, x: number, y: number, w: number, h: number): void {
+    g.strokeStyle = PRESSED_RIGHT;
+    g.lineWidth = 3;
+    g.strokeRect(x, y, Math.max(1, w), Math.max(1, h));
   }
 }

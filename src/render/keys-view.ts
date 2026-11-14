@@ -21,7 +21,7 @@ export function noteColors(score: ScoreDoc): (e: NoteEvent) => string {
 
 // Falling notes: no score, the notes drop from the top onto a piano keyboard and sound as
 // they reach it, one colour per hand. Driven by the player's time.
-export function createKeysView(score: ScoreDoc, timeline: () => Timeline, opts: ViewOptions): View & { showTime(t: number): void } {
+export function createKeysView(score: ScoreDoc, timeline: () => Timeline, opts: ViewOptions): View & { showTime(t: number): void; readonly keyboard: Keyboard } {
   let zoom = opts.zoom;
   const root = document.createElement("div");
   root.className = "sv-falls";
@@ -123,6 +123,7 @@ export function createKeysView(score: ScoreDoc, timeline: () => Timeline, opts: 
     get zoom() {
       return zoom;
     },
+    keyboard: kb,
     showTime(t: number) {
       time = t;
       draw();

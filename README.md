@@ -42,6 +42,27 @@ A MuseScore file can set how long each fermata holds and each pause lasts; Music
 place for those, so the score keeps them as `scoredit-stretch` and `scoredit-pause` attributes
 that playback reads and that `score.serialize()` leaves out.
 
+## Practice with a MIDI instrument
+
+```ts
+import { createScoreViewer, webMidiInput } from "scoredit";
+
+const access = await navigator.requestMIDIAccess(); // the host asks; scoredit never does
+const viewer = createScoreViewer(container, score, { midi: webMidiInput(access) });
+viewer.setPractice({ mode: "wait", hand: "right", echo: true });
+```
+
+A `MidiInput` is anything with `subscribe(cb)` that hands over `{ data, time, source }` messages
+(time in `performance.now()` ms), so a native bridge can stand in for Web MIDI.
+`webMidiInput` merges every input, drops the doubled messages of a device listed twice (within
+2 ms) and follows devices plugged in later. With an input, the bar shows Practice: in wait
+mode playback holds before each next note or chord of the parts shown (or one hand of a piano)
+until its keys are struck, while the other parts accompany. Keys struck in any order count,
+wrong keys are ignored, a key held from before must be struck again, tied notes are not struck
+again, grace notes never block and an ornament or tremolo expects its written note once. The
+keyboard outlines the keys to play and shows those pressed (green expected, red not); "Hear my
+notes" sounds the keys with the part's instrument.
+
 ## Sound
 
 Playback starts on a built-in synthesizer (webaudio-tinysynth, Apache-2.0) and a plucked-string
