@@ -135,7 +135,12 @@ an MP3 is made.
 
 `exportPdf(score, { paper: "a4" | "letter", onProgress })` lays the score out on pages and gives a
 vector PDF (OSMD's paged layout drawn with jsPDF and svg2pdf.js, both MIT, loaded on first use);
-`renderPages` gives the same pages as SVG, for printing.
+`renderPages` gives the same pages as SVG, for printing. A long score is laid out a few pages at a
+time (OSMD gets a slice of measures, its pages are kept but the last, where the next slice starts),
+and each page is drawn and compressed as it comes, so `onProgress` moves steadily from 0 to 1 and
+the page stays responsive: on a 153-page orchestral score it is never busy for more than about two
+seconds (it was 13 seconds at a time before), for the same total time. A slice starts on a new page,
+where a slur, tie or hairpin coming from the page before may lose its continuation.
 
 The standard PDF fonts only draw Western European letters. For titles, part names, lyrics, words
 and chord text in other scripts, give `fonts`: a TrueType or OpenType (CFF) font per script, as a

@@ -278,6 +278,45 @@ async function pdfFonts(d) {
   d.check("A Latin-only score fetches no font and gives the same PDF as without fonts", r.latinAsked === 0 && r.latinSame);
 }
 
+// Exports a long two-part score, timing progress calls and how long the page goes without a turn.
+async function pdfProgress(d) {
+  let r;
+  await d.step("Export a 400-bar duet to PDF, noting each progress call and the longest the page was busy", async () => {
+    r = await d.eval(`(async () => {
+      const lib = scoreditLib;
+      const steps = ["C", "D", "E", "F", "G", "A", "B"];
+      const notes = (m, oct) => [0, 1, 2, 3].map((k) => '<note><pitch><step>' + steps[(m + k) % 7] + '</step><octave>' + oct + '</octave></pitch><duration>1</duration><voice>1</voice><type>quarter</type></note>').join("");
+      const part = (id, clef, oct) => '<part id="' + id + '">' + Array.from({ length: 400 }, (_, m) => '<measure number="' + (m + 1) + '">' + (m ? "" : '<attributes><divisions>1</divisions><key><fifths>0</fifths></key><time><beats>4</beats><beat-type>4</beat-type></time><clef><sign>' + clef + '</sign><line>' + (clef === "G" ? 2 : 4) + '</line></clef></attributes>') + notes(m, oct) + '</measure>').join("") + '</part>';
+      const xml = '<score-partwise version="4.0"><work><work-title>Long duet</work-title></work><part-list><score-part id="P1"><part-name>Flute</part-name><part-abbreviation>Fl.</part-abbreviation></score-part><score-part id="P2"><part-name>Cello</part-name><part-abbreviation>Vc.</part-abbreviation></score-part></part-list>' + part("P1", "G", 5) + part("P2", "F", 3) + '</score-partwise>';
+      const score = (await lib.loadScoreAsync(new TextEncoder().encode(xml))).score;
+      const t0 = performance.now();
+      const calls = [];
+      let last = t0, busy = 0;
+      const tick = setInterval(() => { const n = performance.now(); busy = Math.max(busy, n - last); last = n; }, 10);
+      const pdf = await lib.exportPdf(score, { onProgress: (f) => calls.push([performance.now() - t0, f]) });
+      clearInterval(tick);
+      const back = await lib.loadScoreAsync(pdf);
+      const pdfjs = await scoreditPdfjs();
+      const task = pdfjs.getDocument({ data: pdf.slice() });
+      const doc = await task.promise;
+      const pages = doc.numPages;
+      const firstText = (await (await doc.getPage(2)).getTextContent()).items.map((i) => i.str);
+      await task.destroy();
+      const strip = (x) => x.replace(/^<\\?xml[^>]*>\\s*/, "");
+      return { ms: performance.now() - t0, calls, busy, pages, same: strip(back.score.serialize()) === strip(score.serialize()), firstText };
+    })()`);
+  });
+  const f = r.calls.map((c) => c[1]);
+  const gaps = r.calls.slice(1).map((c, i) => c[0] - r.calls[i][0]);
+  const layout = f.filter((x) => x > 0.02 && x < 0.92);
+  d.check("Progress only moves forward, from 0 to 1", f[0] === 0 && f[f.length - 1] === 1 && f.every((x, i) => !i || x >= f[i - 1]), f.map((x) => x.toFixed(2)).join(" "));
+  d.check("Progress is reported while the score is laid out, not only while pages are drawn", layout.length >= r.pages && new Set(layout.map((x) => Math.floor(x * 5))).size >= 4, `${layout.length} calls during layout and drawing, ${r.pages} pages`);
+  d.check("No progress call waits more than 4 seconds for the next", Math.max(...gaps) < 4000, `longest wait ${Math.round(Math.max(...gaps))} ms of ${Math.round(r.ms)} ms`);
+  d.check("The page is never busy for more than 3 seconds at a time", r.busy < 3000, `longest busy stretch ${Math.round(r.busy)} ms`);
+  d.check("Later pages name the parts by their short names and repeat no title", r.firstText.includes("Fl.") && !r.firstText.includes("Long duet") && !r.firstText.includes("Flute"), r.firstText.join(" "));
+  d.check("Opening the PDF gives back the same MusicXML", r.same);
+}
+
 const EMPTY = "whole-bar rest";
 
 
@@ -421,6 +460,16 @@ export const scenarios = [
     why: "The standard PDF fonts only draw Western European letters. With a font for each script from the host, the title, part names, lyrics and words come out in the right letters, and can be selected and searched.",
     look: "A short duet titled in Japanese, with Russian part names, Japanese lyrics and Arabic, Hebrew and Greek words above the staff.",
     run: pdfFonts,
+  },
+  {
+    id: "pdf-progress",
+    title: "Exporting a long score to PDF reports progress all along and keeps the page responsive",
+    device: "desktop",
+    fixture: "melody.musicxml",
+    edit: false,
+    why: "A long score is laid out a few pages at a time, so the progress bar moves from the start and the page can still answer clicks while the PDF is made.",
+    look: "The melody fixture: the long score is made and exported out of sight.",
+    run: pdfProgress,
   },
   {
     id: "palette-desktop",
