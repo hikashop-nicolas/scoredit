@@ -63,6 +63,39 @@ again, grace notes never block and an ornament or tremolo expects its written no
 keyboard outlines the keys to play and shows those pressed (green expected, red not); "Hear my
 notes" sounds the keys with the part's instrument.
 
+### In time
+
+```ts
+viewer.setPractice({ mode: "time", hand: "both", latencyMs: 0 });
+createScoreViewer(container, score, { midi, onPracticeEnd: (s) => console.log(s.accuracy) });
+```
+
+Playback runs at the chosen speed and the practised notes (same choice of parts, hands, ties,
+graces, ornaments and tremolos as wait mode) are not sounded. Each one is matched to a key of
+its pitch (`TimeMatcher`):
+
+- Window: ±max(80, 120 / speed) ms around the note, in real time (±120 ms at speed 1, ±240 ms
+  at half speed). On time within ±max(35, 50 / speed) ms, early or late beyond that, missed
+  once the window has passed. A window never reaches past halfway to the previous or next note
+  of the same pitch, so fast repeated notes each keep their own.
+- A key that matches no note waiting for it (none of its pitch in the window, or that note
+  already played) is a wrong key; it consumes nothing.
+- Accuracy: on time counts 1, early or late 1/2, over the notes judged plus the wrong keys.
+- Feedback: keys pressed green (on time), amber (early or late), red (wrong); a missed note's
+  key flashes grey; the keys due now are outlined. The notes themselves take the same colours
+  in the score and in falling notes.
+- A run goes from where playback starts to where it stops or the piece ends: then a summary
+  shows (on time, early, late, missed, wrong keys, accuracy) and `onPracticeEnd` hears it.
+  Nothing is kept; playing again or seeking starts a new run. `practiceStatus.counts` has the
+  running counts.
+
+Timing is judged on the audio clock: a key's MIDI time (`performance.now()` ms) is moved onto
+`AudioContext` time, less the output latency (`outputLatency`, else `baseLatency`) and less
+`practice.latencyMs`, which covers what the browser cannot know (the instrument, Bluetooth
+audio, the ear). To calibrate, a host has the player play along in time with a steady passage
+(a scale in quarter notes), reads `meanOffsetMs` from the summary (the mean signed offset of
+the notes played, positive when late) and adds it to `latencyMs`; one or two passes settle it.
+
 ### Note entry from a MIDI keyboard
 
 The same input feeds the editor; practice and editing are exclusive (while editing, keys never
