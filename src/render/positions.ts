@@ -11,11 +11,40 @@ export interface Positions {
   bottom: number;
   /** Each staff drawn: its part (in the rendered score) and staff number, top and bottom line, px. */
   staves: { part: number; staff: number; top: number; bottom: number; lines: number }[];
-  /** Each note head drawn, for picking: its voice and beat, and its rank in its chord from the lowest. */
-  drawn: { g: SVGGElement; part: number; staff: number; voice: string; measure: number; onset: number; rank: number; x: number; y: number }[];
+  /** Each note head drawn, for picking: its voice and beat, its rank in its chord from the lowest, its written MIDI pitch (-1 for a rest). */
+  drawn: { g: SVGGElement; part: number; staff: number; voice: string; measure: number; onset: number; rank: number; pitch: number; x: number; y: number }[];
 }
 
 export const noteKey = (measure: number, onset: number) => `${measure}|${Math.round(onset * 960)}`;
+
+/** The written MIDI pitch of a <note> element (before transposition), null for a rest or a drum. */
+export function writtenMidi(el: Element): number | null {
+  const p = el.getElementsByTagName("pitch")[0];
+  if (!p) return null;
+  const text = (tag: string) => p.getElementsByTagName(tag)[0]?.textContent ?? "";
+  const step = "CDEFGAB".indexOf(text("step").trim());
+  if (step < 0) return null;
+  return (Number(text("octave")) + 1) * 12 + [0, 2, 4, 5, 7, 9, 11][step] + Math.round(Number(text("alter")) || 0);
+}
+
+/** Practice marks on drawn notes: "on" time, "near" (early or late), "miss". */
+export type NoteMark = "on" | "near" | "miss";
+const MARKS: NoteMark[] = ["on", "near", "miss"];
+
+/** Which drawn note a mark is for: its part in the rendered score, staff, beat and written pitch. */
+export const markKey = (part: number, staff: number, measure: number, onset: number, pitch: number) => `${part}|${staff}|${noteKey(measure, onset)}|${pitch}`;
+
+/** Puts the marks on the notes of one render (after it is drawn, or when marks change). */
+export function applyMarks(pos: Positions, marks: Map<string, NoteMark>): void {
+  for (const d of pos.drawn) {
+    if (d.pitch < 0) continue;
+    const m = marks.get(markKey(d.part, d.staff, d.measure, d.onset, d.pitch));
+    // A chord is one group: its heads, lowest first, are coloured one by one.
+    const heads = d.g.getElementsByClassName("vf-notehead");
+    const el = heads.length > 1 && heads[d.rank] ? heads[d.rank] : d.g;
+    for (const k of MARKS) el.classList.toggle(`sv-mark-${k}`, m === k);
+  }
+}
 
 // Reads positions out of a rendered OSMD slice whose first measure is score measure `first`;
 // x is in px from the left of the render, less `crop`.
@@ -65,8 +94,8 @@ export function collectPositions(osmd: OpenSheetMusicDisplay, first: number, zoo
             const g = (gn as unknown as { getSVGGElement?(): SVGGElement }).getSVGGElement?.();
             if (!g) continue;
             if (!gn.sourceNote.isRest())
-              drawn.push({ g, ...where, voice, measure: m, onset: q, rank: byPitch.indexOf(gn), x: gn.PositionAndShape.AbsolutePosition.x * u - crop, y: gn.PositionAndShape.AbsolutePosition.y * u });
-            else drawn.push({ g, ...where, voice, measure: m, onset: q, rank: -1, x: gn.PositionAndShape.AbsolutePosition.x * u - crop, y: gn.PositionAndShape.AbsolutePosition.y * u });
+              drawn.push({ g, ...where, voice, measure: m, onset: q, rank: byPitch.indexOf(gn), pitch: (gn.sourceNote.halfTone ?? -12) + 12, x: gn.PositionAndShape.AbsolutePosition.x * u - crop, y: gn.PositionAndShape.AbsolutePosition.y * u });
+            else drawn.push({ g, ...where, voice, measure: m, onset: q, rank: -1, pitch: -1, x: gn.PositionAndShape.AbsolutePosition.x * u - crop, y: gn.PositionAndShape.AbsolutePosition.y * u });
             const nk = noteKey(m, q);
             const list = notes.get(nk);
             if (list) list.push(g);

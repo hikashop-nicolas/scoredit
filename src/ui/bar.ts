@@ -27,12 +27,25 @@ const ICON_VOL = svgIcon('<path d="M4 9v6h3.5L12 19V5L7.5 9H4z" fill="currentCol
 const ICON_MUTED = svgIcon('<path d="M4 9v6h3.5L12 19V5L7.5 9H4z" fill="currentColor"/><line x1="16" x2="21" y1="9.5" y2="14.5"/><line x1="21" x2="16" y1="9.5" y2="14.5"/>');
 const ICON_PRACTICE = svgIcon('<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4.5"/><circle cx="12" cy="12" r="1" fill="currentColor"/>');
 const ICON_LINE = svgIcon('<line x1="2" x2="22" y1="9" y2="9"/><line x1="2" x2="22" y1="15" y2="15"/><polyline points="17 5 21 12 17 19"/>');
+const ICON_CLOSE = svgIcon('<line x1="6" x2="18" y1="6" y2="18"/><line x1="18" x2="6" y1="6" y2="18"/>');
 
-/** Practice with a MIDI instrument: off, or wait for the player; the hand, and hearing the keys. */
+/** Practice with a MIDI instrument: off, wait for the player or play in time; the hand, hearing the keys. */
 export interface PracticeState {
-  mode: "off" | "wait";
+  mode: "off" | "wait" | "time";
   hand: "both" | "right" | "left";
   echo: boolean;
+  /** In time: ms taken off every key's time, for the delay of the instrument and the ear (the host calibrates it). */
+  latencyMs: number;
+}
+
+/** What the end of an in-time run shows. */
+export interface PracticeSummaryView {
+  onTime: number;
+  early: number;
+  late: number;
+  missed: number;
+  wrong: number;
+  accuracy: number | null;
 }
 
 export interface BarOptions {
@@ -77,6 +90,8 @@ export interface Bar {
   setFretboard(available: boolean): void;
   /** The practice button (shown when available), whether a hand can be chosen, and the settings. */
   setPractice(available: boolean, hands: boolean, state: PracticeState): void;
+  /** The end-of-run summary pop-up (null hides it). */
+  showSummary(s: PracticeSummaryView | null): void;
 }
 
 /** Puts a pop-up of the bar over its button, kept inside the bar. */
@@ -268,7 +283,7 @@ export function createBar(o: BarOptions): Bar {
   const pracPop = document.createElement("div");
   pracPop.className = "sv-pop sv-pop-parts sv-pop-practice";
   pracPop.hidden = true;
-  let prac: PracticeState = { mode: "off", hand: "both", echo: false };
+  let prac: PracticeState = { mode: "off", hand: "both", echo: false, latencyMs: 0 };
   const choice = (name: string, options: [string, string][], pick: (v: string) => void) => {
     const box = document.createElement("div");
     box.className = "sv-choice";
@@ -292,7 +307,7 @@ export function createBar(o: BarOptions): Bar {
     pracBtn.setAttribute("aria-pressed", String(prac.mode !== "off"));
     o.onPractice?.({ ...prac });
   };
-  const modeChoice = choice(t("practice"), [["off", t("practiceOff")], ["wait", t("practiceWait")]], (v) => ((prac.mode = v as PracticeState["mode"]), emit()));
+  const modeChoice = choice(t("practice"), [["off", t("practiceOff")], ["wait", t("practiceWait")], ["time", t("practiceTime")]], (v) => ((prac.mode = v as PracticeState["mode"]), emit()));
   const handChoice = choice(t("practiceHand"), [["both", t("handsBoth")], ["right", t("handRight")], ["left", t("handLeft")]], (v) => ((prac.hand = v as PracticeState["hand"]), emit()));
   handChoice.box.classList.add("sv-hands");
   const echoLabel = document.createElement("label");
@@ -314,6 +329,42 @@ export function createBar(o: BarOptions): Bar {
     echoBox.checked = prac.echo;
     pracBtn.classList.toggle("is-on", prac.mode !== "off");
     pracBtn.setAttribute("aria-pressed", String(prac.mode !== "off"));
+  };
+  // The end of an in-time run: counts and accuracy, until closed or played again.
+  const sumPop = document.createElement("div");
+  sumPop.className = "sv-pop sv-pop-summary";
+  sumPop.setAttribute("role", "status");
+  sumPop.hidden = true;
+  const showSummary = (s: PracticeSummaryView | null) => {
+    sumPop.hidden = !s;
+    if (!s) return;
+    sumPop.replaceChildren();
+    const head = document.createElement("div");
+    head.className = "sv-sum-head";
+    const title = document.createElement("strong");
+    title.textContent = t("summaryTitle");
+    const close = button(ICON_CLOSE, t("close"), () => (sumPop.hidden = true));
+    close.classList.add("sv-sum-close");
+    head.append(title, close);
+    const list = document.createElement("dl");
+    const rows: [string, string, string][] = [
+      ["on", t("summaryOnTime"), String(s.onTime)],
+      ["early", t("summaryEarly"), String(s.early)],
+      ["late", t("summaryLate"), String(s.late)],
+      ["missed", t("summaryMissed"), String(s.missed)],
+      ["wrong", t("summaryWrong"), String(s.wrong)],
+      ["accuracy", t("summaryAccuracy"), s.accuracy === null ? "-" : `${s.accuracy}%`],
+    ];
+    for (const [k, label, value] of rows) {
+      const dt = document.createElement("dt");
+      dt.textContent = label;
+      const dd = document.createElement("dd");
+      dd.textContent = value;
+      dd.dataset.k = k;
+      list.append(dt, dd);
+    }
+    sumPop.append(head, list);
+    placePop(sumPop, pracBtn.hidden ? playBtn : pracBtn);
   };
   document.addEventListener("pointerdown", (e) => {
     if (!pracPop.hidden && !pracPop.contains(e.target as Node) && !pracBtn.contains(e.target as Node)) {
@@ -400,7 +451,7 @@ export function createBar(o: BarOptions): Bar {
     el.append(tabBtn);
   }
   if (o.onEdit) el.append(button(ICON_EDIT, t("edit"), () => o.onEdit?.()));
-  el.append(partsBtn, partsPop, pracBtn, pracPop, grow, slider, label);
+  el.append(partsBtn, partsPop, pracBtn, pracPop, sumPop, grow, slider, label);
   let fs: HTMLButtonElement | null = null;
   if (o.onFullscreen) {
     fs = button(ICON_FS, t("fullscreen"), () => o.onFullscreen?.());
@@ -439,6 +490,7 @@ export function createBar(o: BarOptions): Bar {
     },
     setParts,
     setPractice,
+    showSummary,
     setFretboard(available: boolean) {
       fretAvailable = available;
       fretBtn.hidden = mode === "keys" || !available;

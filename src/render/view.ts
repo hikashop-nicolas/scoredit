@@ -1,3 +1,12 @@
+import type { NoteEvent } from "../play/timeline";
+import type { NoteMark } from "./positions";
+
+/** Practice marks: drawn notes by markKey (page and line views), timeline notes (falling notes). */
+export interface PracticeMarks {
+  notes: Map<string, NoteMark>;
+  events: Map<NoteEvent, NoteMark>;
+}
+
 /** What the viewer shell needs from a layout (page or line). */
 export interface View {
   /** The scrolling element the view lives in; the shell places it above the bar. */
@@ -14,6 +23,8 @@ export interface View {
   hidePosition(): void;
   /** Lights or unlights the notes starting at these `noteKey`s. */
   highlight(keys: string[], on: boolean): void;
+  /** Colours practised notes by how they were played (the marks are kept and put back on redraws). */
+  mark(marks: PracticeMarks): void;
   /** The measure and beat under a client point, for "play from here". */
   hit(clientX: number, clientY: number): { measure: number; quarter: number } | null;
 }

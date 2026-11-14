@@ -19,7 +19,7 @@ export { ScoreDoc, partFamily, PART_FAMILIES, type PartFamily, type PartInfo } f
 export { breakSystems, systemOf, type SystemRange, type BreakOptions } from "./layout/systems";
 export { ScoreEditor, type Caret, type Change, type NoteInput } from "./edit/editor";
 export { spellInKey } from "./edit/notes";
-export { createScoreViewer, type LayoutMode, type PracticeState, type PracticeStatus, type ScoreViewerHandle, type ScoreViewerOptions } from "./render/viewer";
+export { createScoreViewer, type LayoutMode, type PracticeState, type PracticeStatus, type PracticeSummary, type ScoreViewerHandle, type ScoreViewerOptions } from "./render/viewer";
 export type { LineView } from "./render/line-view";
 export { buildTimeline, type Timeline, type NoteEvent } from "./play/timeline";
 export { ChordGrouper, midiDeduper, parseControl, parseNote, webMidiInput, type MidiAccessLike, type MidiInput, type MidiMessage, type MidiOutput } from "./play/midi";

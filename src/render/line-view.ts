@@ -4,8 +4,8 @@ import { patchOsmd, keepRepeatOpen } from "./osmd-patches";
 patchOsmd();
 import { breakSystems, systemOf, type SystemRange } from "../layout/systems";
 import type { ScoreDoc } from "../model/score";
-import { collectPositions, hitAt, xAt, type Positions } from "./positions";
-import type { View, ViewOptions } from "./view";
+import { applyMarks, collectPositions, hitAt, xAt, type Positions } from "./positions";
+import type { PracticeMarks, View, ViewOptions } from "./view";
 
 export interface LineView extends View {
   /** Chunks of measures, each rendered as its own single-line OSMD score. */
@@ -237,6 +237,7 @@ export function createLineView(score: ScoreDoc, opts: ViewOptions & { fit?: bool
       slot.crop = crop;
       slot.y0 = y0;
       slot.pos = collectPositions(osmd, range.start, zoom, crop);
+      if (marks?.notes.size) applyMarks(slot.pos, marks.notes);
       slot.host = host;
       slot.osmd = osmd;
       if (grew) align();
@@ -299,6 +300,11 @@ export function createLineView(score: ScoreDoc, opts: ViewOptions & { fit?: bool
       schedule();
     }
   }
+  let marks: PracticeMarks | null = null;
+  function mark(m: PracticeMarks): void {
+    marks = m;
+    for (const s of slots) if (s.pos) applyMarks(s.pos, m.notes);
+  }
   function highlight(keys: string[], on: boolean): void {
     for (const k of keys) {
       const m = Number(k.split("|")[0]);
@@ -349,6 +355,7 @@ export function createLineView(score: ScoreDoc, opts: ViewOptions & { fit?: bool
     showPosition,
     hidePosition: () => (cursor.hidden = true),
     highlight,
+    mark,
     hit(cx: number, _cy: number) {
       const x = cx - root.getBoundingClientRect().left + root.scrollLeft;
       const s = slots.find((c) => x >= c.el.offsetLeft && x < c.el.offsetLeft + c.el.offsetWidth);

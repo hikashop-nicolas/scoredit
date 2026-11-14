@@ -7,6 +7,11 @@ export const isBlack = (midi: number) => BLACK.has(((midi % 12) + 12) % 12);
 /** Practice: a key played that was expected, and one that was not. */
 export const PRESSED_RIGHT = "#22c55e";
 export const PRESSED_WRONG = "#ef4444";
+/** In-time practice: a key struck early or late, and a note missed. */
+export const PRESSED_NEAR = "#eab308";
+export const MISSED = "#8b929c";
+/** In-time practice colours of a note by how it was played. */
+export const MARK_COLORS = { on: PRESSED_RIGHT, near: PRESSED_NEAR, miss: MISSED } as const;
 
 /** Right hand, left hand, then one colour per further part. */
 export const HAND_COLORS = ["#3b82f6", "#f59e0b", "#10b981", "#ec4899", "#8b5cf6", "#ef4444"];

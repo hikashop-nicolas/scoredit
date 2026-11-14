@@ -51,6 +51,9 @@ const CSS = `
 .sv-sel path,.sv-sel ellipse{fill:var(--sv-caret,#e8710a)!important;stroke:var(--sv-caret,#e8710a)!important}
 .sv-cursor{position:absolute;top:0;bottom:0;left:0;width:3px;margin-left:-1px;background:var(--sv-play,#1a73e8);opacity:.55;border-radius:2px;pointer-events:none;z-index:1}
 .sv-on path,.sv-on rect{fill:var(--sv-play,#1a73e8);stroke:var(--sv-play,#1a73e8)}
+.sv-mark-on path,.sv-mark-on rect,path.sv-mark-on{fill:#16a34a;stroke:#16a34a}
+.sv-mark-near path,.sv-mark-near rect,path.sv-mark-near{fill:#ca8a04;stroke:#ca8a04}
+.sv-mark-miss path,.sv-mark-miss rect,path.sv-mark-miss{fill:#8b929c;stroke:#8b929c}
 .sv-bb-play{min-width:40px}
 .sv-bb-tab{width:auto;padding:0 6px}
 .sv-tab-label{font:600 10px/1 system-ui,sans-serif;letter-spacing:.06em}
@@ -79,6 +82,18 @@ const CSS = `
 .sv-pop-parts input{width:auto;margin:0;flex:0 0 auto}
 .sv-pop-practice .sv-choice{display:flex;flex-direction:column;border-bottom:1px solid var(--sv-btn-border,#4a4f57);margin-bottom:4px;padding-bottom:4px}
 .sv-pop-practice .sv-choice[hidden]{display:none}
+.sv-pop-summary{min-width:180px}
+.sv-pop-summary[hidden]{display:none}
+.sv-sum-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:4px}
+.sv-sum-close.sv-bb-btn{width:26px;height:26px;padding:0}
+.sv-pop-summary dl{display:grid;grid-template-columns:1fr auto;gap:2px 16px;margin:0}
+.sv-pop-summary dt{opacity:.85}
+.sv-pop-summary dd{margin:0;text-align:right;font-variant-numeric:tabular-nums}
+.sv-pop-summary dd[data-k=on]{color:#4ade80}
+.sv-pop-summary dd[data-k=early],.sv-pop-summary dd[data-k=late]{color:#facc15}
+.sv-pop-summary dd[data-k=wrong]{color:#f87171}
+.sv-pop-summary dd[data-k=missed]{color:#b4bac3}
+.sv-pop-summary dd[data-k=accuracy]{font-weight:600}
 .sv-pop-practice .sv-hint{margin:4px 4px 0;max-width:220px;white-space:normal;font-size:12px;opacity:.75}
 .sv-pop-parts .sv-all{border-bottom:1px solid var(--sv-btn-border,#4a4f57);margin-bottom:4px;padding-bottom:8px}
 .sv-bar-end{display:contents}

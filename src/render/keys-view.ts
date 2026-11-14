@@ -1,7 +1,7 @@
 import type { ScoreDoc } from "../model/score";
 import type { NoteEvent, Timeline } from "../play/timeline";
-import { HAND_COLORS, Keyboard, noteLane } from "../ui/keyboard";
-import type { View, ViewOptions } from "./view";
+import { HAND_COLORS, Keyboard, MARK_COLORS, noteLane } from "../ui/keyboard";
+import type { PracticeMarks, View, ViewOptions } from "./view";
 
 /** Seconds of music above the keyboard at zoom 1. */
 const SECONDS = 4;
@@ -42,6 +42,7 @@ export function createKeysView(score: ScoreDoc, timeline: () => Timeline, opts: 
   kb.setRange(lo, hi);
   let time = 0;
   let shown = zoom;
+  let marks: PracticeMarks | null = null;
 
   // First event at or after time t (binary search).
   const firstAt = (t: number) => {
@@ -89,7 +90,8 @@ export function createKeysView(score: ScoreDoc, timeline: () => Timeline, opts: 
       const bottom = h - (e.time - time) * pps;
       const top = bottom - Math.max(gap + 2, e.dur * pps) + gap;
       const on = e.time <= time && e.time + e.dur > time;
-      const c = color(e);
+      const mk = marks?.events.get(e);
+      const c = mk ? MARK_COLORS[mk] : color(e);
       // A key struck again flashes lighter for a moment.
       if (on) kb.setLit(e.midi, time - e.time < 0.09 ? lighten(c, 0.45) : c);
       const x = lane.x + 1;
@@ -144,6 +146,10 @@ export function createKeysView(score: ScoreDoc, timeline: () => Timeline, opts: 
     showPosition() {},
     hidePosition() {},
     highlight() {},
+    mark(m: PracticeMarks) {
+      marks = m;
+      draw();
+    },
     hit: () => null,
   };
 }

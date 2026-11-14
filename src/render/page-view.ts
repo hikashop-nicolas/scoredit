@@ -6,8 +6,8 @@ import { breakSystems, systemOf, type SystemRange } from "../layout/systems";
 import { abbreviate, type ScoreDoc } from "../model/score";
 import { kid, kids, text } from "../model/xml";
 import { capSystems } from "./caps";
-import { collectPositions, hitAt, xAt, type Positions } from "./positions";
-import type { View, ViewOptions } from "./view";
+import { applyMarks, collectPositions, hitAt, xAt, type Positions } from "./positions";
+import type { PracticeMarks, View, ViewOptions } from "./view";
 
 /** What a tap or click on the page points at, for editing. */
 export interface Pick {
@@ -434,6 +434,12 @@ export function createPageView(initial: ScoreDoc, opts: ViewOptions): PageView {
     caret.style.height = `${box.bottom - box.top + 2 * pad}px`;
   }
 
+  let marks: PracticeMarks | null = null;
+  function mark(m: PracticeMarks): void {
+    marks = m;
+    for (const s of slots) if (s.pos) applyMarks(s.pos, m.notes);
+  }
+
   let selected: Parameters<PageView["select"]>[0] = [];
   function select(keys: typeof selected): void {
     for (const g of page.querySelectorAll(".sv-sel")) g.classList.remove("sv-sel");
@@ -447,6 +453,7 @@ export function createPageView(initial: ScoreDoc, opts: ViewOptions): PageView {
 
   // A system drawn (again): the caret and selection in it are put back.
   function slotRendered(i: number): void {
+    if (marks?.notes.size && slots[i]?.pos) applyMarks(slots[i].pos!, marks.notes);
     if (caretAt && systemOf(systems, caretAt.measure) === i) showCaret(caretAt);
     if (selected.some((k) => systemOf(systems, k.measure) === i)) select(selected);
   }
@@ -521,6 +528,7 @@ export function createPageView(initial: ScoreDoc, opts: ViewOptions): PageView {
     showCaret,
     select,
     highlight,
+    mark,
     hit(cx: number, cy: number) {
       for (const s of slots) {
         const r = s.el.getBoundingClientRect();

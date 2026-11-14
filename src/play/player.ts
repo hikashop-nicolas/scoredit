@@ -1,5 +1,6 @@
 import WebAudioTinySynth from "../vendor/tinysynth.js";
 import { PLUCKED, Pluck } from "./pluck";
+import { heardAt, heardWhen } from "./practice";
 import { Sampler } from "./sampler";
 import type { SoundDownloads } from "./sounds";
 import { quarterToSec, secToQuarter, type ControlEvent, type MeasureSpan, type NoteEvent, type Timeline } from "./timeline";
@@ -118,6 +119,27 @@ export class Player {
   // Where playback holds: a moment before the gate, so the notes there are not yet sounding.
   private stopAt(): number {
     return this.gate === null ? Infinity : Math.max(0, this.gate - 1e-3);
+  }
+
+  /** Seconds from the audio clock to the ear (the context's output or base latency, 0 when unknown). */
+  get outputLatency(): number {
+    const ctx = synth().getAudioContext() as AudioContext & { outputLatency?: number };
+    return ctx.outputLatency || ctx.baseLatency || 0;
+  }
+
+  // Both clocks read together.
+  private clock(): { audio: number; perf: number } {
+    return { audio: synth().getAudioContext().currentTime, perf: performance.now() };
+  }
+
+  /** The piece time heard at `perf` (performance.now() ms, as MIDI messages carry), less `extra` seconds. */
+  heardAt(perf: number, extra = 0): number {
+    return heardAt(perf, this.clock(), this.startAt, this.speed, this.outputLatency + extra);
+  }
+
+  /** When piece time `t` is heard while playing on, in performance.now() ms. */
+  heardWhen(t: number, extra = 0): number {
+    return heardWhen(t, this.clock(), this.startAt, this.speed, this.outputLatency + extra);
   }
 
   /** Wait mode: hold playback just before piece time `t` (null: play on freely). */
