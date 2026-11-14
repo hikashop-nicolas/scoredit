@@ -142,7 +142,7 @@ function writeScore(systems: PSystem[], header: TextRun[], width: number, docTit
     const t = staffMap.flatMap((k) => (k < 0 ? [] : m.attrs[k])).find((a) => a.time && leading(a, m))?.time;
     if (t) time = t;
     times.push(time);
-    timeMeasure(m, (time.beats * 4) / time.type, sys.staves[0].space);
+    timeMeasure(m, (time.beats * 4) / time.type, sys.staves[0].space, sys.groups);
   }
 
   parts.forEach((part, pi) => {
@@ -191,6 +191,43 @@ function writeScore(systems: PSystem[], header: TextRun[], width: number, docTit
       if (attrs.length) out.push(`<attributes>${attrs.join("")}</attributes>`);
 
       const mlen = (t.beats * 4) / t.type;
+      // Pitches, per staff as drawn (a cross-staff note reads with the clef of the staff it sits on).
+      const drawn = ks.map(() => [] as { e: PEvent; i: number }[]);
+      ks.forEach((k, sk) => {
+        if (k < 0) return;
+        for (const e of m.events[k]) {
+          e.notes = [];
+          if (e.tab) e.notes = e.tab.map((t) => ({ ...spell(tuning(lines[sk])[t.string - 1] + t.fret, fifths ?? 0), pos: 0, tab: t }));
+          else
+            e.heads.forEach((h, i) => {
+              const d = ks.indexOf(h.staff);
+              drawn[d < 0 ? sk : d].push({ e, i });
+            });
+        }
+      });
+      ks.forEach((k, sk) => {
+        if (k < 0) return;
+        const mid = m.attrs[k].filter((a) => a.clef && !leading(a, m)).sort((a, b) => a.x - b.x);
+        const alters = new Map<number, number>();
+        let clef = clefs[sk];
+        let ci = 0;
+        for (const { e, i } of drawn[sk].sort((a, b) => a.e.x - b.e.x || (a.e === b.e ? a.i - b.i : 0))) {
+          while (ci < mid.length && mid[ci].x < e.x) clef = mid[ci++].clef!;
+          const h = e.heads[i];
+          const d = clef.top - h.pos;
+          let alter = 0;
+          if (h.acc !== undefined && !e.grace) alters.set(d, h.acc);
+          if (h.acc !== undefined) alter = h.acc;
+          else if (h.tieStop && tied[sk].has(d)) alter = tied[sk].get(d)!;
+          else if (alters.has(d)) alter = alters.get(d)!;
+          else alter = keyAlter(fifths ?? 0, ((d % 7) + 7) % 7);
+          if (h.tieStart) tied[sk].set(d, alter);
+          else if (h.tieStop) tied[sk].delete(d);
+          e.notes[i] = { step: STEPS[((d % 7) + 7) % 7], octave: Math.floor(d / 7) + Math.round((h.shift ?? 0) / 12), alter, shown: h.acc, pos: h.pos, tieStart: h.tieStart, tieStop: h.tieStop, staff: sk };
+        }
+        while (ci < mid.length) clef = mid[ci++].clef!;
+        clefs[sk] = clef;
+      });
       let pos = 0;
       ks.forEach((k, sk) => {
         const staffNo = part.staves > 1 ? sk + 1 : 0;
@@ -206,31 +243,6 @@ function writeScore(systems: PSystem[], header: TextRun[], width: number, docTit
         const dirs = m.dirs.filter((d) => d.staff === k).sort((a, b) => a.x - b.x);
         const voices = [...new Set(evs.map((e) => e.voice))].sort((a, b) => a - b);
         if (!voices.length) voices.push(1);
-        // Pitches: the clef and accidentals in force at each chord, left to right.
-        const alters = new Map<number, number>();
-        let clef = clefs[sk];
-        const byX = [...evs].sort((a, b) => a.x - b.x);
-        let ci = 0;
-        for (const e of byX) {
-          while (ci < mid.length && mid[ci].x < e.x) clef = mid[ci++].clef!;
-          if (e.tab) {
-            e.notes = e.tab.map((t) => ({ ...spell(tuning(lines[sk])[t.string - 1] + t.fret, fifths ?? 0), pos: 0, tab: t }));
-            continue;
-          }
-          e.notes = e.heads.map((h) => {
-            const d = clef.top - h.pos;
-            let alter = 0;
-            if (h.acc !== undefined && !e.grace) alters.set(d, h.acc);
-            if (h.acc !== undefined) alter = h.acc;
-            else if (h.tieStop && tied[sk].has(d)) alter = tied[sk].get(d)!;
-            else if (alters.has(d)) alter = alters.get(d)!;
-            else alter = keyAlter(fifths ?? 0, ((d % 7) + 7) % 7);
-            if (h.tieStart) tied[sk].set(d, alter);
-            else if (h.tieStop) tied[sk].delete(d);
-            return { step: STEPS[((d % 7) + 7) % 7], octave: Math.floor(d / 7) + Math.round((h.shift ?? 0) / 12), alter, shown: h.acc, pos: h.pos, tieStart: h.tieStart, tieStop: h.tieStop };
-          });
-        }
-        while (ci < mid.length) clef = mid[ci++].clef!;
         voices.forEach((v) => {
           if (pos > 0) out.push(`<backup><duration>${Math.round(pos * DIV)}</duration></backup>`);
           pos = 0;
@@ -252,7 +264,6 @@ function writeScore(systems: PSystem[], header: TextRun[], width: number, docTit
           for (const d of pending) out.push(directionXml(d, staffNo));
           if (v === voices[0]) while (midClef < mid.length) out.push(`<attributes>${clefXml(mid[midClef++].clef!, staffNo)}</attributes>`);
         });
-        clefs[sk] = clef;
       });
       const end = m.ending?.end ? `<ending number="${esc(m.ending.number)}" type="${m.ending.end}"/>` : "";
       if (m.right && (m.right.repeat || m.right.kinds.length > 1 || end)) {
@@ -356,7 +367,8 @@ function nameFits(a: string, b: string): boolean {
 }
 
 /** Onsets: voices one after the other; a voice starting late lines up with the column it stands in. */
-function timeMeasure(m: PMeasure, mlen: number, space: number): void {
+function timeMeasure(m: PMeasure, mlen: number, space: number, groups: [number, number][] = []): void {
+  for (const [a, b] of groups) for (let k = a; k < b; k++) crossChord(m, k, mlen, space);
   const cols: { x: number; at: number }[] = [];
   // Unnumbered tuplets.
   const lines = m.events.flatMap((evs) => [...new Set(evs.map((e) => e.voice))].map((v) => evs.filter((e) => e.voice === v && !e.grace)));
@@ -383,6 +395,35 @@ function timeMeasure(m: PMeasure, mlen: number, space: number): void {
   }
   for (const evs of m.events)
     for (const e of evs) if (e.grace) e.onset = evs.find((n) => !n.grace && n.voice === e.voice && n.x > e.x)?.onset ?? 0;
+}
+
+/**
+ * A lone chord drawn on the other staff of a grand staff: when its staff's voice is too long by
+ * just that chord and the other staff's first voice is short by as much, it belongs there.
+ */
+function crossChord(m: PMeasure, k: number, mlen: number, space: number): void {
+  const total = (l: PEvent[]) => l.reduce((t, e) => t + (e.rest && e.base === 4 && l.length === 1 ? mlen : length(e)), 0);
+  const lineOf = (s: number, v: number) => m.events[s].filter((e) => e.voice === v && !e.grace);
+  for (const [s, t] of [[k, k + 1], [k + 1, k]]) {
+    const tv = Math.min(...m.events[t].filter((e) => !e.grace).map((e) => e.voice));
+    if (!Number.isFinite(tv)) continue;
+    const deficit = mlen - total(lineOf(t, tv));
+    if (deficit < 1e-6) continue;
+    for (const v of new Set(m.events[s].map((e) => e.voice))) {
+      const line = lineOf(s, v);
+      const over = total(line) - mlen;
+      if (over < 1e-6 || over > deficit + 1e-6) continue;
+      const free = (e: PEvent) => !m.events[t].some((o) => !o.grace && Math.abs(o.x - e.x) < space * 0.6);
+      const e = line.find((c) => !c.rest && Math.abs(length(c) - over) < 1e-6 && free(c));
+      if (!e) continue;
+      m.events[s].splice(m.events[s].indexOf(e), 1);
+      e.staff = t;
+      e.voice = tv;
+      m.events[t].push(e);
+      m.events[t].sort((p, q) => p.x - q.x);
+      return;
+    }
+  }
 }
 
 /** A voice too long for its measure has tuplets without a number: its shortest notes, scaled to fit. */
@@ -419,7 +460,7 @@ function typeOf(base: number): string {
 }
 
 function noteXml(e: PEvent, dur: number, voice: number, staff: number, tup: ReturnType<typeof tupletEdge>): string {
-  const common = (chord: boolean, inner: string, extra: string, lyric: string, tech = "", tie: { start?: boolean; stop?: boolean } = {}) => {
+  const common = (chord: boolean, inner: string, extra: string, lyric: string, tech = "", tie: { start?: boolean; stop?: boolean } = {}, at = staff) => {
     const s: string[] = ["<note>"];
     if (e.grace) s.push("<grace/>");
     if (chord) s.push("<chord/>");
@@ -433,7 +474,7 @@ function noteXml(e: PEvent, dur: number, voice: number, staff: number, tup: Retu
     s.push(extra);
     if (e.tuplet) s.push(`<time-modification><actual-notes>${e.tuplet.actual}</actual-notes><normal-notes>${e.tuplet.normal}</normal-notes></time-modification>`);
     if (!e.rest && e.up !== undefined) s.push(`<stem>${e.up ? "up" : "down"}</stem>`);
-    if (staff) s.push(`<staff>${staff}</staff>`);
+    if (at) s.push(`<staff>${at}</staff>`);
     const tupXml = !chord && tup ? `${tup === "start" || tup === "both" ? `<tuplet type="start"/>` : ""}${tup === "stop" || tup === "both" ? `<tuplet type="stop"/>` : ""}` : "";
     const tied = `${tie.stop ? `<tied type="stop"/>` : ""}${tie.start ? `<tied type="start"/>` : ""}`;
     if (tupXml || tech || tied) s.push(`<notations>${tied}${tupXml}${tech}</notations>`);
@@ -448,7 +489,7 @@ function noteXml(e: PEvent, dur: number, voice: number, staff: number, tup: Retu
       const pitch = `<pitch><step>${n.step}</step>${n.alter ? `<alter>${n.alter}</alter>` : ""}<octave>${n.octave}</octave></pitch>`;
       const acc = n.shown !== undefined ? `<accidental>${ACC_NAMES[n.shown] ?? "natural"}</accidental>` : "";
       const tech = n.tab ? `<technical><string>${n.tab.string}</string><fret>${n.tab.fret}</fret></technical>` : "";
-      return common(i > 0, pitch, acc, i === 0 ? lyrics : "", tech, { start: n.tieStart, stop: n.tieStop });
+      return common(i > 0, pitch, acc, i === 0 ? lyrics : "", tech, { start: n.tieStart, stop: n.tieStop }, staff && n.staff !== undefined ? n.staff + 1 : staff);
     })
     .join("");
 }

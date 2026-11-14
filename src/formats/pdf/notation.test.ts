@@ -88,6 +88,37 @@ describe("notation", () => {
     expect(m1.dirs.find((d) => d.metronome)?.metronome).toEqual({ unit: 1, dots: 0, perMinute: 96 });
   });
 
+  it("keeps a beam drawn across a grand staff in one staff's voice", () => {
+    // Treble lines 100-120, bass lines 150-170, braced, barlines at 220 and 400.
+    const lines = [100, 150].flatMap((top) => [0, 1, 2, 3, 4].map((i) => ({ x0: 40, y0: top + 5 * i, x1: 400, y1: top + 5 * i, width: 0.5 })));
+    const bars = [220, 400].map((x) => ({ x0: x, y0: 100, x1: x, y1: 170, width: 0.9 }));
+    const up = (x: number, y: number): [MusicSymbol, PdfSegment] => [sym(0xe0a4, x, y), { x0: x + 5.6, y0: 133, x1: x + 5.6, y1: y - 0.5, width: 0.55 }];
+    const down = (x: number, y: number): [MusicSymbol, PdfSegment] => [sym(0xe0a4, x, y), { x0: x + 0.3, y0: y + 0.5, x1: x + 0.3, y1: 135.5, width: 0.55 }];
+    const notes = [up(80, 165), up(100, 160), down(120, 115), down(140, 110)];
+    const beam: PdfShape = {
+      points: [
+        [85.6, 133],
+        [140.3, 133],
+        [140.3, 135.5],
+        [85.6, 135.5],
+        [85.6, 133],
+      ],
+      box: { x0: 85.6, y0: 133, x1: 140.3, y1: 135.5 },
+      filled: true,
+      stroked: false,
+      curved: false,
+      width: 0,
+    };
+    const p = page([{ cp: 0xe000, x: 30, y: 170, size: 70, w: 6 }, sym(0xe050, 45, 115, 13), sym(0xe062, 45, 155, 13), ...notes.map((n) => n[0]), sym(0xe0a2, 78, 172.5, 8)], [...notes.map((n) => n[1])], [beam]);
+    p.segments = [...lines, ...bars, ...notes.map((n) => n[1])];
+    const sys = readPage(p).systems[0];
+    expect(sys.groups).toEqual([[0, 1]]);
+    const m = sys.measures[0];
+    expect(m.events[0].map((e) => e.heads.map((h) => h.staff))).toEqual([[1], [1], [0], [0]]);
+    expect(m.events[0].every((e) => e.voice === m.events[0][0].voice && e.base === 0.5)).toBe(true);
+    expect(m.events[1].map((e) => e.base)).toEqual([4]);
+  });
+
   it("detects PDFs by their magic", () => {
     expect(detectFormat(new TextEncoder().encode("%PDF-1.7\n%âã"))).toBe("pdf");
   });

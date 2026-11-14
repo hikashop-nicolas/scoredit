@@ -40,6 +40,8 @@ export interface PNote {
   tieStop?: boolean;
   pos: number;
   tab?: { string: number; fret: number };
+  /** Staff of the part it is drawn on (0-based), when the part has several. */
+  staff?: number;
 }
 
 export interface Lyric {
@@ -249,6 +251,19 @@ export function readPage(page: NormPage): PageResult {
       const twin = heads.find((o) => o !== h && Math.abs(o.x - h.x) < 0.1 && Math.abs(o.y - h.y) < 0.1 && stemOf.get(o) === stemOf.get(h));
       if (twin && !s.heads.some((o) => o !== h && o !== twin && stemOf.get(o) === s.v && Math.abs(o.y - h.y) < 0.1)) stemOf.set(h, s.v);
     }
+  // A half and a black head never share a stem: the head of the other kind takes its other stem.
+  const black = (h: Head) => h.kind === "black";
+  const onStem = new Map<VLine, Head[]>();
+  for (const [h, v] of stemOf) onStem.set(v, [...(onStem.get(v) ?? []), h]);
+  for (const h of heads) {
+    const v = stemOf.get(h);
+    if (!v || !onStem.get(v)!.some((o) => black(o) !== black(h) && (o.kind === "half" || h.kind === "half"))) continue;
+    const alt = stems.find((s) => s.v !== v && s.heads.includes(h) && !(onStem.get(s.v) ?? []).some((o) => black(o) !== black(h)));
+    if (!alt) continue;
+    stemOf.set(h, alt.v);
+    onStem.set(v, onStem.get(v)!.filter((o) => o !== h));
+    onStem.set(alt.v, [...(onStem.get(alt.v) ?? []), h]);
+  }
   const isStemLine = (l: VLine) => heads.some((h) => attached(l, h, sp) && (Math.abs(h.y - l.y0) < sp * 0.75 || Math.abs(h.y - l.y1) < sp * 0.75));
 
   // Flags and beams on a stem's free end.
@@ -283,8 +298,16 @@ export function readPage(page: NormPage): PageResult {
     const end = up ? v.y0 : v.y1;
     const fl = flags.filter((f) => f.sys === hs[0].sys && Math.abs(f.x - v.x) < st.space * 0.7 && Math.abs(f.y - end) < st.space * 1.2);
     const nFlags = Math.max(0, ...fl.map((f) => flag(f.cp)!.n));
-    const kind = hs.some((h) => h.kind === "black") ? "black" : hs[0].kind;
     const nBeams = nFlags ? 0 : beamCount(v, up, st.space);
+    // Half and black heads on one stem, at one x, are two chords drawn over each other (often cross-staff).
+    const hollow = hs.filter((h) => h.kind !== "black");
+    const bx = Math.min(...hs.filter((h) => h.kind === "black").map((h) => h.x));
+    if (hollow.length && hollow.length < hs.length && hollow.every((h) => h.kind === "half" && Math.abs(h.x - bx) < st.space * 0.3)) {
+      events.push(chord(hollow, HEAD_LENGTH[hollow[0].kind], up, hs[0].sys, v));
+      events.push(chord(hs.filter((h) => h.kind === "black"), HEAD_LENGTH.black / 2 ** (nFlags + nBeams), up, hs[0].sys, v));
+      continue;
+    }
+    const kind = hs.some((h) => h.kind === "black") ? "black" : hs[0].kind;
     // Beamed half notes are a two-note tremolo: each lasts half of what it shows.
     const base = kind === "black" ? HEAD_LENGTH.black / 2 ** (nFlags + nBeams) : HEAD_LENGTH[kind] / (nBeams ? 2 : 1);
     events.push(chord(hs, base, up, hs[0].sys, v));
@@ -562,6 +585,7 @@ export function readPage(page: NormPage): PageResult {
       sys.names[best] = sys.names[best] ? `${sys.names[best]} ${t.str}` : t.str;
     }
   }
+  crossStaff(systems, beams, sp);
   for (const sys of systems) for (const m of sys.measures) m.events.forEach((evs, k) => assignVoices(evs, sys.staves[k]));
   voltas(page, systems, sp);
   words(page, systems, sp);
@@ -593,6 +617,51 @@ export function readPage(page: NormPage): PageResult {
 }
 
 type Placed = MusicSymbol & { sys: number; staff: number };
+
+/**
+ * Beamed groups drawn across two braced staves: the whole group goes to one staff's voice, the
+ * one with room for it (else the one holding most of it); heads keep the staff they are drawn on.
+ */
+function crossStaff(systems: PSystem[], beams: Beam[], sp: number): void {
+  type Stemmed = PEvent & { stemLine?: VLine };
+  for (const sys of systems)
+    for (const [a, b] of sys.groups)
+      for (const m of sys.measures)
+        for (let k = a; k < b; k++) {
+          const evs = [...m.events[k], ...m.events[k + 1]].filter((e: Stemmed) => !e.rest && !e.grace && e.base < 1 && e.stemLine && e.up !== undefined) as Stemmed[];
+          const groups: Stemmed[][] = [];
+          for (const bm of beams) {
+            const on = evs.filter((e) => {
+              const v = e.stemLine!;
+              const end = e.up ? v.y0 : v.y1;
+              const y = beamY(bm, v.x);
+              return v.x >= bm.x0 - sp * 0.3 && v.x <= bm.x1 + sp * 0.3 && Math.abs(y - end) < sp * 2 && y >= v.y0 - bm.thick && y <= v.y1 + bm.thick;
+            });
+            if (!on.length) continue;
+            const hit = groups.filter((g) => g.some((e) => on.includes(e)));
+            for (const g of hit) groups.splice(groups.indexOf(g), 1);
+            groups.push([...new Set([...hit.flat(), ...on])]);
+          }
+          for (const g of groups) {
+            const top = g.filter((e) => e.staff === k).length;
+            const bottom = g.length - top;
+            if (!top || !bottom) continue;
+            const x0 = Math.min(...g.map((e) => e.x));
+            const x1 = Math.max(...g.map((e) => e.x1));
+            const busy = (s: number) => m.events[s].some((e) => !g.includes(e) && !e.grace && e.x1 > x0 && e.x < x1);
+            const bt = busy(k);
+            const bb = busy(k + 1);
+            const home = bt !== bb ? (bt ? k + 1 : k) : bottom > top ? k + 1 : k;
+            for (const e of g) {
+              if (e.staff === home) continue;
+              m.events[e.staff].splice(m.events[e.staff].indexOf(e), 1);
+              e.staff = home;
+              m.events[home].push(e);
+            }
+            m.events[home].sort((p, q) => p.x - q.x);
+          }
+        }
+}
 
 const MULTI_REST = 0xe4ee;
 const MULTI_REST_LEFT = 0xe4ef;
@@ -897,6 +966,11 @@ export function assignVoices(evs: PEvent[], st: Staff): void {
     }
     if (partner) e.voice = e.y < partner.y ? 1 : 2;
     else e.voice = e.y < mid - st.space * 0.4 ? 1 : e.y > mid + st.space * 0.4 ? 2 : 1;
+  }
+  // Two chords on one stem (a held note under moving ones): the longer one is a voice of its own.
+  for (const e of main) {
+    if (e.rest || !main.some((o) => o !== e && !o.rest && o.voice === e.voice && Math.abs(o.x - e.x) < col && o.base < e.base)) continue;
+    e.voice = Math.min(4, Math.max(...main.map((o) => o.voice)) + 1);
   }
   // Grace notes follow the voice of the chord after them.
   for (const g of evs.filter((e) => e.grace)) g.voice = main.find((e) => e.x > g.x)?.voice ?? 1;
