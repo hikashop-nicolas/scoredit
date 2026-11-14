@@ -266,6 +266,19 @@ async function practiceWaitFor(d, index) {
 const practiceKeyColor = (d, midi, edge = false) =>
   d.eval(`(() => { const c = document.querySelector(".sv-keys-big"); const [lo, hi] = scoreditKeys.keyRange(43, 79); const k = scoreditKeys.layoutKeys(lo, hi, c.clientWidth).get(${midi}); const dpr = c.width / c.clientWidth; const x = ${edge} ? k.x + 2 : k.x + k.w / 2; const y = c.clientHeight * (k.black ? 0.3 : 0.8); return [...c.getContext("2d").getImageData(Math.round(x * dpr), Math.round(y * dpr), 1, 1).data].slice(0, 3); })()`);
 
+// Step entry from a simulated MIDI keyboard: keys struck together arrive at the same time.
+async function midiConnect(d) {
+  await d.run(
+    "Connect a simulated MIDI keyboard",
+    `(() => { const cbs = new Set(); const send = (data) => { const time = performance.now(); for (const cb of cbs) cb({ data: new Uint8Array(data), time, source: "fake" }); }; window.fakeMidi = { subscribe(cb) { cbs.add(cb); return () => cbs.delete(cb); }, keys(ps) { const time = performance.now(); for (const cb of cbs) for (const p of ps) cb({ data: new Uint8Array([0x90, p, 100]), time, source: "fake" }); for (const cb of cbs) for (const p of ps) cb({ data: new Uint8Array([0x80, p, 0]), time: time + 30, source: "fake" }); }, cc(c, v) { send([0xb0, c, v]); } }; viewer.setMidiInput(window.fakeMidi); })()`,
+  );
+}
+const KEY_NAMES = ["C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B"];
+const midiKeys = (d, ps) => d.run(`Strike ${ps.map((p) => KEY_NAMES[p % 12] + (Math.floor(p / 12) - 1)).join(" and ")} on the MIDI keyboard`, `fakeMidi.keys(${JSON.stringify(ps)})`);
+// One part, two empty bars, in a key (fifths), with extra attributes (a transposition).
+const midiScore = (name, fifths, extra = "") =>
+  `<score-partwise version="4.0"><part-list><score-part id="P1"><part-name>${name}</part-name></score-part></part-list><part id="P1"><measure number="1"><attributes><divisions>1</divisions><key><fifths>${fifths}</fifths></key><time><beats>4</beats><beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef>${extra}</attributes><note><rest measure="yes"/><duration>4</duration><voice>1</voice></note></measure><measure number="2"><note><rest measure="yes"/><duration>4</duration><voice>1</voice></note></measure></part></score-partwise>`;
+
 export const scenarios = [
   {
     id: "open-pdf",
@@ -1183,6 +1196,112 @@ export const scenarios = [
       d.check("E5, expected next, is outlined", near(await practiceKeyColor(d, 76, true), GREEN), JSON.stringify(await practiceKeyColor(d, 76, true)));
       await practiceKey(d, 77, false);
       d.check("F5 released: no longer red", !near(await practiceKeyColor(d, 77), RED), JSON.stringify(await practiceKeyColor(d, 77)));
+    },
+  },
+  {
+    id: "midi-entry",
+    title: "Notes played on a MIDI keyboard are entered in note input",
+    device: "desktop",
+    fixture: "piano.musicxml",
+    why: "As in MuseScore, a MIDI keyboard enters notes in note input: each key is written at its exact pitch with the chosen length, keys struck together make a chord, a black key is written with a sharp in C major, and the sustain pedal enters a rest. Lengths still come from the computer keyboard, and each note or chord is undone in one step.",
+    look: "Bar 1: C, D, a two-note chord E G, C sharp. Bar 2: a half note F, a quarter rest, then G.",
+    async run(d) {
+      await midiConnect(d);
+      await d.run("Turn practice wait mode on from the host: editing must still win", `viewer.setPractice({ mode: "wait", hand: "both" })`);
+      await d.key("n");
+      await d.key("5");
+      await midiKeys(d, [60]);
+      await midiKeys(d, [62]);
+      await midiKeys(d, [67, 64]);
+      await midiKeys(d, [61]);
+      await d.bars({ 1: "C4 quarter, D4 quarter, E4+G4 quarter, C♯4 quarter", 2: EMPTY });
+      await d.key("6");
+      await midiKeys(d, [65]);
+      await d.key("5");
+      await d.run("Press the sustain pedal", "fakeMidi.cc(64, 127)");
+      await d.run("Let the sustain pedal up", "fakeMidi.cc(64, 0)");
+      await midiKeys(d, [67]);
+      await d.bars({ 2: "F4 half, quarter rest, G4 quarter" });
+      await d.sounds(["C4 at bar 1 beat 1 for 1 beat", "D4 at bar 1 beat 2 for 1 beat", "E4 at bar 1 beat 3 for 1 beat", "G4 at bar 1 beat 3 for 1 beat", "C♯4 at bar 1 beat 4 for 1 beat", "F4 at bar 2 beat 1 for 2 beats", "G4 at bar 2 beat 4 for 1 beat"]);
+      for (let i = 0; i < 4; i++) await d.key("z", { ctrl: true });
+      await d.bars({ 1: "C4 quarter, D4 quarter, E4+G4 quarter, quarter rest", 2: EMPTY }, { label: "After four undos, bar" });
+      await d.key("z", { ctrl: true });
+      await d.bars({ 1: "C4 quarter, D4 quarter, half rest" }, { label: "One more undo takes the whole chord away: bar" });
+      d.check("Playback did not start: practice waits for nothing while editing", !(await d.eval("viewer.player?.isPlaying ?? false")));
+      d.check("No errors", d.takeErrors().length === 0);
+    },
+  },
+  {
+    id: "midi-entry-flat-key",
+    title: "Black keys are written with flats in a flat key",
+    device: "desktop",
+    fixture: "piano.musicxml",
+    why: "In E flat major (three flats) the black keys are flat notes: the keyboard enters D flat, E flat (from the key signature), G flat and A flat.",
+    look: "Four notes in bar 1, the first and third with a flat sign.",
+    async run(d) {
+      await d.run("Open a flute part in E flat major", `(viewer.setScore(new scoreditLib.ScoreDoc(${JSON.stringify(midiScore("Flute", -3))})), new Promise((r) => setTimeout(r, 1200)))`);
+      await midiConnect(d);
+      await d.key("n");
+      await d.key("5");
+      for (const k of [61, 63, 66, 68]) await midiKeys(d, [k]);
+      await d.bars({ 1: "D♭4 quarter, E♭4 quarter, G♭4 quarter, A♭4 quarter" });
+      d.check("Each written note keeps its pitch", JSON.stringify(await d.eval("e2e.midisAt(0, 0, 1, '1', 0).concat(e2e.midisAt(0, 0, 1, '1', 1), e2e.midisAt(0, 0, 1, '1', 2), e2e.midisAt(0, 0, 1, '1', 3))")) === "[61,63,66,68]");
+    },
+  },
+  {
+    id: "midi-entry-transposing",
+    title: "A B flat clarinet gets its written notes from the keys played",
+    device: "desktop",
+    fixture: "piano.musicxml",
+    why: "A B flat clarinet sounds a tone lower than written. Keys played sound concert pitch, so B flat on the keyboard is written C, E flat is written F, and A flat is written B flat.",
+    look: "Bar 1: C, F, B flat, then a C chord of C and E.",
+    async run(d) {
+      await d.run("Open a clarinet part in B flat (written in C major)", `(viewer.setScore(new scoreditLib.ScoreDoc(${JSON.stringify(midiScore("Clarinet in B♭", 0, "<transpose><diatonic>-1</diatonic><chromatic>-2</chromatic></transpose>"))})), new Promise((r) => setTimeout(r, 1200)))`);
+      await midiConnect(d);
+      await d.key("n");
+      await d.key("5");
+      await midiKeys(d, [70]);
+      await midiKeys(d, [63]);
+      await midiKeys(d, [68]);
+      await midiKeys(d, [70, 74]);
+      await d.bars({ 1: "C5 quarter, F4 quarter, A♯4 quarter, C5+E5 quarter" });
+      await d.sounds(["A♯4 at bar 1 beat 1 for 1 beat", "D♯4 at bar 1 beat 2 for 1 beat", "G♯4 at bar 1 beat 3 for 1 beat", "A♯4 at bar 1 beat 4 for 1 beat", "D5 at bar 1 beat 4 for 1 beat"]);
+    },
+  },
+  {
+    id: "midi-repitch",
+    title: "Out of note input, a MIDI key gives the selected note its pitch",
+    device: "desktop",
+    fixture: "piano.musicxml",
+    why: "With a note selected (not in note input), striking a key changes that note to the key's pitch; nothing new is entered. Leaving edit mode, keys no longer change the score.",
+    look: "Bar 1: E, D, E, F, the first changed from C.",
+    async run(d) {
+      await midiConnect(d);
+      await d.key("n");
+      await d.key("5");
+      await d.keys("cdef");
+      await d.key("Escape");
+      await d.tapStaff(1, 1, 1, "C5");
+      await midiKeys(d, [76]);
+      await d.bars({ 1: "E5 quarter, D5 quarter, E5 quarter, F5 quarter", 2: EMPTY });
+      await d.button("Done");
+      await midiKeys(d, [60]);
+      await d.bars({ 1: "E5 quarter, D5 quarter, E5 quarter, F5 quarter", 2: EMPTY }, { label: "Out of edit mode, a key changes nothing: bar" });
+    },
+  },
+  {
+    id: "midi-drums",
+    title: "On a drum staff, MIDI keys play the kit's drums",
+    device: "desktop",
+    fixture: "drums.musicxml",
+    why: "A drum part maps keys to its drums as General MIDI does: key 38 is the snare and 42 the closed hi-hat; a key the part has no drum for enters nothing.",
+    look: "Bar 1 starts with a snare and hi-hat struck together, then the beat as it was.",
+    async run(d) {
+      await midiConnect(d);
+      await d.button("Note input");
+      await midiKeys(d, [42, 38]);
+      await midiKeys(d, [60]);
+      await d.bars({ 1: "Snare+Hi-Hat quarter, Snare quarter, Bass Drum quarter, Snare quarter" });
     },
   },
 ];
