@@ -1,6 +1,6 @@
 import type { SystemRange } from "../layout/systems";
 import type { ScoreDoc } from "../model/score";
-import { clampZoom, createBar, type LayoutMode, type PracticeState } from "../ui/bar";
+import { PRACTICE_DEFAULTS, clampZoom, createBar, type LayoutMode, type PracticeState } from "../ui/bar";
 import { Player, getVolume, setVolume } from "../play/player";
 import type { SoundDownloads } from "../play/sounds";
 import { buildTimeline, type Timeline } from "../play/timeline";
@@ -8,7 +8,7 @@ import { Fretboard, fretTuning, position } from "../ui/fretboard";
 import { createEditing } from "../ui/editing";
 import { Keyboard, MISSED, PRESSED_NEAR, PRESSED_RIGHT, PRESSED_WRONG, flash } from "../ui/keyboard";
 import { parseNote, type MidiInput, type MidiMessage } from "../play/midi";
-import { TimeMatcher, WaitMatcher, practiceGroups, practisedBy, type ExpectedNote, type PracticeCounts } from "../play/practice";
+import { TimeMatcher, WaitMatcher, handParts, practiceGroups, practisedBy, type ExpectedNote, type PracticeCounts } from "../play/practice";
 import { createKeysView, noteColors } from "./keys-view";
 import { createLineView, type LineView } from "./line-view";
 import { markKey, noteKey, writtenMidi, type NoteMark } from "./positions";
@@ -327,7 +327,8 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
 
   // Practice with a MIDI instrument. Wait mode: playback holds before each group of the
   // practised notes (the parts shown, or a hand) until they are struck; the rest accompanies.
-  let practice: PracticeState = { mode: opts.practice?.mode ?? "off", hand: opts.practice?.hand ?? "both", echo: opts.practice?.echo ?? false, latencyMs: opts.practice?.latencyMs ?? 0 };
+  const { onChange: _onChange, ...startPractice } = opts.practice ?? {};
+  let practice: PracticeState = { ...PRACTICE_DEFAULTS, ...startPractice };
   let midiIn: MidiInput | null = null;
   let unsubscribe: (() => void) | null = null;
   let matcher: WaitMatcher | null = null;
@@ -337,24 +338,40 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
   const waitOn = () => practice.mode === "wait" && !!midiIn;
   const timeOn = () => practice.mode === "time" && !!midiIn;
   const practising = () => waitOn() || timeOn();
-  const target = () => ({ parts: shownParts, hand: practice.hand });
+  // Parts that are a hand each ("Right", "Left" tracks), for the score shown now.
+  let handsOf: { score: ScoreDoc; map: Map<number, "right" | "left"> } | null = null;
+  const handMap = () => (handsOf?.score === score ? handsOf.map : (handsOf = { score, map: handParts(score.parts.map((p) => p.name)) }).map);
+  const target = () => ({ parts: shownParts, hand: practice.hand, hands: handMap() });
   const multiStaff = (p: number) => Number(score.measures[p]?.[0]?.getElementsByTagName("staves")[0]?.textContent) > 1 || score.attributesAt(p, Math.min(1, score.measureCount - 1)).some((a) => a.tagName === "staves" && Number(a.textContent) > 1);
   function syncPracticeBar(): void {
-    const hands = (shownParts ?? score.parts.map((_, i) => i)).some(multiStaff);
+    // A hand can be chosen for a piano part, or when both hand parts are shown.
+    const shown = shownParts ?? score.parts.map((_, i) => i);
+    const hm = handMap();
+    const handKinds = new Set(shown.map((p) => hm.get(p)).filter(Boolean));
+    const hands = handKinds.size === 2 || shown.some((p) => !hm.has(p) && multiStaff(p));
     bar.setPractice(!!midiIn, hands, practice);
   }
+  // Which notes the app plays: a setting that changes nothing of a run.
+  function applyPlayback(p: Player): void {
+    const tl = getTimeline();
+    // Outside practice the app plays every part, whatever "Play the other parts" says.
+    if (!practising()) p.setSkip(null);
+    else {
+      const mine = practisedBy(tl, target());
+      p.setSkip(practice.accompany ? mine : () => true);
+    }
+  }
   function applyPractice(p: Player): void {
+    applyPlayback(p);
     if (!practising()) {
       matcher = null;
       timeMatcher = null;
       clearMarks();
-      p.setSkip(null);
       p.setGate(null);
       refreshMarks();
       return;
     }
     const tl = getTimeline();
-    p.setSkip(practisedBy(tl, target()));
     if (waitOn()) {
       timeMatcher = null;
       clearMarks();
@@ -457,9 +474,13 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
   function setPractice(p: Partial<PracticeState>): void {
     const was = practice;
     practice = { ...practice, ...p };
-    // Hearing the keys and the latency offset change nothing of a run under way.
+    // Hearing the keys and the latency offset change nothing of a run under way; the
+    // accompaniment applies at once.
     if (practice.mode !== was.mode || practice.hand !== was.hand) resetPractice();
-    else syncPracticeBar();
+    else {
+      if (player && practice.accompany !== was.accompany) applyPlayback(player);
+      syncPracticeBar();
+    }
     opts.practice?.onChange?.({ ...practice });
   }
   function setMidiInput(input: MidiInput | null): void {

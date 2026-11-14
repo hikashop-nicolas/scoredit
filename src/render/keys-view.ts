@@ -1,4 +1,5 @@
 import type { ScoreDoc } from "../model/score";
+import { handParts } from "../play/practice";
 import type { NoteEvent, Timeline } from "../play/timeline";
 import { HAND_COLORS, Keyboard, MARK_COLORS, noteLane, shade } from "../ui/keyboard";
 import type { PracticeMarks, View, ViewOptions } from "./view";
@@ -6,16 +7,23 @@ import type { PracticeMarks, View, ViewOptions } from "./view";
 /** Seconds of music above the keyboard at zoom 1. */
 const SECONDS = 4;
 
-/** Colour of a note: per hand for a part on several staves (piano), else per part. */
+/**
+ * Colour of a note: per hand for a part on several staves (piano), or for parts that are a
+ * hand each ("Right" and "Left" tracks, the piano's two colours whatever their staves), else per part.
+ */
 export function noteColors(score: ScoreDoc): (e: NoteEvent) => string {
-  const multi = score.measures.map((_, p) => score.attributesAt(p, Math.min(1, score.measureCount - 1)).some((a) => a.tagName === "staves" && Number(a.textContent) > 1));
-  const firstPiano = multi.indexOf(true);
+  const hands = handParts(score.parts.map((p) => p.name));
+  const multi = score.measures.map((_, p) => !hands.has(p) && score.attributesAt(p, Math.min(1, score.measureCount - 1)).some((a) => a.tagName === "staves" && Number(a.textContent) > 1));
+  const firstPiano = hands.size ? -1 : multi.indexOf(true);
+  const offset = hands.size || firstPiano >= 0 ? 2 : 0;
   return (e) => {
+    const hand = hands.get(e.part);
+    if (hand) return HAND_COLORS[hand === "right" ? 0 : 1];
     if (multi[e.part]) {
       const base = e.part === firstPiano ? 0 : 2 + e.part;
       return HAND_COLORS[(base + (e.staff > 1 ? 1 : 0)) % HAND_COLORS.length];
     }
-    return HAND_COLORS[(firstPiano >= 0 ? 2 + e.part : e.part) % HAND_COLORS.length];
+    return HAND_COLORS[(offset + e.part) % HAND_COLORS.length];
   };
 }
 

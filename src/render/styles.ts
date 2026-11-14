@@ -95,6 +95,7 @@ const CSS = `
 .sv-pop-summary dd[data-k=missed]{color:#b4bac3}
 .sv-pop-summary dd[data-k=accuracy]{font-weight:600}
 .sv-pop-practice .sv-hint{margin:4px 4px 0;max-width:220px;white-space:normal;font-size:12px;opacity:.75}
+.sv-pop-practice label[hidden]{display:none}
 .sv-pop-parts .sv-all{border-bottom:1px solid var(--sv-btn-border,#4a4f57);margin-bottom:4px;padding-bottom:8px}
 .sv-bar-end{display:contents}
 .sv-reading .sv-bar-end{display:none}

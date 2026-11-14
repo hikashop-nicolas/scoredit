@@ -1,7 +1,8 @@
 // @vitest-environment happy-dom
 import { describe, expect, it } from "vitest";
 import { ScoreDoc } from "../model/score";
-import { TimeMatcher, WaitMatcher, heardAt, heardWhen, practiceGroups, timeWindow, type PracticeGroup } from "./practice";
+import { noteColors } from "../render/keys-view";
+import { TimeMatcher, WaitMatcher, handParts, heardAt, heardWhen, practiceGroups, practisedBy, timeWindow, type PracticeGroup } from "./practice";
 import { buildTimeline } from "./timeline";
 
 const n = (step: string, dur: number, extra = "", octave = 4, staff = 0) =>
@@ -228,5 +229,41 @@ describe("time matcher", () => {
     // A key 60 ms late on the wire, with the offset set to 60 ms, is on time.
     const t = tm([1.5, [60]]);
     expect(t.noteOn(60, heardAt(heardWhen(1.5, clock, 9, 1, 0) + 60, clock, 9, 1, 0.06)).outcome).toBe("on");
+  });
+});
+
+describe("parts that are a hand each", () => {
+  it("takes parts named as hands only when both hands are there", () => {
+    expect([...handParts(["Right", "Left"])]).toEqual([
+      [0, "right"],
+      [1, "left"],
+    ]);
+    expect([...handParts(["Piano RH", "Piano LH", "Voice"])]).toEqual([
+      [0, "right"],
+      [1, "left"],
+    ]);
+    expect([...handParts(["Main droite", "Main gauche"]).values()]).toEqual(["right", "left"]);
+    expect(handParts(["Left", "Bass"]).size).toBe(0);
+    expect(handParts(["Brightness", "Cleft"]).size).toBe(0);
+  });
+
+  it("keeps a hand part whole, even on two staves, and colours it as one hand", () => {
+    // "Right" on one staff; "Left" on a grand staff (as a MIDI import may write it).
+    const s = new ScoreDoc(
+      `<score-partwise><part-list><score-part id="P1"><part-name>Right</part-name></score-part><score-part id="P2"><part-name>Left</part-name></score-part></part-list>` +
+        part("P1", [ATTR + n("C", 4, "", 5)]) +
+        part("P2", [PIANO + n("E", 4, "", 4, 1) + back + n("C", 4, "", 3, 2)]) +
+        `</score-partwise>`,
+    );
+    const tl = buildTimeline(s);
+    const hands = handParts(s.parts.map((p) => p.name));
+    const left = practisedBy(tl, { hand: "left", hands });
+    expect(tl.events.filter(left).map((e) => e.midi).sort()).toEqual([48, 64]);
+    const right = practisedBy(tl, { hand: "right", hands });
+    expect(tl.events.filter(right).map((e) => e.midi)).toEqual([72]);
+    const color = noteColors(s);
+    const byPitch = new Map(tl.events.map((e) => [e.midi, color(e)]));
+    expect(byPitch.get(64)).toBe(byPitch.get(48));
+    expect(byPitch.get(72)).not.toBe(byPitch.get(48));
   });
 });
