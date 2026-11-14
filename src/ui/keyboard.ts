@@ -46,31 +46,72 @@ export function layoutKeys(lo: number, hi: number, width: number): Map<number, K
   for (let m = lo; m <= hi; m++) {
     if (!isBlack(m)) continue;
     const left = out.get(m - 1);
-    if (left) out.set(m, { x: left.x + ww * 0.68, w: ww * 0.64, black: true });
+    if (!left) continue;
+    // As on a piano: C♯ D♯ and F♯ G♯ A♯ lean towards the middle of their group.
+    const w = ww * BLACK_WIDTH;
+    const centre = left.x + ww + ww * BLACK_SHIFT[m % 12];
+    out.set(m, { x: centre - w / 2, w, black: true });
   }
   return out;
 }
 
+// A black key's width, and where its centre sits from the line between its white neighbours,
+// in white-key widths.
+const BLACK_WIDTH = 0.58;
+const BLACK_SHIFT: Record<number, number> = { 1: -0.1, 3: 0.1, 6: -0.13, 8: 0, 10: 0.13 };
+// Falling notes on black keys are this much of the key's width.
+const BLACK_NOTE = 0.84;
+
 /**
- * The span of a key as seen from above, where it meets the falling notes: for a white key,
- * the part between its black neighbours, so it never reads as the black key beside it.
+ * Where a key's falling notes run: a white key's whole width (less a hairline, so two
+ * neighbours read as two), a black key's a little narrower than the key. Black notes are
+ * drawn over white ones, as the keys lie.
  */
 export function noteLane(keys: Map<number, KeyGeom>, midi: number): { x: number; w: number } | null {
   const k = keys.get(midi);
   if (!k) return null;
-  if (k.black) return { x: k.x, w: k.w };
-  const left = keys.get(midi - 1);
-  const right = keys.get(midi + 1);
-  const x0 = left?.black ? left.x + left.w : k.x;
-  const x1 = right?.black ? right.x : k.x + k.w;
-  return { x: x0, w: Math.max(2, x1 - x0) };
+  if (k.black) {
+    const w = Math.max(2, k.w * BLACK_NOTE);
+    return { x: k.x + (k.w - w) / 2, w };
+  }
+  const inset = Math.min(1.5, k.w * 0.06);
+  return { x: k.x + inset, w: Math.max(2, k.w - 2 * inset) };
 }
 
-/** A lighter tint of a #rrggbb colour, for the moment a key is struck. */
+// The channels of a "#rrggbb" or "rgb(r, g, b)" colour.
+function rgbOf(c: string): [number, number, number] {
+  if (c.startsWith("#")) {
+    const n = parseInt(c.slice(1), 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  }
+  const m = c.match(/\d+(\.\d+)?/g)?.map(Number) ?? [0, 0, 0];
+  return [m[0] ?? 0, m[1] ?? 0, m[2] ?? 0];
+}
+
+/** A colour mixed towards white (t > 0) or black (t < 0), as "rgb(...)". */
+export function shade(c: string, t: number): string {
+  const to = t >= 0 ? 255 : 0;
+  const a = Math.abs(t);
+  const [r, g, b] = rgbOf(c).map((v) => Math.round(v + (to - v) * a));
+  return `rgb(${r},${g},${b})`;
+}
+
+/** A lighter tint of a colour, for the moment a key is struck. */
 export function flash(hex: string, t = 0.45): string {
-  const n = parseInt(hex.slice(1), 16);
-  const ch = (v: number) => Math.round(v + (255 - v) * t);
-  return `rgb(${ch((n >> 16) & 255)},${ch((n >> 8) & 255)},${ch(n & 255)})`;
+  return shade(hex, t);
+}
+
+// A rectangle with its lower corners rounded (keys hang from the top).
+function keyPath(g: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number): void {
+  r = Math.max(0, Math.min(r, w / 2, h / 2));
+  g.beginPath();
+  g.moveTo(x, y);
+  g.lineTo(x + w, y);
+  g.lineTo(x + w, y + h - r);
+  g.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  g.lineTo(x + r, y + h);
+  g.quadraticCurveTo(x, y + h, x, y + h - r);
+  g.closePath();
 }
 
 export class Keyboard {
@@ -139,31 +180,68 @@ export class Keyboard {
     if (!g) return;
     g.setTransform(dpr, 0, 0, dpr, 0, 0);
     this.keys = layoutKeys(this.lo, this.hi, w);
-    g.fillStyle = "#1b1d22";
+    g.fillStyle = "#0e0f12";
     g.fillRect(0, 0, w, h);
+    const radius = (k: KeyGeom) => Math.min(4, k.w * 0.14);
+    // White keys: ivory, a touch darker under the case and towards their rounded end.
     for (const [m, k] of this.keys) {
       if (k.black) continue;
-      g.fillStyle = this.pressed.get(m) ?? this.lit.get(m) ?? "#fbfbf8";
-      g.fillRect(k.x + 0.5, 0, k.w - 1, h - 1);
+      const lit = this.pressed.get(m) ?? this.lit.get(m);
+      const grad = g.createLinearGradient(0, 0, 0, h);
+      if (lit) {
+        grad.addColorStop(0, shade(lit, -0.12));
+        grad.addColorStop(0.25, lit);
+        grad.addColorStop(1, shade(lit, 0.12));
+      } else {
+        grad.addColorStop(0, "#c9cac6");
+        grad.addColorStop(0.12, "#f4f4f1");
+        grad.addColorStop(0.85, "#fdfdfb");
+        grad.addColorStop(1, "#e2e3df");
+      }
+      g.fillStyle = grad;
+      keyPath(g, k.x + 0.5, 0, k.w - 1, h - 1, radius(k));
+      g.fill();
       if (this.expected.has(m)) this.outline(g, k.x + 2, 2, k.w - 4, h - 5);
       if (m % 12 === 0 && k.w > 9) {
-        g.fillStyle = "#8a8f98";
+        g.fillStyle = lit ? "rgba(0,0,0,.45)" : "#8a8f98";
         g.font = `${Math.min(11, k.w * 0.55)}px system-ui, sans-serif`;
         g.textAlign = "center";
         g.fillText(`C${Math.floor(m / 12) - 1}`, k.x + k.w / 2, h - 5);
       }
     }
+    // Black keys: a shadow on the white keys, a body, and a lighter front edge.
+    const bh = h * 0.62;
     for (const [m, k] of this.keys) {
       if (!k.black) continue;
-      g.fillStyle = this.pressed.get(m) ?? this.lit.get(m) ?? "#22252b";
-      g.fillRect(k.x, 0, k.w, h * 0.62);
-      if (this.expected.has(m)) this.outline(g, k.x + 1.5, 1.5, k.w - 3, h * 0.62 - 3);
+      const lit = this.pressed.get(m) ?? this.lit.get(m);
+      g.fillStyle = "rgba(0,0,0,.28)";
+      keyPath(g, k.x + 1.5, 0, k.w, bh + 2.5, radius(k));
+      g.fill();
+      const grad = g.createLinearGradient(0, 0, 0, bh);
+      grad.addColorStop(0, lit ? shade(lit, -0.25) : "#121317");
+      grad.addColorStop(0.7, lit ? lit : "#2a2d34");
+      grad.addColorStop(1, lit ? shade(lit, -0.1) : "#24272d");
+      g.fillStyle = grad;
+      keyPath(g, k.x, 0, k.w, bh, radius(k));
+      g.fill();
+      const edge = Math.min(6, bh * 0.08);
+      g.fillStyle = lit ? shade(lit, 0.25) : "#454952";
+      keyPath(g, k.x + k.w * 0.12, bh - edge - 1.5, k.w * 0.76, edge, radius(k) / 2);
+      g.fill();
+      if (this.expected.has(m)) this.outline(g, k.x + 1.5, 1.5, k.w - 3, bh - 3);
     }
+    // The keys slide under the case: a soft shadow along the top.
+    const top = g.createLinearGradient(0, 0, 0, 6);
+    top.addColorStop(0, "rgba(0,0,0,.55)");
+    top.addColorStop(1, "rgba(0,0,0,0)");
+    g.fillStyle = top;
+    g.fillRect(0, 0, w, 6);
   }
 
   private outline(g: CanvasRenderingContext2D, x: number, y: number, w: number, h: number): void {
     g.strokeStyle = PRESSED_RIGHT;
     g.lineWidth = 3;
-    g.strokeRect(x, y, Math.max(1, w), Math.max(1, h));
+    keyPath(g, x, y, Math.max(1, w), Math.max(1, h), Math.min(3, w / 4));
+    g.stroke();
   }
 }

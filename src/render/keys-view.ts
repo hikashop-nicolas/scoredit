@@ -1,6 +1,6 @@
 import type { ScoreDoc } from "../model/score";
 import type { NoteEvent, Timeline } from "../play/timeline";
-import { HAND_COLORS, Keyboard, MARK_COLORS, noteLane } from "../ui/keyboard";
+import { HAND_COLORS, Keyboard, MARK_COLORS, noteLane, shade } from "../ui/keyboard";
 import type { PracticeMarks, View, ViewOptions } from "./view";
 
 /** Seconds of music above the keyboard at zoom 1. */
@@ -56,6 +56,26 @@ export function createKeysView(score: ScoreDoc, timeline: () => Timeline, opts: 
     return a;
   };
 
+  // The notes' bodies, one gradient per colour and lane width (from x = 0, drawn translated):
+  // made once rather than for every note on every frame.
+  const bodies = new Map<string, CanvasGradient>();
+  let bodiesFor: CanvasRenderingContext2D | null = null;
+  const bodyOf = (g: CanvasRenderingContext2D, base: string, bw: number) => {
+    if (bodiesFor !== g || bodies.size > 512) {
+      bodies.clear();
+      bodiesFor = g;
+    }
+    const key = `${base}|${bw}`;
+    let body = bodies.get(key);
+    if (!body) {
+      body = g.createLinearGradient(0, 0, bw, 0);
+      body.addColorStop(0, shade(base, 0.12));
+      body.addColorStop(1, base);
+      bodies.set(key, body);
+    }
+    return body;
+  };
+
   function draw(): void {
     kb.clearLit();
     const w = fall.clientWidth;
@@ -73,20 +93,26 @@ export function createKeysView(score: ScoreDoc, timeline: () => Timeline, opts: 
     g.fillRect(0, 0, w, h);
     kb.draw(); // lays the keys out for this width
     const keys = kb.geometry;
-    // Octave guides behind the notes.
-    g.fillStyle = "#1c1f25";
-    for (const [m, k] of keys) if (m % 12 === 0) g.fillRect(k.x, 0, 1, h);
+    // Lanes behind the notes, one per white key: C to E a shade lighter than F to B, so the
+    // groups of black keys can be followed up from the keyboard; a line at each C.
+    for (const [m, k] of keys) {
+      if (k.black) continue;
+      const pc = m % 12;
+      g.fillStyle = pc <= 4 ? "#171a20" : "#121418";
+      g.fillRect(k.x, 0, k.w, h);
+      g.fillStyle = pc === 0 ? "#2a2e36" : "#1a1d23";
+      g.fillRect(Math.round(k.x), 0, 1, h);
+    }
     const pps = (h / SECONDS) * shown;
     const until = time + h / pps;
     // A gap at the end of each note, so two strokes of one key read as two.
     const gap = Math.max(3, 0.05 * pps);
-    for (let i = firstAt(time - maxDur); i < tl.events.length; i++) {
-      const e = tl.events[i];
-      if (e.time > until) break;
-      if (e.time + e.dur < time) continue;
+    // White keys' notes first, black keys' over them, as the keys lie.
+    const blacks: number[] = [];
+    const first = firstAt(time - maxDur);
+    const drawNote = (e: NoteEvent, black: boolean) => {
       const lane = noteLane(keys, e.midi);
-      if (!lane) continue;
-      const black = keys.get(e.midi)!.black;
+      if (!lane) return;
       const bottom = h - (e.time - time) * pps;
       const top = bottom - Math.max(gap + 2, e.dur * pps) + gap;
       const on = e.time <= time && e.time + e.dur > time;
@@ -94,24 +120,37 @@ export function createKeysView(score: ScoreDoc, timeline: () => Timeline, opts: 
       const c = mk ? MARK_COLORS[mk] : color(e);
       // A key struck again flashes lighter for a moment.
       if (on) kb.setLit(e.midi, time - e.time < 0.09 ? lighten(c, 0.45) : c);
-      const x = lane.x + 1;
-      const bw = Math.max(2, lane.w - 2);
+      const x = lane.x;
+      const bw = lane.w;
       const y0 = Math.max(-4, top);
       const y1 = Math.min(h + 4, bottom);
-      g.globalAlpha = on ? 1 : 0.88;
-      g.fillStyle = black ? darken(c, 0.3) : c;
-      roundRect(g, x, y0, bw, y1 - y0, Math.min(4, bw / 3));
+      const r = Math.min(5, bw / 3);
+      g.globalAlpha = on ? 1 : 0.92;
+      // A body lit from the left, so a bar reads as a solid piece.
+      g.fillStyle = bodyOf(g, black ? darken(c, 0.18) : c, bw);
+      g.translate(x, 0);
+      roundRect(g, 0, y0, bw, y1 - y0, r);
       g.fill();
+      g.translate(-x, 0);
       // The strike edge: a light band where the note starts.
       g.fillStyle = lighten(c, 0.55);
-      g.fillRect(x, Math.max(y0, y1 - 3), bw, Math.min(3, y1 - y0));
+      g.fillRect(x + r / 2, Math.max(y0, y1 - 3), Math.max(1, bw - r), Math.min(3, y1 - y0));
+      // Black notes lie over white ones: a dark rim keeps them apart.
       if (black) {
-        g.strokeStyle = "rgba(0,0,0,.55)";
-        g.lineWidth = 1;
-        roundRect(g, x + 0.5, y0 + 0.5, bw - 1, y1 - y0 - 1, Math.min(4, bw / 3));
+        g.strokeStyle = "rgba(0,0,0,.7)";
+        g.lineWidth = 1.5;
+        roundRect(g, x + 0.75, y0 + 0.75, bw - 1.5, y1 - y0 - 1.5, r);
         g.stroke();
       }
+    };
+    for (let i = first; i < tl.events.length; i++) {
+      const e = tl.events[i];
+      if (e.time > until) break;
+      if (e.time + e.dur < time) continue;
+      if (keys.get(e.midi)?.black) blacks.push(i);
+      else drawNote(e, false);
     }
+    for (const i of blacks) drawNote(tl.events[i], true);
     g.globalAlpha = 1;
     kb.draw();
   }
