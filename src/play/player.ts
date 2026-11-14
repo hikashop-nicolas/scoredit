@@ -1,5 +1,6 @@
 import WebAudioTinySynth from "../vendor/tinysynth.js";
 import { PLUCKED, Pluck } from "./pluck";
+import type { MidiOutput } from "./midi";
 import { beatClicks, countIn, heardAt, heardWhen, type Click } from "./practice";
 import { Sampler } from "./sampler";
 import type { SoundDownloads } from "./sounds";
@@ -109,6 +110,9 @@ export class Player {
   private nextClick = 0;
   // Where the current start began: the position stays there through a count-in.
   private from = 0;
+  // A MIDI instrument playing the notes instead of the built-in sounds.
+  private out: MidiOutput | null = null;
+  private stopToken = 0;
 
   private pedal = pedalSpans([]);
 
@@ -129,6 +133,39 @@ export class Player {
 
   get loopRange(): { start: number; end: number } | null {
     return this.loop ? { ...this.loop } : null;
+  }
+
+  /**
+   * Plays the notes on a MIDI instrument instead of the built-in sounds (null: back to them).
+   * The clicks and the drum part (channel 10) stay on the computer: a keyboard would play
+   * drum notes as pitches. Notes are sent with their time, matched to when the
+   * computer's sound would be heard.
+   */
+  setOutput(out: MidiOutput | null): void {
+    if (out === this.out) return;
+    const was = this.playing;
+    if (was) this.pause();
+    this.out = out;
+    if (was) this.resume();
+  }
+
+  get output(): MidiOutput | null {
+    return this.out;
+  }
+
+  // An audio-clock time as performance.now() ms on the instrument, heard with the computer's sound.
+  private perfAt(audio: number): number {
+    const ctx = synth().getAudioContext();
+    return performance.now() + (audio - ctx.currentTime + this.outputLatency) * 1000;
+  }
+
+  // Ends every note and the pedal on the instrument now.
+  private outSilence(out: MidiOutput): void {
+    out.clear?.();
+    for (let ch = 0; ch < 16; ch++) {
+      out.send([0xb0 | ch, 64, 0]);
+      out.send([0xb0 | ch, 123, 0]);
+    }
   }
 
   /** Count-in and metronome clicks (both off by default); a count-in is heard from the next start. */
@@ -200,6 +237,11 @@ export class Player {
     // Released: the clock goes on from where it held.
     this.held = false;
     this.startAt = synth().getAudioContext().currentTime - this.offset / this.speed;
+  }
+
+  /** Whether sound may play now (the browser allowed audio, after a click or tap). */
+  get audioReady(): boolean {
+    return !!shared && shared.getAudioContext().state === "running";
   }
 
   /** Whether playback is holding at the gate. */
@@ -304,6 +346,11 @@ export class Player {
     const state = new Map<string, [number, number, number]>();
     for (let i = 0; i < this.nextCtl; i++) state.set(`${ctl[i].channel}:${ctl[i].cc}`, [ctl[i].channel, ctl[i].cc, ctl[i].value]);
     for (const [ch, cc, v] of state.values()) s.send([0xb0 | ch, cc, v]);
+    if (this.out) {
+      this.stopToken++;
+      for (const [ch, prog] of this.timeline.programs) if (ch !== 9) this.out.send([0xc0 | ch, prog]);
+      for (const [ch, cc, v] of state.values()) if (ch !== 9) this.out.send([0xb0 | ch, cc, v]);
+    }
     this.next = this.timeline.events.findIndex((e) => e.time >= this.offset - 1e-6);
     if (this.next < 0) this.next = this.timeline.events.length;
   }
@@ -334,6 +381,15 @@ export class Player {
     }
     plucked?.stopAll();
     samplerReady?.stopAll();
+    // The instrument: notes sent ahead may still arrive, so once more when they would have.
+    const out = this.out;
+    if (out) {
+      this.outSilence(out);
+      const token = ++this.stopToken;
+      setTimeout(() => {
+        if (token === this.stopToken && !this.playing) this.outSilence(out);
+      }, (LOOKAHEAD + 0.1 + this.outputLatency) * 1000);
+    }
     if (this.sounding.length) this.opts.onNotes?.(this.sounding, false);
     this.sounding = [];
     this.opts.onStateChange?.(false);
@@ -380,7 +436,8 @@ export class Player {
     if (!sounds) return;
     const evs = this.timeline.events;
     const notes: [number, number, number][] = [];
-    for (let i = this.next; i < evs.length; i++) notes.push([evs[i].program, evs[i].midi, evs[i].dur / this.speed]);
+    // With an instrument, only the drums sound on the computer.
+    for (let i = this.next; i < evs.length; i++) if (!this.out || evs[i].channel === 9) notes.push([evs[i].program, evs[i].midi, evs[i].dur / this.speed]);
     if (!notes.length) return;
     sampler ??= Sampler.create(synth().getAudioContext(), undefined, master!);
     const programs = [...new Set(notes.map(([p]) => p))];
@@ -413,6 +470,12 @@ export class Player {
       const on = this.startAt + e.time / this.speed;
       const off = on + Math.max(0.05, e.dur / this.speed - 0.01);
       const program = e.program;
+      // On the instrument: its own sound, its own pedal (the controllers are sent too).
+      if (this.out && e.channel !== 9) {
+        this.out.send([0x90 | e.channel, e.midi, e.velocity], this.perfAt(on));
+        this.out.send([0x80 | e.channel, e.midi, 0], this.perfAt(off));
+        continue;
+      }
       // Recorded and plucked notes ring on while the pedal is down (the synth does it itself).
       const held = this.startAt + heldUntil(this.pedal, e.channel, (off - this.startAt) * this.speed) / this.speed;
       // The recorded instrument once its note is ready; the string model or the synth until then.
@@ -426,7 +489,8 @@ export class Player {
     const ctl = this.timeline.controls;
     while (this.nextCtl < ctl.length && ctl[this.nextCtl].time <= horizon) {
       const c = ctl[this.nextCtl++];
-      s.send([0xb0 | c.channel, c.cc, c.value], this.startAt + c.time / this.speed);
+      if (this.out && c.channel !== 9) this.out.send([0xb0 | c.channel, c.cc, c.value], this.perfAt(this.startAt + c.time / this.speed));
+      else s.send([0xb0 | c.channel, c.cc, c.value], this.startAt + c.time / this.speed);
     }
     if (this.gate === null && this.next >= evs.length && now - this.startAt >= this.timeline.duration / this.speed + 0.3) {
       this.pause();

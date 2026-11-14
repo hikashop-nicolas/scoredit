@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { ChordGrouper, midiDeduper, parseControl, parseNote, webMidiInput, type MidiMessage, type MidiPortLike } from "./midi";
+import { ChordGrouper, midiDeduper, parseControl, parseNote, webMidiInput, webMidiOutput, type MidiAccessLike, type MidiMessage, type MidiOutputLike, type MidiPortLike } from "./midi";
 
 const msg = (data: number[], time: number, source = "a"): MidiMessage => ({ data: new Uint8Array(data), time, source });
 
@@ -135,5 +135,31 @@ describe("parseControl", () => {
   it("reads a control change, nothing else", () => {
     expect(parseControl([0xb2, 64, 127])).toEqual({ controller: 64, value: 127, channel: 2 });
     expect(parseControl([0x90, 64, 127])).toBeNull();
+  });
+});
+
+describe("MIDI output", () => {
+  const access = (outs: Partial<MidiOutputLike>[], ins: string[] = []): MidiAccessLike & { sent: [string, number[], number | undefined][] } => {
+    const sent: [string, number[], number | undefined][] = [];
+    return {
+      sent,
+      inputs: { forEach: (cb) => ins.forEach((name, i) => cb({ id: `i${i}`, name, state: "connected", addEventListener() {}, removeEventListener() {} } as never)) },
+      outputs: { forEach: (cb) => outs.forEach((o, i) => cb({ id: `o${i}`, state: "connected", ...o, send: (d: number[] | Uint8Array, t?: number) => sent.push([o.name ?? "", Array.from(d), t]) } as MidiOutputLike)) },
+      addEventListener() {},
+      removeEventListener() {},
+    };
+  };
+
+  it("is null without an output", () => {
+    expect(webMidiOutput(access([]))).toBeNull();
+    expect(webMidiOutput(access([{ name: "Gone", state: "disconnected" }]))).toBeNull();
+  });
+
+  it("sends to the keyboard played on, once, with the time given", () => {
+    const a = access([{ name: "Synth" }, { name: "Piano" }, { name: "Piano" }], ["Piano"]);
+    const out = webMidiOutput(a)!;
+    expect(out.name).toBe("Piano");
+    out.send([0x90, 60, 100], 1234);
+    expect(a.sent).toEqual([["Piano", [0x90, 60, 100], 1234]]);
   });
 });

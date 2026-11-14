@@ -47,10 +47,12 @@ export interface PracticeState {
   metronome: boolean;
   /** The parts not practised are played (false: you play alone). */
   accompany: boolean;
+  /** Where the app's notes sound: the computer, or the MIDI instrument (when it has an output). */
+  sound: "computer" | "instrument";
 }
 
 /** Practice settings before the user or the host changes them. */
-export const PRACTICE_DEFAULTS: PracticeState = { mode: "off", hand: "both", echo: false, latencyMs: 0, loop: null, speedUp: false, countIn: false, metronome: false, accompany: true };
+export const PRACTICE_DEFAULTS: PracticeState = { mode: "off", hand: "both", echo: false, latencyMs: 0, loop: null, speedUp: false, countIn: false, metronome: false, accompany: true, sound: "computer" };
 
 /** What the end of an in-time run shows. */
 export interface PracticeSummaryView {
@@ -113,9 +115,10 @@ export interface Bar {
   setFretboard(available: boolean): void;
   /**
    * The practice button: whether an instrument is connected, whether a hand can be chosen, the
-   * settings, and the number of measures and the numbers the score prints for them (for the loop).
+   * settings, the number of measures and the numbers the score prints for them (for the loop),
+   * and whether the MIDI keyboard can sound the app's notes.
    */
-  setPractice(available: boolean, hands: boolean, state: PracticeState, measures?: number, labels?: string[]): void;
+  setPractice(available: boolean, hands: boolean, state: PracticeState, measures?: number, labels?: string[], output?: boolean): void;
   /** Shows a speed set from elsewhere (a loop speeding up). */
   setSpeed(speed: number): void;
   /** The end-of-run summary pop-up (null hides it). */
@@ -407,9 +410,13 @@ export function createBar(o: BarOptions): Bar {
   connectBtn.addEventListener("click", () => o.onConnectMidi?.());
   const hint = document.createElement("p");
   hint.className = "sv-hint";
-  pracPop.append(connectBtn, modeChoice.box, handChoice.box, accompany.label, echo.label, countInTick.label, metronome.label, loopBox, hint);
-  const setPractice = (available: boolean, hands: boolean, state: PracticeState, count?: number, numbers?: string[]) => {
+  const soundChoice = choice(t("practiceSound"), [["computer", t("soundComputer")], ["instrument", t("soundInstrument")]], (v) => ((prac.sound = v as PracticeState["sound"]), emit()));
+  soundChoice.box.classList.add("sv-sound");
+  pracPop.append(connectBtn, modeChoice.box, handChoice.box, soundChoice.box, accompany.label, echo.label, countInTick.label, metronome.label, loopBox, hint);
+  const setPractice = (available: boolean, hands: boolean, state: PracticeState, count?: number, numbers?: string[], output = false) => {
     prac = { ...PRACTICE_DEFAULTS, ...state };
+    soundChoice.box.hidden = !available || !output;
+    soundChoice.set(prac.sound === "instrument" && output ? "instrument" : "computer");
     if (count) measures = count;
     if (numbers) labels = numbers;
     pracBtn.hidden = !o.onPractice || (!available && !o.onConnectMidi);

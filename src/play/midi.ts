@@ -16,6 +16,8 @@ export interface MidiInput {
 /** Where MIDI can be sent (time in performance.now() ms, now when left out). */
 export interface MidiOutput {
   send(data: Uint8Array | number[], time?: number): void;
+  /** Drops messages sent ahead and not yet played, where the port can. */
+  clear?(): void;
 }
 
 /** A note pressed (on) or released, from a message; null for anything else. */
@@ -89,9 +91,55 @@ export function midiDeduper(windowMs = 2): (msg: MidiMessage) => boolean {
 /** The parts of a Web MIDI access this module uses (MIDIAccess has them). */
 export interface MidiAccessLike {
   inputs: { forEach(cb: (input: MidiPortLike) => void): void };
+  outputs?: { forEach(cb: (output: MidiOutputLike) => void): void };
   addEventListener(type: "statechange", cb: (e: Event) => void): void;
   removeEventListener(type: "statechange", cb: (e: Event) => void): void;
 }
+export interface MidiOutputLike {
+  id: string;
+  name?: string | null;
+  state?: string;
+  send(data: number[] | Uint8Array, timestamp?: number): void;
+  clear?(): void;
+}
+
+/**
+ * One output of a Web MIDI access, for the instrument to play the app's notes: the output of
+ * a device that is also an input (the keyboard played on) if there is one, else the first.
+ * Only one port of a device listed twice is used, so notes are not sent twice. Null when
+ * there is no output; the host asks again when ports change (statechange).
+ */
+export function webMidiOutput(access: MidiAccessLike): (MidiOutput & { readonly name: string }) | null {
+  const outs: MidiOutputLike[] = [];
+  access.outputs?.forEach((o) => {
+    if (o.state !== "disconnected") outs.push(o);
+  });
+  if (!outs.length) return null;
+  const inputs = new Set<string>();
+  access.inputs.forEach((i) => {
+    const n = (i as MidiPortLike & { name?: string | null }).name;
+    if (n && i.state !== "disconnected") inputs.add(n);
+  });
+  const port = outs.find((o) => o.name && inputs.has(o.name)) ?? outs[0];
+  return {
+    name: port.name ?? "",
+    send(data, time) {
+      try {
+        port.send(Array.from(data), time);
+      } catch {
+        // A port unplugged while playing: the host is told by statechange.
+      }
+    },
+    clear() {
+      try {
+        port.clear?.();
+      } catch {
+        // Not every browser has it.
+      }
+    },
+  };
+}
+
 export interface MidiPortLike {
   id: string;
   state?: string;
