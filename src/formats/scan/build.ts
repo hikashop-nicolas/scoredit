@@ -96,6 +96,7 @@ class Ctx {
     public notes: NoteHead[],
     public tracks: number,
     public unit: number,
+    public beamed: Set<number> = new Set(),
   ) {}
 }
 
@@ -204,6 +205,9 @@ class Measure {
     let idx = 0;
     const modify = (ai: number, df: number, ld: number) => {
       const pos = duras[ai][1 - ld];
+      // A beamed note keeps the length its beams give, unless the gap is exactly a missed dot.
+      const missedDot = pos > 0 && df * 2 === pos;
+      if (!missedDot && slots[ai].some((s) => s.track === 1 - ld && s.kind === "voice" && this.c.beamed.has(s.groupId))) return;
       if (pos !== 0) {
         for (const s of slots[ai]) if (s.track === 1 - ld) extend(s as Voice | Rest, df + pos, this.c.notes);
         fresh[ai][1 - ld] = df + pos;
@@ -316,7 +320,7 @@ function restXml(r: Rest): string {
 
 /** Builds the MusicXML text (oemer's MusicXMLBuilder). */
 export function buildMusicXml(notes: NoteHead[], groups: NoteGroup[], sym: Symbols, unit: number, tracks: number, title = "Scan", beamOf?: Map<number, number>): string {
-  const c = new Ctx(notes, tracks, unit);
+  const c = new Ctx(notes, tracks, unit, new Set(beamOf?.keys()));
   const voices: Voice[] = [];
   const addVoice = (g: NoteGroup, ids: number[], up: boolean | null) => {
     ids = ids.filter((n) => !notes[n].invalid);
