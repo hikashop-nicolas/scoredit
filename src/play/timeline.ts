@@ -33,6 +33,8 @@ export interface NoteEvent {
   fret?: number;
   /** A tremolo; for a single-note one, quarters is its written value and strokes include its flags. */
   tremolo?: { type: string; strokes: number; quarters: number };
+  /** One of the quick notes a written note plays as (trill, turn, mordent, tremolo): its written pitch and place. */
+  expanded?: { main: number; index: number };
 }
 
 /** A MIDI controller change (the sustain pedal). */
@@ -696,7 +698,7 @@ function expand(events: NoteEvent[], steps = new Map<NoteEvent, number>()): Note
   const split = (e: NoteEvent, step: number, pick: (k: number) => number, least = 1) => {
     const n = Math.max(least, Math.round(e.dur / step));
     const d = e.dur / n;
-    for (let k = 0; k < n; k++) out.push({ ...e, time: e.time + k * d, dur: d, midi: pick(k), trillUpper: undefined, trillFromUpper: undefined, tremolo: undefined });
+    for (let k = 0; k < n; k++) out.push({ ...e, time: e.time + k * d, dur: d, midi: pick(k), trillUpper: undefined, trillFromUpper: undefined, tremolo: undefined, expanded: { main: e.midi, index: k } });
   };
   const stops = new Map<string, NoteEvent[]>();
   for (const e of events) {
@@ -718,13 +720,14 @@ function expand(events: NoteEvent[], steps = new Map<NoteEvent, number>()): Note
       const step = steps.get(e);
       const quick = step ? Math.min(step, e.dur / 4) : Math.min(0.08, e.dur / 6);
       const base = { ...e, turn: undefined };
-      e.turn.forEach((m, k) => out.push({ ...base, time: e.time + k * quick, dur: quick, midi: m }));
-      out.push({ ...base, time: e.time + 3 * quick, dur: e.dur - 3 * quick });
+      e.turn.forEach((m, k) => out.push({ ...base, time: e.time + k * quick, dur: quick, midi: m, expanded: { main: e.midi, index: k } }));
+      out.push({ ...base, time: e.time + 3 * quick, dur: e.dur - 3 * quick, expanded: { main: e.midi, index: 3 } });
     } else if (e.mordent !== undefined) {
       // Two quick notes, then the main note for the rest of its length.
       const quick = Math.min(0.07, e.dur / 4);
       const base = { ...e, mordent: undefined };
-      out.push({ ...base, dur: quick }, { ...base, time: e.time + quick, dur: quick, midi: e.mordent }, { ...base, time: e.time + 2 * quick, dur: e.dur - 2 * quick });
+      const x = (index: number) => ({ main: e.midi, index });
+      out.push({ ...base, dur: quick, expanded: x(0) }, { ...base, time: e.time + quick, dur: quick, midi: e.mordent, expanded: x(1) }, { ...base, time: e.time + 2 * quick, dur: e.dur - 2 * quick, expanded: x(2) });
     } else if (e.tremolo?.type === "single") {
       const per = (e.tremolo.quarters > 0 ? e.dur / e.tremolo.quarters : e.dur) / 2 ** e.tremolo.strokes;
       split(e, Math.max(0.04, per), () => e.midi);
@@ -737,8 +740,8 @@ function expand(events: NoteEvent[], steps = new Map<NoteEvent, number>()): Note
       const n = Math.max(2, Math.round(total / per));
       const d = total / n;
       for (let k = 0; k < n; k++) {
-        if (k % 2 === 0) out.push({ ...e, time: e.time + k * d, dur: d, tremolo: undefined });
-        else for (const b of partner) out.push({ ...b, time: e.time + k * d, dur: d, tremolo: undefined });
+        if (k % 2 === 0) out.push({ ...e, time: e.time + k * d, dur: d, tremolo: undefined, expanded: { main: e.midi, index: k } });
+        else for (const b of partner) out.push({ ...b, time: e.time + k * d, dur: d, tremolo: undefined, expanded: { main: b.midi, index: k } });
       }
       for (const b of partner) used.add(b);
     } else if (e.tremolo?.type === "stop") {
