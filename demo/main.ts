@@ -1,7 +1,7 @@
 import * as scoreditLib from "../src/index";
 import { layoutKeys, keyRange } from "../src/ui/keyboard";
 import * as scoreditRebuild from "../src/edit/rebuild";
-import { SOUNDS_CDN, createScoreViewer, loadScore, loadScoreAsync, partFamily, remoteSounds, type ScoreViewerHandle } from "../src/index";
+import { SOUNDS_CDN, createScoreViewer, loadScore, loadScoreAsync, partFamily, remoteSounds, webMidiInput, type MidiInput, type ScoreViewerHandle } from "../src/index";
 
 // Recorded sounds: from the local corpus copy of scoredit-sounds, or ?sounds=cdn for jsDelivr.
 const sounds = remoteSounds({ base: new URLSearchParams(location.search).get("sounds") === "cdn" ? SOUNDS_CDN : new URL("corpus/sounds/gm/", location.href).href });
@@ -10,6 +10,8 @@ const host = document.getElementById("score")!;
 const stats = document.getElementById("stats")!;
 const select = document.getElementById("corpus") as HTMLSelectElement;
 let viewer: ScoreViewerHandle | null = null;
+// A MIDI instrument, once the MIDI button was pressed (the browser asks for permission).
+let midi: MidiInput | null = null;
 let rendered = 0;
 let renderMs = 0;
 
@@ -29,6 +31,7 @@ async function open(bytes: Uint8Array, name: string): Promise<void> {
       layout: ((l) => (l === "line" || l === "keys" ? l : "page"))(new URLSearchParams(location.search).get("layout")),
       onError: (e) => console.error(e),
       sounds,
+      midi,
       editable: true,
       onChange: () => ((window as unknown as { svEdits?: number }).svEdits = ((window as unknown as { svEdits?: number }).svEdits ?? 0) + 1),
       // ?parts=drums shows the parts of one instrument family, as a host setting would.
@@ -78,6 +81,20 @@ fetch("corpus-index.json")
     }
   })
   .catch(() => select.remove());
+
+// Web MIDI behind a button, as it prompts; then Practice shows in the bar.
+const midiBtn = document.getElementById("midi") as HTMLButtonElement;
+midiBtn.hidden = !("requestMIDIAccess" in navigator);
+midiBtn.addEventListener("click", async () => {
+  try {
+    midi = webMidiInput(await navigator.requestMIDIAccess());
+    viewer?.setMidiInput(midi);
+    midiBtn.textContent = "MIDI on";
+    midiBtn.disabled = true;
+  } catch (e) {
+    midiBtn.textContent = `MIDI: ${e instanceof Error ? e.message : String(e)}`;
+  }
+});
 
 document.addEventListener("fullscreenchange", () => viewer?.setReadingMode(document.fullscreenElement === host));
 
