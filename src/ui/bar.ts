@@ -26,7 +26,7 @@ const ICON_EDIT = svgIcon('<path d="M4 20h4L19 9l-4-4L4 16z"/><line x1="13.5" x2
 const ICON_VOL = svgIcon('<path d="M4 9v6h3.5L12 19V5L7.5 9H4z" fill="currentColor"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/>');
 const ICON_MUTED = svgIcon('<path d="M4 9v6h3.5L12 19V5L7.5 9H4z" fill="currentColor"/><line x1="16" x2="21" y1="9.5" y2="14.5"/><line x1="21" x2="16" y1="9.5" y2="14.5"/>');
 const ICON_PRACTICE = svgIcon('<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4.5"/><circle cx="12" cy="12" r="1" fill="currentColor"/>');
-const ICON_LINE = svgIcon('<line x1="2" x2="22" y1="9" y2="9"/><line x1="2" x2="22" y1="15" y2="15"/><polyline points="17 5 21 12 17 19"/>');
+const ICON_LINE = svgIcon('<line x1="2" x2="14" y1="7" y2="7"/><line x1="2" x2="14" y1="12" y2="12"/><line x1="2" x2="14" y1="17" y2="17"/><polyline points="17 7 22 12 17 17"/>');
 const ICON_CLOSE = svgIcon('<line x1="6" x2="18" y1="6" y2="18"/><line x1="18" x2="6" y1="6" y2="18"/>');
 
 /** Practice with a MIDI instrument: off, wait for the player or play in time; the hand, hearing the keys. */

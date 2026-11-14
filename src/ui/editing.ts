@@ -48,7 +48,7 @@ const noteIcon = (hollow: boolean, stem: boolean, flags: number) =>
   svg(
     `<ellipse cx="9" cy="17" rx="4.2" ry="3" transform="rotate(-20 9 17)" ${hollow ? "" : 'fill="currentColor"'}/>` +
       (stem ? '<line x1="13" x2="13" y1="16" y2="3"/>' : "") +
-      Array.from({ length: flags }, (_, i) => `<path d="M13 ${3 + i * 4} q5 3 4 8"/>`).join(""),
+      Array.from({ length: flags }, (_, i) => `<path d="M13 ${3 + i * 4.5} q5 2 4.5 6"/>`).join(""),
   );
 const ICONS = {
   input: svg('<path d="M4 20h4L19 9l-4-4L4 16z"/><line x1="13.5" x2="17.5" y1="6.5" y2="10.5"/>'),
@@ -102,7 +102,7 @@ const ICONS = {
   del: svg('<polyline points="4 7 20 7"/><path d="M6 7l1 13h10l1-13"/><path d="M9 7V4h6v3"/>'),
   undo: svg('<polyline points="9 14 4 9 9 4"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/>'),
   redo: svg('<polyline points="15 14 20 9 15 4"/><path d="M20 9H10a6 6 0 0 0 0 12h3"/>'),
-  keys: svg('<rect x="2" y="6" width="20" height="12" rx="1"/><line x1="7" x2="7" y1="6" y2="18"/><line x1="12" x2="12" y1="6" y2="18"/><line x1="17" x2="17" y1="6" y2="18"/>'),
+  keys: svg('<rect x="2" y="6" width="20" height="12" rx="1"/><line x1="7" x2="7" y1="6" y2="18"/><line x1="12" x2="12" y1="6" y2="18"/><line x1="17" x2="17" y1="6" y2="18"/><rect x="5.5" y="6" width="3" height="7" fill="currentColor"/><rect x="15.5" y="6" width="3" height="7" fill="currentColor"/>'),
   done: svg('<polyline points="5 12 10 17 19 7"/>'),
   left: svg('<polyline points="15 6 9 12 15 18"/>'),
   right: svg('<polyline points="9 6 15 12 9 18"/>'),
