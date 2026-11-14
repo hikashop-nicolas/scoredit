@@ -18,6 +18,7 @@ export type { Dropped } from "./formats/mscx-write";
 export { ScoreDoc, partFamily, PART_FAMILIES, type PartFamily, type PartInfo } from "./model/score";
 export { breakSystems, systemOf, type SystemRange, type BreakOptions } from "./layout/systems";
 export { ScoreEditor, type Caret, type Change, type NoteInput } from "./edit/editor";
+export { spellInKey } from "./edit/notes";
 export { createScoreViewer, type LayoutMode, type PracticeState, type PracticeStatus, type ScoreViewerHandle, type ScoreViewerOptions } from "./render/viewer";
 export type { LineView } from "./render/line-view";
 export { buildTimeline, type Timeline, type NoteEvent } from "./play/timeline";

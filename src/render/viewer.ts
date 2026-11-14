@@ -374,6 +374,17 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
     litKeys = keys;
   }
   function onMidi(msg: MidiMessage): void {
+    // Editing and practice are exclusive: while editing, keys enter or change notes.
+    if (editingOn) {
+      editing.midi(msg);
+      const n = parseNote(msg.data);
+      const part = editing.part;
+      if (n && practice.echo && part !== null) {
+        const prog = score.parts[part]?.program ?? null;
+        ensurePlayer().live(prog === 128 ? 9 : 0, prog === 128 || prog === null ? 0 : prog, n.pitch, n.on ? n.velocity : 0);
+      }
+      return;
+    }
     const n = parseNote(msg.data);
     if (!n) return;
     const w = practising() ? matcher : null;

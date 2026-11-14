@@ -82,7 +82,7 @@ fetch("corpus-index.json")
   })
   .catch(() => select.remove());
 
-// Web MIDI behind a button, as it prompts; then Practice shows in the bar.
+// Web MIDI behind a button, as it prompts; then Practice shows in the bar and the editor takes keys.
 const midiBtn = document.getElementById("midi") as HTMLButtonElement;
 midiBtn.hidden = !("requestMIDIAccess" in navigator);
 midiBtn.addEventListener("click", async () => {

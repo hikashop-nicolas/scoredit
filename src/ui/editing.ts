@@ -3,7 +3,8 @@ import { tempoOf, type TextKind } from "../edit/directions";
 import { INTERVALS, intervalToKey } from "../edit/transpose";
 import { INSTRUMENTS, instrument } from "../model/instruments";
 import { readMeasure, voiceKey, type Event } from "../edit/measure";
-import { ornamentAccidental, techValue, bendsOf, fingeringOf, type Bend, keyAlter, lyricsOf, marksOf, midiOf, readPitch, spellMidi, tremoloOf, type Pitch } from "../edit/notes";
+import { ornamentAccidental, techValue, bendsOf, fingeringOf, type Bend, keyAlter, lyricsOf, marksOf, midiOf, readPitch, spellInKey, spellMidi, tremoloOf, type Pitch } from "../edit/notes";
+import { ChordGrouper, parseControl, parseNote, type MidiMessage } from "../play/midi";
 import type { ScoreDoc } from "../model/score";
 import { kid, kids, text } from "../model/xml";
 import type { PageView, Pick } from "../render/page-view";
@@ -35,6 +36,10 @@ export interface Editing {
   key(e: KeyboardEvent): boolean;
   /** The score was replaced (read again): a fresh undo history. */
   reset(): void;
+  /** A message from a MIDI keyboard: notes enter in note input, else re-pitch the selected note. */
+  midi(msg: MidiMessage): void;
+  /** The part being edited (where a key played should sound), null when none. */
+  readonly part: number | null;
 }
 
 const svg = (inner: string, view = "0 0 24 24") => `<svg width="20" height="20" viewBox="${view}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${inner}</svg>`;
@@ -1356,6 +1361,49 @@ export function createEditing(host: EditingHost): Editing {
     return best;
   }
 
+  // ---- A MIDI keyboard. Keys struck together (within 60 ms) make one chord; the sustain
+  // pedal pressed enters a rest. Out of note input, a key re-pitches the one selected note.
+  const chords = new ChordGrouper((keys) => midiKeys(keys), 60);
+  let pedal = false;
+  /** The written pitch a key (concert pitch) gives at a place: transposed, spelled in its key. */
+  function keyPitch(key: number, at: Caret): Pitch | null {
+    if (editor.isDrums(at.part)) return editor.drumForKey(at.part, key);
+    return spellInKey(key - editor.soundingShift(at.part), fifthsAt(at));
+  }
+  function midiKeys(keys: number[]): void {
+    if (!active || !lyricBar.hidden) return;
+    if (input && caret) {
+      const at = caret;
+      const pitches: Pitch[] = [];
+      for (const k of keys) {
+        const p = keyPitch(k, at);
+        if (p && !pitches.some((q) => midiOf(q) === midiOf(p) && q.instrument === p.instrument)) pitches.push(p);
+      }
+      if (pitches.length) enter(pitches);
+      return;
+    }
+    if (!sel || selectedNotes().length !== 1) return;
+    const p = keyPitch(keys[0], sel.at);
+    if (!p || p.unpitched) return;
+    each((n) => editor.setNotePitch(n, p));
+    lastPitch = p;
+  }
+  function midi(msg: MidiMessage): void {
+    if (!active) return;
+    const c = parseControl(msg.data);
+    if (c?.controller === 64) {
+      const down = c.value >= 64;
+      if (down && !pedal && input && caret && lyricBar.hidden) {
+        chords.flush();
+        rest();
+      }
+      pedal = down;
+      return;
+    }
+    const n = parseNote(msg.data);
+    if (n?.on) chords.noteOn(n.pitch, msg.time);
+  }
+
   function key(e: KeyboardEvent): boolean {
     if (!active || e.target instanceof HTMLInputElement) return false;
     const k = e.key;
@@ -1443,6 +1491,8 @@ export function createEditing(host: EditingHost): Editing {
       active = false;
       el.hidden = true;
       input = false;
+      chords.cancel();
+      pedal = false;
       slurFrom = null;
       lyricBar.hidden = true;
       rows.hidden = false;
@@ -1456,10 +1506,15 @@ export function createEditing(host: EditingHost): Editing {
     attach,
     key,
     reset() {
+      chords.cancel();
       editor = new ScoreEditor(host.score());
       caret = null;
       sel = null;
       sync();
+    },
+    midi,
+    get part() {
+      return active ? ((input ? caret : null) ?? sel?.at ?? caret)?.part ?? null : null;
     },
   };
 }
