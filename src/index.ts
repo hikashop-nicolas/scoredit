@@ -23,7 +23,7 @@ export { createScoreViewer, type LayoutMode, type PracticeState, type PracticeSt
 export type { LineView } from "./render/line-view";
 export { buildTimeline, type Timeline, type NoteEvent } from "./play/timeline";
 export { ChordGrouper, midiDeduper, parseControl, parseNote, webMidiInput, type MidiAccessLike, type MidiInput, type MidiMessage, type MidiOutput } from "./play/midi";
-export { WaitMatcher, practiceGroups, practisedBy, type PracticeGroup, type PracticeTarget } from "./play/practice";
+export { TIME_WINDOW, TimeMatcher, WaitMatcher, heardAt, heardWhen, practiceGroups, practisedBy, timeWindow, type ExpectedNote, type PracticeCounts, type PracticeGroup, type PracticeTarget, type TimeOutcome, type Timing } from "./play/practice";
 export { remoteSounds, SOUNDS_CDN, type RemoteSoundsOptions, type SoundDownloads, type SoundRequest } from "./play/sounds";
 export { setLocale, t } from "./ui/i18n";
 export { getVolume, setVolume } from "./play/player";
