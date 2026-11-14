@@ -67,6 +67,16 @@ describe("notation", () => {
     expect(systems[0].measures[0].events[0].map((e) => e.voice).sort()).toEqual([1, 2]);
   });
 
+  it("drops the note of a metronome mark and keeps the tempo", () => {
+    const notes = [quarter(80, 120), quarter(120, 117.5), quarter(160, 115), quarter(195, 110)];
+    const tempo: [MusicSymbol, PdfSegment] = [sym(0xe0a4, 80, 85), { x0: 85.6, y0: 67.5, x1: 85.6, y1: 84.5, width: 0.55 }];
+    const p = page([sym(0xe050, 45, 115, 13), ...notes.map((n) => n[0]), tempo[0]], [...notes.map((n) => n[1]), tempo[1]]);
+    p.texts = [{ str: "= 96", x: 90, y: 88, size: 10, font: "Serif", bold: false, italic: false, words: [{ str: "=", x: 90, x1: 95 }, { str: "96", x: 98, x1: 108 }] }];
+    const m1 = readPage(p).systems[0].measures[0];
+    expect(m1.events[0].map((e) => e.heads[0].pos)).toEqual([8, 7, 6, 4]);
+    expect(m1.dirs.find((d) => d.metronome)?.metronome).toEqual({ unit: 1, dots: 0, perMinute: 96 });
+  });
+
   it("detects PDFs by their magic", () => {
     expect(detectFormat(new TextEncoder().encode("%PDF-1.7\n%âã"))).toBe("pdf");
   });

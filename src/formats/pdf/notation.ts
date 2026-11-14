@@ -91,6 +91,8 @@ export interface PDirection {
   words?: string;
   /** A chord symbol, as ASCII chord text. */
   harmony?: string;
+  /** A metronome mark: the beat's quarter length (dots included) and beats per minute. */
+  metronome?: { unit: number; dots: number; perMinute: number };
   above: boolean;
   onset?: number;
 }
@@ -174,7 +176,6 @@ export function readPage(page: NormPage): PageResult {
   });
 
   // Symbols per system and staff.
-  type Placed = MusicSymbol & { sys: number; staff: number };
   const placed: Placed[] = [];
   for (const s of page.symbols) {
     const at = sysOf(s.x, s.y, s.cp);
@@ -184,6 +185,9 @@ export function readPage(page: NormPage): PageResult {
     placed.push({ ...s, sys: at[0], staff: at[1] });
   }
   const staffOf = (p: Placed) => systems[p.sys].staves[p.staff];
+  const tempos = metronomes(page.texts, placed, staffOf, sp);
+  const inTempo = new Set(tempos.flatMap((t) => t.used));
+  for (let i = placed.length - 1; i >= 0; i--) if (inTempo.has(placed[i])) placed.splice(i, 1);
 
   // Noteheads.
   const heads: (Head & { sys: number; size: number })[] = [];
@@ -496,6 +500,11 @@ export function readPage(page: NormPage): PageResult {
       const m = kept.find((q) => p.x >= q.x0 - space && p.x < q.x1);
       if (m) m.dirs.push({ x: p.x, staff: p.staff, dynamics: d, above: p.y < sys.staves[p.staff].top });
     }
+    for (const t of tempos) {
+      if (t.sys !== si) continue;
+      const m = kept.find((q) => t.x >= q.x0 - space && t.x < q.x1) ?? (t.x < kept[0]?.x0 ? kept[0] : undefined);
+      if (m) m.dirs.push({ x: t.x, staff: t.staff, metronome: t.mark, above: true });
+    }
     // Dynamics written as two glyphs (p p) are one mark.
     for (const m of kept) {
       m.dirs.sort((a, b) => a.staff - b.staff || a.x - b.x);
@@ -578,6 +587,29 @@ export function readPage(page: NormPage): PageResult {
   function newMeasure(x0: number, x1: number, n: number, leftRepeat: boolean, right?: PMeasure["right"]): PMeasure {
     return { x0, x1, events: Array.from({ length: n }, () => []), attrs: Array.from({ length: n }, () => []), dirs: [], right, leftRepeat };
   }
+}
+
+type Placed = MusicSymbol & { sys: number; staff: number };
+
+/** Metronome marks: a note outside the staff (and its flag and dots) right before "= 100". */
+function metronomes(texts: TextRun[], placed: Placed[], staffOf: (p: Placed) => Staff, sp: number) {
+  const out: { x: number; sys: number; staff: number; mark: NonNullable<PDirection["metronome"]>; used: Placed[] }[] = [];
+  for (const t of texts) {
+    const m = /^=\s*(?:c\.\s*|ca\.\s*)?(\d{2,3})(?!\d)/.exec(t.str);
+    if (!m) continue;
+    const mid = t.y - t.size * 0.3;
+    const head = placed
+      .filter((q) => headKind(q.cp) && q.x < t.x && t.x - (q.x + (q.w || sp)) < 3 * sp && Math.abs(q.y - mid) < 1.5 * sp && staffDist(staffOf(q), q.y) > sp * 0.5)
+      .sort((a, b) => b.x - a.x)[0];
+    if (!head) continue;
+    const w = head.w || sp;
+    const fl = placed.filter((q) => q.sys === head.sys && flag(q.cp) && q.x > head.x - sp && q.x < head.x + w + sp && Math.abs(q.y - head.y) < 4 * sp);
+    const dots = placed.filter((q) => q.cp === AUGMENTATION_DOT && q.x > head.x + w * 0.8 && q.x < t.x && Math.abs(q.y - head.y) < sp);
+    const n = Math.max(0, ...fl.map((q) => flag(q.cp)!.n));
+    const unit = HEAD_LENGTH[headKind(head.cp)!] / 2 ** n;
+    out.push({ x: head.x, sys: head.sys, staff: head.staff, mark: { unit, dots: dots.length, perMinute: Number(m[1]) }, used: [head, ...fl, ...dots] });
+  }
+  return out;
 }
 
 /** Tablature: fret numbers on the lines; rhythm from stems under the staff, else from the staff of notes above. */

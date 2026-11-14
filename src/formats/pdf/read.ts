@@ -445,6 +445,11 @@ function noteXml(e: PEvent, dur: number, voice: number, staff: number, tup: Retu
 
 function directionXml(d: PMeasure["dirs"][number], staff: number): string {
   if (d.harmony !== undefined) return harmonyXml(d.harmony, staff);
+  if (d.metronome) {
+    const { unit, dots, perMinute } = d.metronome;
+    const tempo = Math.round(perMinute * unit * (2 - 1 / 2 ** dots) * 100) / 100;
+    return `<direction placement="above"><direction-type><metronome><beat-unit>${typeOf(unit)}</beat-unit>${"<beat-unit-dot/>".repeat(dots)}<per-minute>${perMinute}</per-minute></metronome></direction-type>${staff ? `<staff>${staff}</staff>` : ""}<sound tempo="${tempo}"/></direction>`;
+  }
   const inner = d.dynamics ? `<dynamics>${DYN.has(d.dynamics) ? `<${d.dynamics}/>` : `<other-dynamics>${esc(d.dynamics)}</other-dynamics>`}</dynamics>` : `<words>${esc(d.words ?? "")}</words>`;
   return `<direction placement="${d.above ? "above" : "below"}"><direction-type>${inner}</direction-type>${staff ? `<staff>${staff}</staff>` : ""}</direction>`;
 }

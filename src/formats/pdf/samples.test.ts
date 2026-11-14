@@ -20,6 +20,10 @@ interface Expect {
   chords?: string[];
   /** Chord symbols written as <harmony> by the reader. */
   harmonies?: number;
+  /** Pitches of the first part's first measure, in document order. */
+  measure1?: string[];
+  /** Metronome marks read. */
+  metronomes?: number;
 }
 
 const SAMPLES: Expect[] = [
@@ -37,7 +41,7 @@ const SAMPLES: Expect[] = [
   { file: "cm-6_Flute_Sonatas_Op_1_IA_imslp_flute_sona.pdf", coverage: 1, counts: { 0xe0a4: 10818, 0xe566: 110, 0xe56c: 22 } },
   { file: "cm-Hino_patri_tico_da_Na_o_Portuguesa_Marco.pdf", coverage: 1, counts: { 0xe0a4: 2609, 0xe52f: 42, 0xe4ac: 25 } },
   // LilyPond 2.12 (Mutopia: Ode to Joy).
-  { file: "lily-ode-a4.pdf", coverage: 1, counts: { 0xe0a4: 231, 0xe0a3: 15, 0xe050: 3, 0xe062: 3, 0xe08a: 2 } },
+  { file: "lily-ode-a4.pdf", coverage: 1, counts: { 0xe0a4: 231, 0xe0a3: 15, 0xe050: 3, 0xe062: 3, 0xe08a: 2 }, measure1: ["B4", "B4", "C5", "D5", "G4", "G4", "A4", "G4"], metronomes: 1 },
   // LilyPond 2.18 (Mutopia: Bach, cello suite 6 transposed).
   { file: "lily-bwv1012_transposed-a4.pdf", coverage: 1, counts: { 0xe0a4: 3848, 0xe566: 11, 0xe05c: 55 } },
   // LilyPond 2.18, voice and piano with lyrics (Mutopia: Mozart, Notte e giorno).
@@ -75,7 +79,15 @@ describe("sample PDFs", () => {
       if (mapped + missed) expect(mapped / (mapped + missed)).toBeGreaterThanOrEqual(s.coverage);
       for (const [cp, count] of Object.entries(s.counts)) expect(hist.get(Number(cp)) ?? 0, `U+${Number(cp).toString(16)}`).toBe(count);
       for (const c of s.chords ?? []) expect([...chords]).toContain(c);
-      if (s.harmonies !== undefined) expect((await readPdfScore(new Uint8Array(readFileSync(path)))).getElementsByTagName("harmony").length).toBe(s.harmonies);
+      if (s.harmonies === undefined && !s.measure1 && s.metronomes === undefined) return;
+      const xml = await readPdfScore(new Uint8Array(readFileSync(path)));
+      if (s.harmonies !== undefined) expect(xml.getElementsByTagName("harmony").length).toBe(s.harmonies);
+      if (s.metronomes !== undefined) expect(xml.getElementsByTagName("metronome").length).toBe(s.metronomes);
+      if (s.measure1) {
+        const m = xml.getElementsByTagName("measure")[0];
+        const ps = [...m.getElementsByTagName("pitch")].map((p) => `${p.getElementsByTagName("step")[0].textContent}${p.getElementsByTagName("octave")[0].textContent}`);
+        expect(ps).toEqual(s.measure1);
+      }
     }, 60000);
   }
 });
