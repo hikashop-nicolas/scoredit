@@ -1270,6 +1270,26 @@ export const scenarios = [
     },
   },
   {
+    id: "practice-panel-phone",
+    title: "The Practice pop-up fits a phone, its settings folded under headings",
+    device: "phone",
+    fixture: "melody.musicxml",
+    edit: false,
+    why: "With a MIDI keyboard that can also sound the notes, the Practice pop-up has many settings. On a phone they must fit without scrolling: mode and hand stay in view, and sound, metronome and loop fold under small headings that tell what is chosen inside. A loop set from elsewhere opens its section.",
+    look: "The Practice pop-up above the seek bar, which shows the loop's band: mode and hand, then the Sound and Metronome headings folded and the Loop section open on bars 1 to 2.",
+    async run(d) {
+      await practiceSetup(d);
+      await d.run("Give the keyboard an output", `viewer.setMidiOutput({ send() {} })`);
+      await d.run("Turn on wait mode and a loop over bars 1 to 2", `viewer.setPractice({ mode: "wait", loop: { from: 0, to: 1 } })`);
+      await d.button("Practice");
+      const r = await d.eval(`(() => { const p = document.querySelector(".sv-pop-practice"); const sec = (n) => document.querySelector(".sv-sec-" + n); return { fits: p.scrollHeight <= p.clientHeight + 1, clear: p.getBoundingClientRect().bottom <= document.querySelector(".sv-seek").getBoundingClientRect().top, height: p.offsetHeight, inView: p.getBoundingClientRect().top >= 0, open: ["sound", "clicks", "loop"].map((n) => sec(n).open), loop: sec("loop").querySelector(".sv-sec-state").textContent }; })()`);
+      d.check("The pop-up shows whole, without scrolling", r.fits && r.inView, `${r.height} px high`);
+      d.check("The pop-up leaves the seek bar (and the loop on it) in view", r.clear);
+      d.check("Sound and metronome are folded, the loop is open", JSON.stringify(r.open) === "[false,false,true]", JSON.stringify(r.open));
+      d.check("The loop's heading names its bars", r.loop === "From bar 1 to 2", r.loop);
+    },
+  },
+  {
     id: "practice-wait",
     title: "Wait mode holds playback until the right keys are played on a MIDI keyboard",
     device: "desktop",
