@@ -266,6 +266,62 @@ async function practiceWaitFor(d, index) {
 const practiceKeyColor = (d, midi, edge = false) =>
   d.eval(`(() => { const c = document.querySelector(".sv-keys-big"); const [lo, hi] = scoreditKeys.keyRange(43, 79); const k = scoreditKeys.layoutKeys(lo, hi, c.clientWidth).get(${midi}); const dpr = c.width / c.clientWidth; const x = ${edge} ? k.x + 2 : k.x + k.w / 2; const y = c.clientHeight * (k.black ? 0.3 : 0.8); return [...c.getContext("2d").getImageData(Math.round(x * dpr), Math.round(y * dpr), 1, 1).data].slice(0, 3); })()`);
 
+// In time: a simulated MIDI keyboard whose keys carry chosen times, and a player that strikes
+// them at offsets (ms) from when the notes are heard, on the player's clock. Samples read a
+// key of a keyboard (or a falling note's lane just above it) the moment they are due.
+const TIMED_MIDI = `(() => {
+  const cbs = new Set();
+  const send = (data, time) => { for (const cb of cbs) cb({ data: new Uint8Array(data), time, source: "fake" }); };
+  window.timedMidi = { subscribe(cb) { cbs.add(cb); return () => cbs.delete(cb); } };
+  const pixel = (c, x, y) => { const dpr = c.width / c.clientWidth; return [...c.getContext("2d").getImageData(Math.round(x * dpr), Math.round(y * dpr), 1, 1).data].slice(0, 3); };
+  window.keyColor = (sel, midi) => { const c = document.querySelector(sel); const [lo, hi] = scoreditKeys.keyRange(43, 79); const k = scoreditKeys.layoutKeys(lo, hi, c.clientWidth).get(midi); return pixel(c, k.x + k.w / 2, c.clientHeight * (k.black ? 0.3 : 0.5)); };
+  window.laneColor = (midi) => { const c = document.querySelector(".sv-fall"); const kb = document.querySelector(".sv-keys-big"); const [lo, hi] = scoreditKeys.keyRange(43, 79); const l = scoreditKeys.noteLane(scoreditKeys.layoutKeys(lo, hi, kb.clientWidth), midi); return pixel(c, l.x + l.w / 2, c.clientHeight - 6); };
+  window.timedRun = (plan, sel) => new Promise((resolve) => {
+    const p = viewer.player;
+    const lat = (viewer.practice.latencyMs || 0) / 1000;
+    const samples = {};
+    let pending = 0;
+    const at = (ms, fn) => { pending++; const go = () => { if (performance.now() < ms) return void setTimeout(go, Math.max(0, Math.min(4, ms - performance.now()))); fn(); if (--pending === 0) resolve(samples); }; go(); };
+    for (const s of plan) {
+      const when = p.heardWhen(s.t, lat) + s.offset;
+      const sample = () => s.sample && (samples[s.sample] = s.lane ? laneColor(s.lane) : keyColor(sel, s.key ?? s.pitch));
+      if (s.pitch === undefined) { at(when, sample); continue; }
+      at(when, () => { send([0x90, s.pitch, 90], when); sample(); });
+      at(when + 150, () => send([0x80, s.pitch, 0], when + 150));
+    }
+  });
+  viewer.setMidiInput(window.timedMidi);
+})()`;
+const KEY_GREEN = [34, 197, 94];
+const KEY_AMBER = [234, 179, 8];
+const KEY_RED = [239, 68, 68];
+const KEY_GREY = [139, 146, 156];
+const nearColor = (c, rgb) => !!c && c.every((v, i) => Math.abs(v - rgb[i]) < 40);
+// Turns in-time mode on and starts from the top with sound allowed (a real click on Play first).
+async function timedStart(d) {
+  await d.run("Connect a simulated MIDI keyboard whose keys carry their own times", TIMED_MIDI);
+  await d.button("Play");
+  await d.button("Pause");
+  await d.run("Back to the start", `viewer.player.seek(0)`);
+}
+// The same, choosing "In time" and the right hand in the Practice pop-up.
+async function timedStartUi(d) {
+  await d.run("Connect a simulated MIDI keyboard whose keys carry their own times", TIMED_MIDI);
+  await d.button("Play");
+  await d.button("Pause");
+  await d.button("Practice");
+  const label = (text) => `(() => { const l = [...document.querySelectorAll(".sv-pop-practice label")].find((x) => x.textContent === ${JSON.stringify(text)} && x.offsetParent); if (!l) return null; const r = l.getBoundingClientRect(); return { x: r.left + 12, y: r.top + r.height / 2 }; })()`;
+  for (const text of ["In time", "Right hand"]) {
+    await d.step(`Choose "${text}"`, async () => {
+      const p = await d.eval(label(text));
+      if (!p) throw new Error(`no "${text}" choice`);
+      await d.click(p);
+    });
+  }
+  await d.button("Practice");
+  await d.run("Back to the start", `viewer.player.seek(0)`);
+}
+
 // Step entry from a simulated MIDI keyboard: keys struck together arrive at the same time.
 async function midiConnect(d) {
   await d.run(
@@ -1196,6 +1252,89 @@ export const scenarios = [
       d.check("E5, expected next, is outlined", near(await practiceKeyColor(d, 76, true), GREEN), JSON.stringify(await practiceKeyColor(d, 76, true)));
       await practiceKey(d, 77, false);
       d.check("F5 released: no longer red", !near(await practiceKeyColor(d, 77), RED), JSON.stringify(await practiceKeyColor(d, 77)));
+    },
+  },
+  {
+    id: "practice-time",
+    title: "In-time mode judges each key played on a MIDI keyboard and sums up the run",
+    device: "desktop",
+    fixture: "melody.musicxml",
+    edit: false,
+    why: "The right hand of the piano piece is played along at full speed on a (simulated) MIDI keyboard, each key sent at a chosen offset from when its note is heard: C on time, E 85 ms early, G on time, a wrong F, C 85 ms late, the repeated C not played, D on time. Keys pressed light green (on time), amber (early or late) or red (wrong) on the keyboard strip, a missed key flashes grey; in the score the notes take the same colours. At the end a summary gives the counts and the accuracy; closing it hides it, and playing again starts a new run.",
+    look: "After playing again and stopping at once: the first C grey (missed in the new run) and the summary of that short run over the bar (1 missed, 0% accuracy).",
+    async run(d) {
+      await practiceSetup(d);
+      await d.button("Keyboard");
+      await timedStartUi(d);
+      d.check("In-time mode is on, for the right hand", await d.eval(`viewer.practice.mode === "time" && viewer.practice.hand === "right"`));
+      const plan = [
+        { t: 0, pitch: 72, offset: 5, sample: "c" },
+        { t: 0.6, pitch: 76, offset: -85, sample: "e" },
+        { t: 0.6, pitch: 79, offset: 5, sample: "g" },
+        { t: 0.9, pitch: 77, offset: 0, sample: "f" },
+        { t: 1.2, pitch: 72, offset: 85, sample: "c2" },
+        { t: 1.8, key: 72, offset: 250, sample: "missed" },
+        { t: 2.4, pitch: 74, offset: 0, sample: "d" },
+      ];
+      let samples = {};
+      await d.step("Play from the top and strike the keys at their offsets", async () => (samples = await d.eval(`(viewer.togglePlay(), timedRun(${JSON.stringify(plan)}, ".sv-kbd canvas.sv-keys"))`)));
+      const s = await d.eval(`viewer.practiceStatus`);
+      d.check("C on time lit the key green", nearColor(samples.c, KEY_GREEN), JSON.stringify(samples.c));
+      d.check("E early lit the key amber", nearColor(samples.e, KEY_AMBER), JSON.stringify(samples.e));
+      d.check("G on time lit the key green", nearColor(samples.g, KEY_GREEN), JSON.stringify(samples.g));
+      d.check("F, not in the music, lit the key red", nearColor(samples.f, KEY_RED), JSON.stringify(samples.f));
+      d.check("C late lit the key amber", nearColor(samples.c2, KEY_AMBER), JSON.stringify(samples.c2));
+      d.check("The repeated C, not played, flashed grey once its time had passed", nearColor(samples.missed, KEY_GREY), JSON.stringify(samples.missed));
+      d.check("The running counts: 3 on time, 1 early, 1 late, 1 missed, 1 wrong key", s?.mode === "time" && JSON.stringify([s.counts.onTime, s.counts.early, s.counts.late, s.counts.missed, s.counts.wrong]) === "[3,1,1,1,1]", JSON.stringify(s));
+      await d.step("Wait for the end of the piece", async () => {
+        for (let i = 0; i < 80 && !(await d.eval(`!!document.querySelector(".sv-pop-summary:not([hidden])")`)); i++) await new Promise((r) => setTimeout(r, 100));
+      });
+      const sum = await d.eval(`Object.fromEntries([...document.querySelectorAll(".sv-pop-summary dd")].map((x) => [x.dataset.k, x.textContent]))`);
+      d.check("The summary shows 3 on time, 1 early, 1 late, 1 missed, 1 wrong key and 57% accuracy", JSON.stringify(sum) === JSON.stringify({ on: "3", early: "1", late: "1", missed: "1", wrong: "1", accuracy: "57%" }), JSON.stringify(sum));
+      const host = await d.eval(`window.svPracticeEnd`);
+      d.check("The host heard the same summary", host && host.onTime === 3 && host.missed === 1 && host.wrong === 1 && host.accuracy === 57, JSON.stringify(host));
+      const marks = await d.eval(`({ on: document.querySelectorAll(".sv-mark-on").length, near: document.querySelectorAll(".sv-mark-near").length, miss: document.querySelectorAll(".sv-mark-miss").length })`);
+      d.check("In the score, 3 notes are green, 2 amber and 1 grey", marks.on === 3 && marks.near === 2 && marks.miss === 1, JSON.stringify(marks));
+      const chord = await d.eval(`(() => { const g = [...document.querySelectorAll(".vf-stavenote")].find((s) => s.querySelectorAll(".vf-notehead").length === 2 && s.querySelector(".sv-mark-on,.sv-mark-near")); return g ? [...g.querySelectorAll(".vf-notehead")].map((h) => h.getAttribute("class")) : null; })()`);
+      d.check("In the chord, E (early) and G (on time) are coloured each on its own", JSON.stringify(chord) === JSON.stringify(["vf-notehead sv-mark-near", "vf-notehead sv-mark-on"]), JSON.stringify(chord));
+      await d.button("Close");
+      d.check("Closing the summary hides it", await d.eval(`!!document.querySelector(".sv-pop-summary")?.hidden`));
+      await d.button("Play");
+      const fresh = await d.eval(`({ s: viewer.practiceStatus, hidden: document.querySelector(".sv-pop-summary").hidden, marks: document.querySelectorAll(".sv-mark-on,.sv-mark-near").length })`);
+      d.check("Playing again starts a new run: nothing played yet, earlier colours cleared", fresh.hidden && fresh.s?.counts && fresh.s.counts.onTime + fresh.s.counts.early + fresh.s.counts.late + fresh.s.counts.wrong === 0 && fresh.marks === 0, JSON.stringify(fresh));
+      await d.run("Stop", `viewer.player.pause()`);
+    },
+  },
+  {
+    id: "practice-time-keys",
+    title: "In falling notes, in-time mode colours the notes and keys as they are played",
+    device: "desktop",
+    fixture: "melody.musicxml",
+    edit: false,
+    why: "The same piece in the falling-notes layout, both hands practised, at half speed: the left hand's C and the right hand's C are struck on time, G 150 ms early (within the window, which is twice as wide at half speed), E not at all. While each note is sounding, its falling bar shows how it went: green, amber, or grey once missed; the key pressed on time shows green.",
+    look: "Falling notes at half speed, the chord E G reaching the keyboard: G amber, E grey.",
+    async run(d) {
+      await practiceSetup(d);
+      await d.button("Falling notes");
+      await timedStart(d);
+      await d.run("Turn in-time mode on (both hands) from the host, at half speed", `(viewer.setPractice({ mode: "time", hand: "both" }), viewer.player.setSpeed(0.5), viewer.player.seek(0))`);
+      const plan = [
+        { t: 0, pitch: 48, offset: 0 },
+        { t: 0, pitch: 72, offset: 10, sample: "key" },
+        { t: 0.3, lane: 72, offset: 0, sample: "c" },
+        { t: 0.6, pitch: 79, offset: -150 },
+        { t: 0.9, lane: 79, offset: 0, sample: "g" },
+        { t: 0.9, lane: 76, offset: 0, sample: "e" },
+      ];
+      let samples = {};
+      await d.step("Play from the top and strike the keys at their offsets", async () => (samples = await d.eval(`(viewer.togglePlay(), timedRun(${JSON.stringify(plan)}, ".sv-keys-big"))`)));
+      d.check("C5 struck on time shows green on the keyboard", nearColor(samples.key, KEY_GREEN), JSON.stringify(samples.key));
+      d.check("C5's falling bar turns green", nearColor(samples.c, KEY_GREEN), JSON.stringify(samples.c));
+      d.check("G5, 150 ms early at half speed, is early (amber), not wrong", nearColor(samples.g, KEY_AMBER), JSON.stringify(samples.g));
+      d.check("E5, never struck, turns grey", nearColor(samples.e, KEY_GREY), JSON.stringify(samples.e));
+      const s = await d.eval(`viewer.practiceStatus.counts`);
+      d.check("Counts so far: 2 on time, 1 early, 1 missed, no wrong key", s.onTime === 2 && s.early === 1 && s.missed === 1 && s.wrong === 0, JSON.stringify(s));
+      await d.run("Stop", `viewer.player.pause()`);
     },
   },
   {

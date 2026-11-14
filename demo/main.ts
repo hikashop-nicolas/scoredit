@@ -1,5 +1,5 @@
 import * as scoreditLib from "../src/index";
-import { layoutKeys, keyRange } from "../src/ui/keyboard";
+import { layoutKeys, keyRange, noteLane } from "../src/ui/keyboard";
 import * as scoreditRebuild from "../src/edit/rebuild";
 import { SOUNDS_CDN, createScoreViewer, loadScore, loadScoreAsync, partFamily, remoteSounds, webMidiInput, type MidiInput, type ScoreViewerHandle } from "../src/index";
 
@@ -34,6 +34,8 @@ async function open(bytes: Uint8Array, name: string): Promise<void> {
       midi,
       editable: true,
       onChange: () => ((window as unknown as { svEdits?: number }).svEdits = ((window as unknown as { svEdits?: number }).svEdits ?? 0) + 1),
+      // The end of an in-time run, as a host would hear it (e2e reads it).
+      onPracticeEnd: (s) => ((window as unknown as { svPracticeEnd?: unknown }).svPracticeEnd = s),
       // ?parts=drums shows the parts of one instrument family, as a host setting would.
       parts: { show: ((f) => (f ? score.parts.flatMap((p, i) => (partFamily(p) === f ? [i] : [])) : null))(new URLSearchParams(location.search).get("parts")) },
       tablature: loaded.fretted ? { on: loaded.tab, toggle: (on) => loadScore(bytes, { tab: on ? "always" : "never" }).score } : undefined,
@@ -99,4 +101,4 @@ midiBtn.addEventListener("click", async () => {
 document.addEventListener("fullscreenchange", () => viewer?.setReadingMode(document.fullscreenElement === host));
 
 // For the end-to-end tests (e2e/): the library, the strip's key layout, and pdf.js to check exports.
-Object.assign(window, { scoreditLib, scoreditRebuild, scoreditKeys: { layoutKeys, keyRange }, scoreditPdfjs: () => import("pdfjs-dist/legacy/build/pdf.mjs") });
+Object.assign(window, { scoreditLib, scoreditRebuild, scoreditKeys: { layoutKeys, keyRange, noteLane }, scoreditPdfjs: () => import("pdfjs-dist/legacy/build/pdf.mjs") });
