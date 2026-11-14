@@ -180,6 +180,14 @@ pixels, as oemer does. With the int8 copy one thread then takes about 3 minutes 
 laptop and about 8 on a mid-range phone. Staff lines take about a second and the
 post-processing 5 to 7 seconds.
 
+For phones, `scripts/scan-student/` distils seg_net into a small network (1.75 M parameters,
+7 MB, about 25 times less work per tile) trained on seg_net's own output over MuseScore
+renders with scan-like degradations. Given as `models.symbols` with `tiles: "strips"` (one
+window per band of staffs, which needs a network of free input size such as these), it reads
+the test bed as well as seg_net (82% and 74%) and the symbol step takes about 10 seconds a
+page on one laptop thread. `label.py` makes the training tiles, `train.py` trains (MPS,
+CUDA or CPU), `export.py` writes the ONNX file; `render.py` renders scores to train on.
+
 ### Off the main thread
 
 `worker` runs the whole scan (networks and post-processing) in a module worker and passes
