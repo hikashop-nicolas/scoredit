@@ -182,3 +182,12 @@ describe("Long text in a rendered system", () => {
     expect(s.root.getElementsByTagName("words")[0].textContent).toBe(long);
   });
 });
+
+describe("measure numbers", () => {
+  it("gives each measure the number the score prints, its place when it has none", () => {
+    const xml = `<score-partwise><part-list><score-part id="P1"><part-name>P</part-name></score-part></part-list>
+      <part id="P1"><measure number="0" implicit="yes"/><measure number="1"/><measure number="2a"/><measure/></part></score-partwise>`;
+    const s = new ScoreDoc(xml);
+    expect([0, 1, 2, 3].map((m) => s.measureLabel(m))).toEqual(["0", "1", "2a", "4"]);
+  });
+});

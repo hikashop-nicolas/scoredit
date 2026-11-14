@@ -76,6 +76,12 @@ export class ScoreDoc {
     return this.measures.length ? Math.max(...this.measures.map((m) => m.length)) : 0;
   }
 
+  /** The number the score prints for measure index m (0 for a pickup, "12a"...); its place counted from 1 when it has none. */
+  measureLabel(m: number): string {
+    const n = this.measures.find((ms) => ms[m])?.[m]?.getAttribute("number")?.trim();
+    return n || String(m + 1);
+  }
+
   get title(): string {
     const work = kid(this.root, "work");
     return text(work, "work-title") || text(this.root, "movement-title");

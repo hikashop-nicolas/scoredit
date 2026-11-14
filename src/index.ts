@@ -24,7 +24,7 @@ export type { LineView } from "./render/line-view";
 export { buildTimeline, type Timeline, type NoteEvent } from "./play/timeline";
 export { ChordGrouper, midiDeduper, parseControl, parseNote, webMidiInput, type MidiAccessLike, type MidiInput, type MidiMessage, type MidiOutput } from "./play/midi";
 export { PRACTICE_DEFAULTS } from "./ui/bar";
-export { TIME_WINDOW, TimeMatcher, WaitMatcher, beatClicks, countIn, handParts, heardAt, heardWhen, practiceGroups, practisedBy, timeWindow, type Click, type ExpectedNote, type PracticeCounts, type PracticeGroup, type PracticeTarget, type TimeOutcome, type Timing } from "./play/practice";
+export { SPEED_STEP, TIME_WINDOW, TimeMatcher, WaitMatcher, beatClicks, cleanPass, countIn, handParts, heardAt, heardWhen, loopRange, nextSpeed, practiceGroups, practisedBy, timeWindow, type Click, type ExpectedNote, type PracticeCounts, type PracticeGroup, type PracticeTarget, type TimeOutcome, type Timing } from "./play/practice";
 export { remoteSounds, SOUNDS_CDN, type RemoteSoundsOptions, type SoundDownloads, type SoundRequest } from "./play/sounds";
 export { setLocale, t } from "./ui/i18n";
 export { getVolume, setVolume } from "./play/player";

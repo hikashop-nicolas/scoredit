@@ -23,6 +23,8 @@ export interface PlayerOptions {
   onStateChange?(playing: boolean): void;
   /** Playback was moved to `time` by a seek or a restart, not by playing on. */
   onSeek?(time: number): void;
+  /** A pass of the loop ended and playback goes back to its start; may return the next pass's speed. */
+  onLoop?(): number | void;
 }
 
 /** Clicks of the metronome: one bar before playing, and on every beat while playing. */
@@ -100,6 +102,8 @@ export class Player {
   private gate: number | null = null;
   private held = false;
   private skip: ((e: NoteEvent) => boolean) | null = null;
+  // A loop (piece seconds): at its end playback goes back to its start.
+  private loop: { start: number; end: number } | null = null;
   private clickOpts: ClickOptions = {};
   private clicks: Click[] | null = null;
   private nextClick = 0;
@@ -113,6 +117,18 @@ export class Player {
     private opts: PlayerOptions = {},
   ) {
     this.pedal = pedalSpans(timeline.controls);
+  }
+
+  /** Loops piece times [start, end) (null: no loop); playback outside it moves to its start. */
+  setLoop(range: { start: number; end: number } | null): void {
+    this.loop = range && range.end > range.start ? { ...range } : null;
+    if (!this.loop) return;
+    const t = this.time;
+    if (t < this.loop.start - 1e-6 || t >= this.loop.end - 1e-6) this.seek(this.loop.start);
+  }
+
+  get loopRange(): { start: number; end: number } | null {
+    return this.loop ? { ...this.loop } : null;
   }
 
   /** Count-in and metronome clicks (both off by default); a count-in is heard from the next start. */
@@ -148,7 +164,7 @@ export class Player {
     const ctx = synth().getAudioContext();
     // Through a count-in the position stays where playback starts.
     const t = Math.max(this.from, (ctx.currentTime - this.startAt) * this.speed);
-    return Math.min(this.timeline.duration, this.stopAt(), t);
+    return Math.min(this.timeline.duration, this.stopAt(), this.loop?.end ?? Infinity, t);
   }
 
   // Where playback holds: a moment before the gate, so the notes there are not yet sounding.
@@ -248,6 +264,10 @@ export class Player {
       this.offset = 0;
       this.opts.onSeek?.(0);
     }
+    if (this.loop && (this.offset < this.loop.start - 1e-6 || this.offset >= this.loop.end - 1e-6)) {
+      this.offset = this.loop.start;
+      this.opts.onSeek?.(this.offset);
+    }
     this.held = false;
     const s = synth();
     const ctx = s.getAudioContext();
@@ -286,6 +306,18 @@ export class Player {
     for (const [ch, cc, v] of state.values()) s.send([0xb0 | ch, cc, v]);
     this.next = this.timeline.events.findIndex((e) => e.time >= this.offset - 1e-6);
     if (this.next < 0) this.next = this.timeline.events.length;
+  }
+
+  // The end of a pass of the loop: back to its start (with a count-in if on), at the speed the
+  // host gives for the next pass. Notes still ringing end as they were scheduled to.
+  private wrap(): void {
+    const loop = this.loop!;
+    const v = this.opts.onLoop?.();
+    if (typeof v === "number" && v > 0) this.speed = Math.min(2, Math.max(0.25, v));
+    this.offset = loop.start;
+    this.held = false;
+    this.begin(true);
+    this.opts.onSeek?.(this.offset);
   }
 
   pause(): void {
@@ -364,7 +396,9 @@ export class Player {
     const s = synth();
     const now = s.getAudioContext().currentTime;
     if (this.held) return;
-    const horizon = Math.min((now - this.startAt + LOOKAHEAD) * this.speed, this.stopAt());
+    if (this.loop && (now - this.startAt) * this.speed >= this.loop.end - 1e-6) this.wrap();
+    // Nothing from the measure after the loop is sounded.
+    const horizon = Math.min((now - this.startAt + LOOKAHEAD) * this.speed, this.stopAt(), this.loop ? this.loop.end - 1e-6 : Infinity);
     const evs = this.timeline.events;
     if (this.clickOpts.metronome) {
       const c = (this.clicks ??= beatClicks(this.timeline.spans));
