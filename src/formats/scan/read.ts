@@ -1,6 +1,6 @@
 // Reading one page on the current thread: image to class maps (onnxruntime-web, loaded on
 // first use) to MusicXML. index.ts adds the worker path on top.
-import { segment, staffTiles, type OrtLike, type OrtSession, type TileProgress } from "./infer";
+import { segment, staffStrips, staffTiles, type OrtLike, type OrtSession, type TileProgress, type TileWindow } from "./infer";
 import { layersOf, recognise } from "./pipeline";
 import { modelSize, resizeBicubic } from "./resample";
 import type { SampledLine } from "./dewarp";
@@ -41,9 +41,11 @@ export interface ScanOptions {
   /**
    * Where the symbol network runs: "staffs" (default with classic staff lines) only on tiles
    * over the staffs found, about half a page's tiles for the same reading; "page": the whole
-   * page every `step` pixels, as oemer.
+   * page every `step` pixels, as oemer; "strips": one window per band of staffs, about 40%
+   * less work than "staffs", for a symbol network whose input height and width are free
+   * (not oemer's own file, which fixes them at 288).
    */
-  tiles?: "staffs" | "page";
+  tiles?: "staffs" | "strips" | "page";
   /** Progress: network tiles ("symbols", "staff"), then "lines" and "post" (post-processing) as 0 or 1 of 1. */
   progress?: (p: TileProgress) => void;
   /**
@@ -117,7 +119,7 @@ export async function classMaps(bgr: Uint8Array, w: number, h: number, opts: Sca
     if (opts.wasmPaths) ort.env.wasm.wasmPaths = opts.wasmPaths;
     if (opts.threads) ort.env.wasm.numThreads = opts.threads;
   }
-  const run = async (src: ModelSource, win: number, classes: number, name: string, tiles?: [number, number][]) => {
+  const run = async (src: ModelSource, win: number, classes: number, name: string, tiles?: TileWindow[]) => {
     const session: OrtSession = await ort.InferenceSession.create(await bytesOf(src), opts.session);
     try {
       return await segment(ort, session, bgr, w, h, win, classes, { batch: opts.batch, step: opts.step, name, tiles, progress: opts.progress });
@@ -127,7 +129,7 @@ export async function classMaps(bgr: Uint8Array, w: number, h: number, opts: Sca
   };
   let unet: Uint8Array;
   let lines: SampledLine[] | undefined;
-  let tiles: [number, number][] | undefined;
+  let tiles: TileWindow[] | undefined;
   if (opts.staffLines === "unet") {
     if (!opts.models.staff) throw new Error('staffLines "unet" needs models.staff');
     unet = await run(opts.models.staff, 256, 3, "staff");
@@ -138,7 +140,7 @@ export async function classMaps(bgr: Uint8Array, w: number, h: number, opts: Sca
     lines = c.info.lines;
     if (opts.tiles !== "page" && c.info.staffs.length) {
       const boxes = c.info.staffs.map((s) => ({ x0: Math.min(...s.xs), x1: Math.max(...s.xs), top: Math.min(...s.ys[0]), bot: Math.max(...s.ys[4]) }));
-      tiles = staffTiles(boxes, c.info.spacing, w, h, 288);
+      tiles = opts.tiles === "strips" ? staffStrips(boxes, c.info.spacing, w, h) : staffTiles(boxes, c.info.spacing, w, h, 288);
     }
     opts.progress?.({ model: "lines", done: 1, total: 1 });
   }

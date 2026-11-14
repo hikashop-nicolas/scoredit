@@ -7,7 +7,7 @@ import { resizeBicubic } from "./resample";
 import { findPeaks, uniqueSet, wardLabels } from "./sci";
 import { classicStaffMap } from "./stafflines";
 import { scanToMusicXml, type ScanReply, type ScanRequest } from "./index";
-import { segment, staffTiles, type OrtLike } from "./infer";
+import { segment, staffStrips, staffTiles, type OrtLike } from "./infer";
 import { handleScan } from "./scan-worker";
 
 const grid = (w: number, h: number, on: (x: number, y: number) => boolean): Img<Uint8Array> => {
@@ -132,6 +132,22 @@ describe("staff tiles", () => {
     expect(t.length).toBeLessThan(2 * 7);
   });
 
+  it("covers each band of staffs with one strip, sized in multiples of 16", () => {
+    const t = staffStrips(staffs, 13, 1600, 2300);
+    const rows = [...new Set(t.map(([y]) => y))];
+    expect(rows.length).toBe(2);
+    for (const [y, x, th = 0, tw = 0] of t) {
+      expect(th % 16).toBe(0);
+      expect(tw % 16).toBe(0);
+      expect(tw).toBeLessThanOrEqual(640);
+      expect(y >= 0 && x >= 0 && y + th <= 2300 && x + tw <= 1600).toBe(true);
+    }
+    for (const s of staffs) expect(t.some(([y, , th = 0]) => y <= s.top - 52 && y + th >= s.bot + 52)).toBe(true);
+    const first = t.filter(([y]) => y === Math.min(...rows));
+    expect(Math.min(...first.map(([, x]) => x))).toBeLessThanOrEqual(150 - 26);
+    expect(Math.max(...first.map(([, x, , tw = 0]) => x + tw))).toBeGreaterThanOrEqual(1450 + 26);
+  });
+
   it("leaves pixels outside the tiles as background", async () => {
     // A fake network that calls every pixel a notehead.
     const ort = { InferenceSession: { create: async () => session }, Tensor: class { constructor(public type: string, public data: Uint8Array, public dims: number[]) {} } };
@@ -139,10 +155,10 @@ describe("staff tiles", () => {
       inputNames: ["input"],
       outputNames: ["output"],
       run: async (f: Record<string, { dims: number[] }>) => {
-        const n = f.input.dims[0] * 288 * 288;
-        const out = new Float32Array(n * 4);
-        for (let p = 0; p < n; p++) out[p * 4 + 2] = 1;
-        return { output: { data: out, dims: [f.input.dims[0], 288, 288, 4] } };
+        const [b, th, tw] = f.input.dims;
+        const out = new Float32Array(b * th * tw * 4);
+        for (let p = 0; p < b * th * tw; p++) out[p * 4 + 2] = 1;
+        return { output: { data: out, dims: [b, th, tw, 4] } };
       },
     };
     const w = 600, h = 700;
@@ -150,6 +166,9 @@ describe("staff tiles", () => {
     expect(map[150 * w + 10]).toBe(2);
     expect(map[50 * w + 10]).toBe(0);
     expect(map[150 * w + 400]).toBe(0);
+    const strip = await segment(ort as unknown as OrtLike, session, new Uint8Array(w * h * 3), w, h, 288, 4, { tiles: [[100, 0, 64, 512]] });
+    expect(strip[150 * w + 500]).toBe(2);
+    expect(strip[170 * w + 10]).toBe(0);
   });
 });
 

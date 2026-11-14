@@ -46,11 +46,8 @@ export interface StaffBox {
   bot: number;
 }
 
-/**
- * Tile origins [y, x] covering only the staffs, `margin` line spacings above and below each
- * (ledger lines, clefs), staffs whose bands touch sharing rows. Most pages need half the tiles.
- */
-export function staffTiles(staffs: StaffBox[], spacing: number, w: number, h: number, win: number, margin = 4, overlap = 32): [number, number][] {
+/** Bands [y0, y1, x0, x1] around the staffs, `margin` line spacings above and below, touching bands merged. */
+function staffBands(staffs: StaffBox[], spacing: number, margin: number): number[][] {
   const m = margin * spacing;
   const bands = staffs.map((s) => [s.top - m, s.bot + m, s.x0 - 2 * spacing, s.x1 + 2 * spacing]).sort((a, b) => a[0] - b[0]);
   const merged: number[][] = [];
@@ -62,9 +59,44 @@ export function staffTiles(staffs: StaffBox[], spacing: number, w: number, h: nu
       c[3] = Math.max(c[3], b[3]);
     } else merged.push([...b]);
   }
-  const out: [number, number][] = [];
-  for (const [y0, y1, x0, x1] of merged)
+  return merged;
+}
+
+/** A network window: origin row and column, and its height and width when not the model's square window. */
+export type TileWindow = [y: number, x: number, h?: number, w?: number];
+
+/**
+ * Tile origins [y, x] covering only the staffs, `margin` line spacings above and below each
+ * (ledger lines, clefs), staffs whose bands touch sharing rows. Most pages need half the tiles.
+ */
+export function staffTiles(staffs: StaffBox[], spacing: number, w: number, h: number, win: number, margin = 4, overlap = 32): TileWindow[] {
+  const out: TileWindow[] = [];
+  for (const [y0, y1, x0, x1] of staffBands(staffs, spacing, margin))
     for (const y of spread(y0, y1, h, win, win - overlap)) for (const x of spread(x0, x1, w, win, win - overlap)) out.push([y, x]);
+  return out;
+}
+
+/**
+ * One window per band of staffs, as tall as the band (a multiple of 16), cut into pieces at
+ * most `maxWidth` wide: no overlap between rows, so about 40% less work than staffTiles. Only
+ * for networks whose input height and width are free (oemer's seg_net file fixes them at 288).
+ */
+export function staffStrips(staffs: StaffBox[], spacing: number, w: number, h: number, margin = 4, overlap = 32, maxWidth = 640): TileWindow[] {
+  const out: TileWindow[] = [];
+  const up16 = (v: number) => Math.ceil(v / 16) * 16;
+  for (const [b0, b1, a0, a1] of staffBands(staffs, spacing, margin)) {
+    const y0 = Math.max(0, Math.floor(b0)), y1 = Math.min(h, Math.ceil(b1));
+    const x0 = Math.max(0, Math.floor(a0)), x1 = Math.min(w, Math.ceil(a1));
+    const th = Math.min(up16(y1 - y0), h - (h % 16));
+    const y = Math.min(Math.max(0, Math.floor((y0 + y1) / 2) - th / 2), h - th);
+    const bw = Math.min(up16(x1 - x0), w - (w % 16));
+    const n = Math.max(1, Math.ceil((bw - overlap) / (maxWidth - overlap)));
+    const cw = Math.min(bw, up16(Math.floor((bw - overlap) / n) + overlap));
+    for (let i = 0; i < n; i++) {
+      const x = x0 + (n === 1 ? 0 : Math.round((i * (bw - cw)) / (n - 1)));
+      out.push([y, Math.min(Math.max(0, x), w - cw), th, cw]);
+    }
+  }
   return out;
 }
 
@@ -81,20 +113,20 @@ export async function segment(
   h: number,
   win: number,
   classes: number,
-  opts: { step?: number; batch?: number; name?: string; tiles?: [number, number][]; progress?: (p: TileProgress) => void } = {},
+  opts: { step?: number; batch?: number; name?: string; tiles?: TileWindow[]; progress?: (p: TileProgress) => void } = {},
 ): Promise<Uint8Array> {
   const step = opts.step ?? 128;
   const batch = opts.batch ?? 1;
-  let tiles: [number, number][] = [];
+  let tiles: TileWindow[] = [];
   if (opts.tiles) tiles = opts.tiles;
   else for (const y of origins(h, win, step)) for (const x of origins(w, win, step)) tiles.push([y, x]);
   // Repeated windows are run once and added as many times as they occur.
-  const uniq = new Map<string, { y: number; x: number; n: number }>();
-  for (const [y, x] of tiles) {
-    const k = y + "," + x;
+  const uniq = new Map<string, { y: number; x: number; th: number; tw: number; n: number }>();
+  for (const [y, x, th = win, tw = win] of tiles) {
+    const k = [y, x, th, tw].join(",");
     const u = uniq.get(k);
     if (u) u.n++;
-    else uniq.set(k, { y, x, n: 1 });
+    else uniq.set(k, { y, x, th, tw, n: 1 });
   }
   const todo = [...uniq.values()];
   const sum = new Float32Array(w * h * classes);
@@ -102,29 +134,34 @@ export async function segment(
   const inName = session.inputNames[0];
   const outName = session.outputNames[0];
   opts.progress?.({ model: opts.name ?? "", done: 0, total: todo.length });
-  for (let i = 0; i < todo.length; i += batch) {
-    const part = todo.slice(i, i + batch);
-    const data = new Uint8Array(part.length * win * win * 3);
+  for (let i = 0; i < todo.length; ) {
+    // a batch holds windows of one size
+    const { th, tw } = todo[i];
+    let j = i + 1;
+    while (j < todo.length && j - i < batch && todo[j].th === th && todo[j].tw === tw) j++;
+    const part = todo.slice(i, j);
+    i = j;
+    const data = new Uint8Array(part.length * th * tw * 3);
     part.forEach((t, b) => {
-      for (let r = 0; r < win; r++) {
+      for (let r = 0; r < th; r++) {
         const src = ((t.y + r) * w + t.x) * 3;
-        data.set(img.subarray(src, src + win * 3), (b * win + r) * win * 3);
+        data.set(img.subarray(src, src + tw * 3), (b * th + r) * tw * 3);
       }
     });
-    const res = await session.run({ [inName]: new ort.Tensor("uint8", data, [part.length, win, win, 3]) });
+    const res = await session.run({ [inName]: new ort.Tensor("uint8", data, [part.length, th, tw, 3]) });
     const out = res[outName].data as Float32Array;
     part.forEach((t, b) => {
-      for (let r = 0; r < win; r++) {
+      for (let r = 0; r < th; r++) {
         const row = t.y + r;
-        for (let c = 0; c < win; c++) {
+        for (let c = 0; c < tw; c++) {
           const p = row * w + t.x + c;
-          const o = ((b * win + r) * win + c) * classes;
+          const o = ((b * th + r) * tw + c) * classes;
           for (let k = 0; k < classes; k++) sum[p * classes + k] += out[o + k] * t.n;
           cnt[p] += t.n;
         }
       }
     });
-    opts.progress?.({ model: opts.name ?? "", done: Math.min(i + batch, todo.length), total: todo.length });
+    opts.progress?.({ model: opts.name ?? "", done: i, total: todo.length });
   }
   const map = new Uint8Array(w * h);
   for (let p = 0; p < w * h; p++) {
