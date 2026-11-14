@@ -23,6 +23,15 @@ describe("midiDeduper", () => {
     expect(keep(msg([0x80, 60, 0], 11, "b"))).toBe(false);
   });
 
+  it("drops twins that arrive late, after the other port has moved on", () => {
+    const keep = midiDeduper(2);
+    const a = [msg([0x90, 60, 90], 100, "a"), msg([0x80, 60, 0], 250, "a"), msg([0x90, 62, 90], 251, "a"), msg([0x80, 62, 0], 400, "a")];
+    const b = a.map((m) => ({ ...m, source: "b" }));
+    // Seen on the phone: one port delivers a burst, the other its copies afterwards.
+    const kept = [a[0], b[0], ...a.slice(1), ...b.slice(1)].filter(keep);
+    expect(kept.map((m) => m.source)).toEqual(["a", "a", "a", "a"]);
+  });
+
   it("keeps the same message played again later", () => {
     const keep = midiDeduper(2);
     expect(keep(msg([0x90, 60, 100], 10))).toBe(true);

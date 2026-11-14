@@ -71,16 +71,17 @@ export class ChordGrouper {
 }
 
 /**
- * A filter that drops a message identical to one seen within `windowMs` before it, as when a
- * device shows up as two ports and every message arrives twice. Returns true to keep it.
+ * A filter that drops a message identical to one from another port within `windowMs` of its time,
+ * as when a device shows up as two ports and every message arrives twice. Returns true to keep it.
  */
 export function midiDeduper(windowMs = 2): (msg: MidiMessage) => boolean {
-  const recent: { key: string; time: number }[] = [];
+  // Twin ports can deliver in bursts and out of order, so recent messages are kept by count, not by time.
+  const recent: { key: string; time: number; source?: string }[] = [];
   return (msg) => {
     const key = Array.from(msg.data).join(",");
-    while (recent.length && msg.time - recent[0].time > windowMs) recent.shift();
-    if (recent.some((r) => r.key === key && Math.abs(msg.time - r.time) <= windowMs)) return false;
-    recent.push({ key, time: msg.time });
+    if (recent.some((r) => r.key === key && r.source !== msg.source && Math.abs(msg.time - r.time) <= windowMs)) return false;
+    recent.push({ key, time: msg.time, source: msg.source });
+    if (recent.length > 64) recent.shift();
     return true;
   };
 }
