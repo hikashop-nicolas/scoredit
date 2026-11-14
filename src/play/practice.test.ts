@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { ScoreDoc } from "../model/score";
 import { noteColors } from "../render/keys-view";
-import { TimeMatcher, WaitMatcher, handParts, heardAt, heardWhen, practiceGroups, practisedBy, timeWindow, type PracticeGroup } from "./practice";
+import { TimeMatcher, WaitMatcher, beatClicks, countIn, handParts, heardAt, heardWhen, practiceGroups, practisedBy, timeWindow, type PracticeGroup } from "./practice";
 import { buildTimeline } from "./timeline";
 
 const n = (step: string, dur: number, extra = "", octave = 4, staff = 0) =>
@@ -232,6 +232,10 @@ describe("time matcher", () => {
   });
 });
 
+// At the default 100 bpm a quarter lasts 0.6 s.
+const meterAttr = (beats: number, type: number) => `<attributes><divisions>2</divisions><time><beats>${beats}</beats><beat-type>${type}</beat-type></time></attributes>`;
+const bars = (count: number, beats: number, type: number) => doc(Array.from({ length: count }, (_, i) => (i === 0 ? meterAttr(beats, type) : "") + `<note><rest measure="yes"/><duration>${(beats * 8) / type}</duration></note>`));
+
 describe("parts that are a hand each", () => {
   it("takes parts named as hands only when both hands are there", () => {
     expect([...handParts(["Right", "Left"])]).toEqual([
@@ -265,5 +269,42 @@ describe("parts that are a hand each", () => {
     const byPitch = new Map(tl.events.map((e) => [e.midi, color(e)]));
     expect(byPitch.get(64)).toBe(byPitch.get(48));
     expect(byPitch.get(72)).not.toBe(byPitch.get(48));
+  });
+});
+
+describe("clicks", () => {
+  it("gives each measure its beat from the time signature", () => {
+    const beat = (b: number, t: number) => buildTimeline(bars(1, b, t)).spans.map((s) => [s.beat, s.bar])[0];
+    expect(beat(4, 4)).toEqual([1, 4]);
+    expect(beat(3, 4)).toEqual([1, 3]);
+    expect(beat(6, 8)).toEqual([1.5, 3]);
+    expect(beat(12, 8)).toEqual([1.5, 6]);
+    expect(beat(3, 8)).toEqual([0.5, 1.5]);
+    expect(beat(2, 2)).toEqual([2, 4]);
+  });
+
+  it("clicks on every beat, the first of each bar accented", () => {
+    const c = beatClicks(buildTimeline(bars(2, 4, 4)).spans);
+    expect(c.map((x) => +x.time.toFixed(3))).toEqual([0, 0.6, 1.2, 1.8, 2.4, 3, 3.6, 4.2]);
+    expect(c.map((x) => x.down)).toEqual([true, false, false, false, true, false, false, false]);
+    expect(beatClicks(buildTimeline(bars(1, 6, 8)).spans).map((x) => +x.time.toFixed(3))).toEqual([0, 0.9]);
+  });
+
+  it("counts a pickup's clicks as the last beats of a bar", () => {
+    const s = doc([meterAttr(4, 4) + n("G", 2), n("C", 8)]);
+    const tl = buildTimeline(s);
+    const c = beatClicks(tl.spans);
+    expect(c.slice(0, 2).map((x) => [+x.time.toFixed(3), x.down])).toEqual([
+      [0, false],
+      [0.6, true],
+    ]);
+  });
+
+  it("counts in one full bar at the tempo where playback starts", () => {
+    expect(countIn(buildTimeline(bars(2, 4, 4)).spans, 2.4)).toEqual({ beats: 4, beatSec: 0.6 });
+    const six = countIn(buildTimeline(bars(1, 6, 8)).spans, 0);
+    expect(six.beats).toBe(2);
+    expect(six.beatSec).toBeCloseTo(0.9);
+    expect(countIn([], 0)).toEqual({ beats: 0, beatSec: 0 });
   });
 });

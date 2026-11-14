@@ -1,6 +1,6 @@
 import WebAudioTinySynth from "../vendor/tinysynth.js";
 import { PLUCKED, Pluck } from "./pluck";
-import { heardAt, heardWhen } from "./practice";
+import { beatClicks, countIn, heardAt, heardWhen, type Click } from "./practice";
 import { Sampler } from "./sampler";
 import type { SoundDownloads } from "./sounds";
 import { quarterToSec, secToQuarter, type ControlEvent, type MeasureSpan, type NoteEvent, type Timeline } from "./timeline";
@@ -24,6 +24,16 @@ export interface PlayerOptions {
   /** Playback was moved to `time` by a seek or a restart, not by playing on. */
   onSeek?(time: number): void;
 }
+
+/** Clicks of the metronome: one bar before playing, and on every beat while playing. */
+export interface ClickOptions {
+  countIn?: boolean;
+  metronome?: boolean;
+}
+
+// The clicks: General MIDI's high and low wood block, on the drum channel.
+const CLICK_DOWN = 76;
+const CLICK_BEAT = 77;
 
 const LOOKAHEAD = 0.25;
 const TICK_MS = 25;
@@ -90,6 +100,11 @@ export class Player {
   private gate: number | null = null;
   private held = false;
   private skip: ((e: NoteEvent) => boolean) | null = null;
+  private clickOpts: ClickOptions = {};
+  private clicks: Click[] | null = null;
+  private nextClick = 0;
+  // Where the current start began: the position stays there through a count-in.
+  private from = 0;
 
   private pedal = pedalSpans([]);
 
@@ -98,6 +113,24 @@ export class Player {
     private opts: PlayerOptions = {},
   ) {
     this.pedal = pedalSpans(timeline.controls);
+  }
+
+  /** Count-in and metronome clicks (both off by default); a count-in is heard from the next start. */
+  setClicks(c: ClickOptions): void {
+    this.clickOpts = { ...c };
+    if (this.playing) this.nextClick = this.clickIndex(this.time);
+  }
+
+  private clickIndex(t: number): number {
+    const c = (this.clicks ??= beatClicks(this.timeline.spans));
+    const i = c.findIndex((x) => x.time >= t - 1e-6);
+    return i < 0 ? c.length : i;
+  }
+
+  private click(at: number, down: boolean): void {
+    const s = synth();
+    s.send([0x99, down ? CLICK_DOWN : CLICK_BEAT, down ? 120 : 90], at);
+    s.send([0x89, down ? CLICK_DOWN : CLICK_BEAT, 0], at + 0.05);
   }
 
   get isPlaying(): boolean {
@@ -113,7 +146,9 @@ export class Player {
     if (!this.playing) return this.offset;
     if (this.held) return this.offset;
     const ctx = synth().getAudioContext();
-    return Math.min(this.timeline.duration, this.stopAt(), (ctx.currentTime - this.startAt) * this.speed);
+    // Through a count-in the position stays where playback starts.
+    const t = Math.max(this.from, (ctx.currentTime - this.startAt) * this.speed);
+    return Math.min(this.timeline.duration, this.stopAt(), t);
   }
 
   // Where playback holds: a moment before the gate, so the notes there are not yet sounding.
@@ -178,7 +213,8 @@ export class Player {
     this.timeline = tl;
     this.pedal = pedalSpans(tl.controls);
     this.offset = Math.min(this.offset, tl.duration);
-    if (was) this.play();
+    this.clicks = null;
+    if (was) this.resume();
   }
 
   setSpeed(s: number): void {
@@ -187,13 +223,24 @@ export class Player {
     if (this.playing) {
       this.pause();
       this.offset = t;
-      this.play();
+      this.resume();
     }
   }
 
   getSpeed(): number {
     return this.speed;
   }
+
+  // Plays on from where it paused for an inner change (speed, timeline): no count-in.
+  private resume(): void {
+    this.quiet = true;
+    try {
+      this.play();
+    } finally {
+      this.quiet = false;
+    }
+  }
+  private quiet = false;
 
   play(): void {
     if (this.playing) return;
@@ -206,7 +253,30 @@ export class Player {
     const ctx = s.getAudioContext();
     if (ctx.state === "suspended") void ctx.resume();
     for (const [ch, prog] of this.timeline.programs) s.send([0xc0 | ch, prog]);
-    this.startAt = ctx.currentTime + 0.05 - this.offset / this.speed;
+    this.begin(!this.quiet);
+    this.playing = true;
+    this.loadSamples();
+    this.schedule();
+    this.timer = window.setInterval(() => this.schedule(), TICK_MS);
+    this.raf = requestAnimationFrame(this.frame);
+    this.opts.onStateChange?.(true);
+  }
+
+  // Sets the clock so that `offset` sounds shortly (after a count-in if asked), and the
+  // scheduling indices from there.
+  private begin(withCountIn: boolean): void {
+    const s = synth();
+    const ctx = s.getAudioContext();
+    let lead = 0.05;
+    if (withCountIn && this.clickOpts.countIn) {
+      const c = countIn(this.timeline.spans, this.offset);
+      const beat = c.beatSec / this.speed;
+      for (let i = 0; i < c.beats; i++) this.click(ctx.currentTime + lead + i * beat, i === 0);
+      lead += c.beats * beat;
+    }
+    this.from = this.offset;
+    this.startAt = ctx.currentTime + lead - this.offset / this.speed;
+    this.nextClick = this.clickIndex(this.offset);
     // Controllers in force where playback starts (a pedal held down), then the rest in time.
     const ctl = this.timeline.controls;
     this.nextCtl = ctl.findIndex((c) => c.time >= this.offset - 1e-6);
@@ -216,12 +286,6 @@ export class Player {
     for (const [ch, cc, v] of state.values()) s.send([0xb0 | ch, cc, v]);
     this.next = this.timeline.events.findIndex((e) => e.time >= this.offset - 1e-6);
     if (this.next < 0) this.next = this.timeline.events.length;
-    this.playing = true;
-    this.loadSamples();
-    this.schedule();
-    this.timer = window.setInterval(() => this.schedule(), TICK_MS);
-    this.raf = requestAnimationFrame(this.frame);
-    this.opts.onStateChange?.(true);
   }
 
   pause(): void {
@@ -302,6 +366,13 @@ export class Player {
     if (this.held) return;
     const horizon = Math.min((now - this.startAt + LOOKAHEAD) * this.speed, this.stopAt());
     const evs = this.timeline.events;
+    if (this.clickOpts.metronome) {
+      const c = (this.clicks ??= beatClicks(this.timeline.spans));
+      while (this.nextClick < c.length && c[this.nextClick].time <= horizon) {
+        const k = c[this.nextClick++];
+        this.click(this.startAt + k.time / this.speed, k.down);
+      }
+    }
     while (this.next < evs.length && evs[this.next].time <= horizon) {
       const e = evs[this.next++];
       if (this.skip?.(e)) continue;

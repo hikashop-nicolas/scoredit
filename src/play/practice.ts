@@ -14,7 +14,7 @@
 // - A group is satisfied once each of its pitches has been struck since it became current,
 //   in any order; wrong keys are ignored. A key struck earlier (held from the group before,
 //   or played early while the previous group was still current) counts only if struck again.
-import type { NoteEvent, Timeline } from "./timeline";
+import { quarterToSec, secToQuarter, type MeasureSpan, type NoteEvent, type Timeline } from "./timeline";
 
 /** Which notes the player plays: parts (null for all) and a hand for parts on several staves. */
 export interface PracticeTarget {
@@ -338,4 +338,39 @@ export function heardAt(perf: number, clock: { audio: number; perf: number }, st
 /** When piece time `t` is heard, in performance.now() ms (the inverse of heardAt). */
 export function heardWhen(t: number, clock: { audio: number; perf: number }, startAt: number, speed: number, latency: number): number {
   return clock.perf + (startAt + t / speed + latency - clock.audio) * 1000;
+}
+
+// Count-in and metronome. Rules:
+// - A click falls on each beat of a measure, the bar's first beat accented; a pickup's clicks
+//   are the last beats of a full bar, so they land where its notes are.
+// - The count-in is one full bar of the measure playback starts in, at its tempo there.
+
+/** One metronome click: its piece time and whether it starts a bar. */
+export interface Click {
+  time: number;
+  down: boolean;
+}
+
+/** The beats of every measure played, in piece seconds. */
+export function beatClicks(spans: MeasureSpan[]): Click[] {
+  const out: Click[] = [];
+  for (const s of spans) {
+    const beat = s.beat && s.beat > 0 ? s.beat : 1;
+    const bar = s.bar && s.bar > s.quarters + 1e-9 ? s.bar : s.quarters;
+    // A pickup is the end of a bar: its beats are counted from where that bar would start.
+    const shift = bar - s.quarters;
+    for (let q = Math.ceil(shift / beat - 1e-9) * beat - shift; q < s.quarters - 1e-9; q += beat) out.push({ time: s.start + quarterToSec(s, q), down: Math.abs(q + shift) < 1e-9 });
+  }
+  return out;
+}
+
+/** The count-in before piece time `t`: one bar of beats at the tempo there (beat length in seconds of the piece). */
+export function countIn(spans: MeasureSpan[], t: number): { beats: number; beatSec: number } {
+  const s = spans.find((x) => x.start <= t + 1e-9 && t < x.end - 1e-9) ?? spans[spans.length - 1];
+  if (!s) return { beats: 0, beatSec: 0 };
+  const beat = s.beat && s.beat > 0 ? s.beat : 1;
+  const bar = s.bar && s.bar > 0 ? s.bar : s.quarters;
+  const q = Math.max(0, secToQuarter(s, t - s.start));
+  const spq = s.tempo.filter(([from]) => from <= q + 1e-9).pop()?.[1] ?? s.tempo[0]?.[1] ?? 0.6;
+  return { beats: Math.max(1, Math.round(bar / beat)), beatSec: beat * spq };
 }

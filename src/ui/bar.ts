@@ -36,12 +36,16 @@ export interface PracticeState {
   echo: boolean;
   /** In time: ms taken off every key's time, for the delay of the instrument and the ear (the host calibrates it). */
   latencyMs: number;
+  /** One bar of clicks before playing (not in wait mode, which waits for you anyway). */
+  countIn: boolean;
+  /** A click on every beat while playing. */
+  metronome: boolean;
   /** The parts not practised are played (false: you play alone). */
   accompany: boolean;
 }
 
 /** Practice settings before the user or the host changes them. */
-export const PRACTICE_DEFAULTS: PracticeState = { mode: "off", hand: "both", echo: false, latencyMs: 0, accompany: true };
+export const PRACTICE_DEFAULTS: PracticeState = { mode: "off", hand: "both", echo: false, latencyMs: 0, countIn: false, metronome: false, accompany: true };
 
 /** What the end of an in-time run shows. */
 export interface PracticeSummaryView {
@@ -83,6 +87,8 @@ export interface BarOptions {
   onEdit?(): void;
   /** The practice settings changed (the button shows once setPractice makes it available). */
   onPractice?(p: PracticeState): void;
+  /** Asks the host for a MIDI instrument: Practice then shows even without one, with a button for it. */
+  onConnectMidi?(): void;
 }
 
 export interface Bar {
@@ -327,21 +333,34 @@ export function createBar(o: BarOptions): Bar {
   };
   const echo = tick(t("practiceEcho"), (on) => ((prac.echo = on), emit()));
   const accompany = tick(t("practiceAccompany"), (on) => ((prac.accompany = on), emit()));
+  const countInTick = tick(t("practiceCountIn"), (on) => ((prac.countIn = on), emit()));
+  const metronome = tick(t("practiceMetronome"), (on) => ((prac.metronome = on), emit()));
+  // Without an instrument: a button asking the host for one.
+  const connectBtn = document.createElement("button");
+  connectBtn.type = "button";
+  connectBtn.className = "sv-connect";
+  connectBtn.textContent = t("midiConnect");
+  connectBtn.addEventListener("click", () => o.onConnectMidi?.());
   const hint = document.createElement("p");
   hint.className = "sv-hint";
-  hint.textContent = t("practiceHint");
-  pracPop.append(modeChoice.box, handChoice.box, accompany.label, echo.label, hint);
+  pracPop.append(connectBtn, modeChoice.box, handChoice.box, accompany.label, echo.label, countInTick.label, metronome.label, hint);
   const setPractice = (available: boolean, hands: boolean, state: PracticeState) => {
     prac = { ...PRACTICE_DEFAULTS, ...state };
-    pracBtn.hidden = !available || !o.onPractice;
+    pracBtn.hidden = !o.onPractice || (!available && !o.onConnectMidi);
     if (pracBtn.hidden) pracPop.hidden = true;
+    connectBtn.hidden = available;
+    modeChoice.box.hidden = !available;
+    hint.textContent = t(available ? "practiceHint" : "midiNeeded");
     modeChoice.set(prac.mode);
     handChoice.set(prac.hand);
-    handChoice.box.hidden = !hands;
+    handChoice.box.hidden = !hands || !available;
     echo.box.checked = prac.echo;
+    echo.label.hidden = !available;
     accompany.box.checked = prac.accompany;
     // Only practice leaves notes to the player: outside it, everything plays.
-    accompany.label.hidden = prac.mode === "off";
+    accompany.label.hidden = !available || prac.mode === "off";
+    countInTick.box.checked = prac.countIn;
+    metronome.box.checked = prac.metronome;
     pracBtn.classList.toggle("is-on", prac.mode !== "off");
     pracBtn.setAttribute("aria-pressed", String(prac.mode !== "off"));
   };

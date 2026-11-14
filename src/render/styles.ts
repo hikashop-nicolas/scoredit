@@ -95,7 +95,8 @@ const CSS = `
 .sv-pop-summary dd[data-k=missed]{color:#b4bac3}
 .sv-pop-summary dd[data-k=accuracy]{font-weight:600}
 .sv-pop-practice .sv-hint{margin:4px 4px 0;max-width:220px;white-space:normal;font-size:12px;opacity:.75}
-.sv-pop-practice label[hidden]{display:none}
+.sv-pop-practice label[hidden],.sv-pop-practice button[hidden]{display:none}
+.sv-pop-practice .sv-connect{margin:2px 4px 6px;padding:8px 10px;font:inherit;color:inherit;background:var(--sv-accent-bg,rgba(59,130,246,.18));border:1px solid var(--sv-btn-border,#4a4f57);border-radius:6px;cursor:pointer}
 .sv-pop-parts .sv-all{border-bottom:1px solid var(--sv-btn-border,#4a4f57);margin-bottom:4px;padding-bottom:8px}
 .sv-bar-end{display:contents}
 .sv-reading .sv-bar-end{display:none}

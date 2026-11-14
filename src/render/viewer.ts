@@ -53,6 +53,11 @@ export interface ScoreViewerOptions {
   onChange?(): void;
   /** A MIDI instrument to play along with (see webMidiInput): the bar then shows Practice. */
   midi?: MidiInput | null;
+  /**
+   * Asks the host for a MIDI instrument (it asks the browser, which may prompt, then calls
+   * setMidiInput): Practice then shows without one, with a button to connect.
+   */
+  connectMidi?(): void;
   /** Practice settings as they start; `onChange` hears the user's (to keep them). */
   practice?: Partial<PracticeState> & { onChange?(p: PracticeState): void };
   /** An in-time run ended (playback reached the end or stopped): its counts, kept nowhere by scoredit. */
@@ -173,6 +178,7 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
     onParts: opts.parts ? (p) => setParts(p, true) : undefined,
     onEdit: opts.editable ? () => setEditing(true) : undefined,
     onPractice: (p) => setPractice(p),
+    onConnectMidi: opts.connectMidi ? () => opts.connectMidi?.() : undefined,
   });
 
   // Edit mode: the palette takes the bar's place; edits draw again what they changed.
@@ -351,9 +357,11 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
     const hands = handKinds.size === 2 || shown.some((p) => !hm.has(p) && multiStaff(p));
     bar.setPractice(!!midiIn, hands, practice);
   }
-  // Which notes the app plays: a setting that changes nothing of a run.
+  // The clicks and which notes the app plays: settings that change nothing of a run.
   function applyPlayback(p: Player): void {
     const tl = getTimeline();
+    // Wait mode waits for the player anyway: no count-in there.
+    p.setClicks({ countIn: practice.countIn && !waitOn(), metronome: practice.metronome });
     // Outside practice the app plays every part, whatever "Play the other parts" says.
     if (!practising()) p.setSkip(null);
     else {
@@ -474,11 +482,11 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
   function setPractice(p: Partial<PracticeState>): void {
     const was = practice;
     practice = { ...practice, ...p };
-    // Hearing the keys and the latency offset change nothing of a run under way; the
-    // accompaniment applies at once.
+    // Hearing the keys and the latency offset change nothing of a run under way; the clicks
+    // and the accompaniment apply at once.
     if (practice.mode !== was.mode || practice.hand !== was.hand) resetPractice();
     else {
-      if (player && practice.accompany !== was.accompany) applyPlayback(player);
+      if (player && (practice.countIn !== was.countIn || practice.metronome !== was.metronome || practice.accompany !== was.accompany)) applyPlayback(player);
       syncPracticeBar();
     }
     opts.practice?.onChange?.({ ...practice });
