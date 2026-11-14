@@ -340,6 +340,7 @@ export function createBar(o: BarOptions): Bar {
   const emit = () => {
     pracBtn.classList.toggle("is-on", prac.mode !== "off" || !!prac.loop);
     pracBtn.setAttribute("aria-pressed", String(prac.mode !== "off"));
+    syncSections();
     o.onPractice?.({ ...prac });
   };
   const modeChoice = choice(t("practice"), [["off", t("practiceOff")], ["wait", t("practiceWait")], ["time", t("practiceTime")]], (v) => ((prac.mode = v as PracticeState["mode"]), emit()));
@@ -356,7 +357,7 @@ export function createBar(o: BarOptions): Bar {
   const echo = tick(t("practiceEcho"), (on) => ((prac.echo = on), emit()));
   const accompany = tick(t("practiceAccompany"), (on) => ((prac.accompany = on), emit()));
   const countInTick = tick(t("practiceCountIn"), (on) => ((prac.countIn = on), emit()));
-  const metronome = tick(t("practiceMetronome"), (on) => ((prac.metronome = on), emit()));
+  const metronome = tick(t("practiceEveryBeat"), (on) => ((prac.metronome = on), emit()));
   // The loop: a tick, then the first and last bars (numbered as the score prints them).
   const loopTick = tick(t("practiceLoop"), (on) => {
     if (on) {
@@ -391,9 +392,6 @@ export function createBar(o: BarOptions): Bar {
   const toInput = barInput(t("loopTo"));
   bars.append(document.createTextNode(`${t("loopFrom")} `), fromInput, document.createTextNode(` ${t("loopTo")} `), toInput);
   const speedUp = tick(t("practiceSpeedUp"), (on) => ((prac.speedUp = on), emit()));
-  const loopBox = document.createElement("div");
-  loopBox.className = "sv-loop";
-  loopBox.append(loopTick.label, bars, speedUp.label);
   const syncLoop = () => {
     loopTick.box.checked = !!prac.loop;
     bars.hidden = speedUp.label.hidden = !prac.loop;
@@ -412,7 +410,45 @@ export function createBar(o: BarOptions): Bar {
   hint.className = "sv-hint";
   const soundChoice = choice(t("practiceSound"), [["computer", t("soundComputer")], ["instrument", t("soundInstrument")]], (v) => ((prac.sound = v as PracticeState["sound"]), emit()));
   soundChoice.box.classList.add("sv-sound");
-  pracPop.append(connectBtn, modeChoice.box, handChoice.box, soundChoice.box, accompany.label, echo.label, countInTick.label, metronome.label, loopBox, hint);
+  // The rest folds under small headings, so the pop-up fits a phone: closed, a heading tells
+  // what is chosen inside; it opens by itself when something in it is turned on (here, from
+  // the seek bar or by the host), and stays as the user leaves it after that.
+  const section = (title: string, cls: string, rows: HTMLElement[]) => {
+    const el = document.createElement("details");
+    el.className = `sv-sec ${cls}`;
+    const summary = document.createElement("summary");
+    const name = document.createElement("span");
+    name.className = "sv-sec-title";
+    name.textContent = title;
+    const state = document.createElement("span");
+    state.className = "sv-sec-state";
+    summary.append(name, state);
+    el.append(summary, ...rows);
+    let wasOn = false;
+    return {
+      el,
+      sync(shown: string[], on: boolean) {
+        state.textContent = shown.join(", ");
+        if (on && !wasOn) el.open = true;
+        wasOn = on;
+        el.hidden = rows.every((r) => r.hidden);
+      },
+    };
+  };
+  const soundSec = section(t("practiceSound"), "sv-sec-sound", [soundChoice.box, accompany.label, echo.label]);
+  const clickSec = section(t("practiceMetronome"), "sv-sec-clicks", [countInTick.label, metronome.label]);
+  const loopSec = section(t("practiceLoopTitle"), "sv-sec-loop", [loopTick.label, bars, speedUp.label]);
+  const ticked = (...ts: { label: HTMLElement; box: HTMLInputElement }[]) => ts.filter((x) => !x.label.hidden && x.box.checked).map((x) => x.label.textContent ?? "");
+  function syncSections(): void {
+    const toKeyboard = !soundChoice.box.hidden && prac.sound === "instrument";
+    const sound = soundChoice.box.hidden ? [] : [t(toKeyboard ? "soundInstrument" : "soundComputer")];
+    const alone = !accompany.label.hidden && !prac.accompany;
+    soundSec.sync([...sound, ...ticked(accompany, echo)], toKeyboard || alone || (!echo.label.hidden && prac.echo));
+    const clicks = ticked(countInTick, metronome);
+    clickSec.sync(clicks, clicks.length > 0);
+    loopSec.sync(prac.loop ? [`${t("loopFrom")} ${labelOf(prac.loop.from)} ${t("loopTo")} ${labelOf(prac.loop.to)}`] : [], !!prac.loop);
+  }
+  pracPop.append(connectBtn, modeChoice.box, handChoice.box, soundSec.el, clickSec.el, loopSec.el, hint);
   const setPractice = (available: boolean, hands: boolean, state: PracticeState, count?: number, numbers?: string[], output = false) => {
     prac = { ...PRACTICE_DEFAULTS, ...state };
     soundChoice.box.hidden = !available || !output;
@@ -436,6 +472,7 @@ export function createBar(o: BarOptions): Bar {
     metronome.box.checked = prac.metronome;
     speedUp.box.checked = prac.speedUp;
     syncLoop();
+    syncSections();
     pracBtn.classList.toggle("is-on", prac.mode !== "off" || !!prac.loop);
     pracBtn.setAttribute("aria-pressed", String(prac.mode !== "off"));
   };
