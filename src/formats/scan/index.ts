@@ -7,6 +7,7 @@ import { bytesOf, scanInThread, type ModelSource, type ScanModels, type ScanOpti
 
 export type { OrtLike, TileProgress } from "./infer";
 export { classMaps, scanEngineVersion } from "./read";
+export { looksLikeSheetMusic, type SheetMusicGuess } from "./detect";
 export type { ModelSource, ScanModels, ScanOptions, ScanResult };
 
 /** Reads one page of printed music from a scan or photo into MusicXML text. */
