@@ -123,6 +123,10 @@ export class Keyboard {
   // Practice: keys to play next (outlined) and keys held on the instrument (filled).
   private expected = new Set<number>();
   private pressed = new Map<number, string>();
+  // Gradients run down from y = 0, whatever the key's place: one per kind, colour and height,
+  // made once rather than for every key on every frame (the falling notes draw 60 a second).
+  private grads = new Map<string, CanvasGradient>();
+  private gradsFor: CanvasRenderingContext2D | null = null;
 
   constructor(className = "sv-keys") {
     this.canvas = document.createElement("canvas");
@@ -166,6 +170,28 @@ export class Keyboard {
     return { expected: [...this.expected], pressed: [...this.pressed] };
   }
 
+  /** Lays the keys out for the canvas's width (see geometry) without drawing them. */
+  layout(): Map<number, KeyGeom> {
+    const w = this.canvas.clientWidth;
+    if (w) this.keys = layoutKeys(this.lo, this.hi, w);
+    return this.keys;
+  }
+
+  private gradient(g: CanvasRenderingContext2D, key: string, height: number, stops: [number, string][]): CanvasGradient {
+    if (this.gradsFor !== g || this.grads.size > 256) {
+      this.grads.clear();
+      this.gradsFor = g;
+    }
+    const k = `${key}|${height}`;
+    let grad = this.grads.get(k);
+    if (!grad) {
+      grad = g.createLinearGradient(0, 0, 0, height);
+      for (const [at, colour] of stops) grad.addColorStop(at, colour);
+      this.grads.set(k, grad);
+    }
+    return grad;
+  }
+
   draw(): void {
     const c = this.canvas;
     const w = c.clientWidth;
@@ -187,18 +213,18 @@ export class Keyboard {
     for (const [m, k] of this.keys) {
       if (k.black) continue;
       const lit = this.pressed.get(m) ?? this.lit.get(m);
-      const grad = g.createLinearGradient(0, 0, 0, h);
-      if (lit) {
-        grad.addColorStop(0, shade(lit, -0.12));
-        grad.addColorStop(0.25, lit);
-        grad.addColorStop(1, shade(lit, 0.12));
-      } else {
-        grad.addColorStop(0, "#c9cac6");
-        grad.addColorStop(0.12, "#f4f4f1");
-        grad.addColorStop(0.85, "#fdfdfb");
-        grad.addColorStop(1, "#e2e3df");
-      }
-      g.fillStyle = grad;
+      g.fillStyle = lit
+        ? this.gradient(g, `w${lit}`, h, [
+            [0, shade(lit, -0.12)],
+            [0.25, lit],
+            [1, shade(lit, 0.12)],
+          ])
+        : this.gradient(g, "w", h, [
+            [0, "#c9cac6"],
+            [0.12, "#f4f4f1"],
+            [0.85, "#fdfdfb"],
+            [1, "#e2e3df"],
+          ]);
       keyPath(g, k.x + 0.5, 0, k.w - 1, h - 1, radius(k));
       g.fill();
       if (this.expected.has(m)) this.outline(g, k.x + 2, 2, k.w - 4, h - 5);
@@ -217,11 +243,11 @@ export class Keyboard {
       g.fillStyle = "rgba(0,0,0,.28)";
       keyPath(g, k.x + 1.5, 0, k.w, bh + 2.5, radius(k));
       g.fill();
-      const grad = g.createLinearGradient(0, 0, 0, bh);
-      grad.addColorStop(0, lit ? shade(lit, -0.25) : "#121317");
-      grad.addColorStop(0.7, lit ? lit : "#2a2d34");
-      grad.addColorStop(1, lit ? shade(lit, -0.1) : "#24272d");
-      g.fillStyle = grad;
+      g.fillStyle = this.gradient(g, `b${lit ?? ""}`, bh, [
+        [0, lit ? shade(lit, -0.25) : "#121317"],
+        [0.7, lit ? lit : "#2a2d34"],
+        [1, lit ? shade(lit, -0.1) : "#24272d"],
+      ]);
       keyPath(g, k.x, 0, k.w, bh, radius(k));
       g.fill();
       const edge = Math.min(6, bh * 0.08);
@@ -231,10 +257,10 @@ export class Keyboard {
       if (this.expected.has(m)) this.outline(g, k.x + 1.5, 1.5, k.w - 3, bh - 3);
     }
     // The keys slide under the case: a soft shadow along the top.
-    const top = g.createLinearGradient(0, 0, 0, 6);
-    top.addColorStop(0, "rgba(0,0,0,.55)");
-    top.addColorStop(1, "rgba(0,0,0,0)");
-    g.fillStyle = top;
+    g.fillStyle = this.gradient(g, "case", 6, [
+      [0, "rgba(0,0,0,.55)"],
+      [1, "rgba(0,0,0,0)"],
+    ]);
     g.fillRect(0, 0, w, 6);
   }
 

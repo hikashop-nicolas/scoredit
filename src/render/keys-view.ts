@@ -106,8 +106,8 @@ export function createKeysView(
     g.setTransform(dpr, 0, 0, dpr, 0, 0);
     g.fillStyle = "#121418";
     g.fillRect(0, 0, w, h);
-    kb.draw(); // lays the keys out for this width
-    const keys = kb.geometry;
+    // The keys laid out for this width; they are drawn once, after the notes have lit them.
+    const keys = kb.layout();
     // Lanes behind the notes, one per white key: C to E a shade lighter than F to B, so the
     // groups of black keys can be followed up from the keyboard; a line at each C.
     for (const [m, k] of keys) {
