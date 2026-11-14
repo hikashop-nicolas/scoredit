@@ -465,6 +465,33 @@ export class ScoreEditor {
     return same;
   }
 
+  /** Semitones from a part's written notes to how they sound (-2 for a B♭ clarinet). */
+  soundingShift(part: number): number {
+    return this.transposition(part)[1];
+  }
+
+  /**
+   * The drum a GM drum key plays in a drum part, as the part writes it (from its notes, else
+   * the kit's staff position); null when the part has no instrument on that key.
+   */
+  drumForKey(part: number, key: number): Pitch | null {
+    const id = kids(this.score.root, "part")[part]?.getAttribute("id");
+    const sp = Array.from(this.score.root.getElementsByTagName("score-part")).find((x) => x.getAttribute("id") === id);
+    if (!sp) return null;
+    const mi = kids(sp, "midi-instrument").find((m) => Number(text(m, "midi-unpitched")) === key + 1);
+    const inst = mi?.getAttribute("id");
+    if (!inst) return null;
+    for (const m of this.score.measures[part] ?? [])
+      for (const n of kids(m, "note")) {
+        const p = readPitch(n);
+        if (p?.unpitched && p.instrument === inst) return { ...p, notehead: text(n, "notehead") || undefined };
+      }
+    const k = DRUM_KIT.find((d) => d.pitch === key);
+    const at = 5 * 7 + 3 - (k?.line ?? 3);
+    const HEADS: Record<string, string | undefined> = { normal: undefined, cross: "x", diamond: "diamond", "circle-x": "circle-x", triangle: "triangle" };
+    return { step: "CDEFGAB"[((at % 7) + 7) % 7], alter: 0, octave: Math.floor(at / 7), unpitched: true, instrument: inst, notehead: k ? HEADS[k.head] : undefined };
+  }
+
   /** Whether a part's notes are drums. */
   isDrums(part: number): boolean {
     for (const m of this.score.measures[part] ?? []) if (m.getElementsByTagName("unpitched").length) return true;

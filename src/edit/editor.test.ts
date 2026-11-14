@@ -584,3 +584,20 @@ describe("Chord symbols", () => {
     expect(s.measures[0][0].getElementsByTagName("harmony")).toHaveLength(1);
   });
 });
+
+describe("Keys from a MIDI keyboard", () => {
+  it("knows how far a transposing part sounds from its written notes", () => {
+    const s = new ScoreDoc(`<score-partwise version="4.0"><part-list><score-part id="P1"><part-name>Clarinet in Bb</part-name></score-part><score-part id="P2"><part-name>Flute</part-name></score-part></part-list><part id="P1"><measure number="1"><attributes><divisions>1</divisions><key><fifths>2</fifths></key><transpose><diatonic>-1</diatonic><chromatic>-2</chromatic></transpose></attributes>${rest}</measure></part><part id="P2"><measure number="1"><attributes><divisions>1</divisions></attributes>${rest}</measure></part></score-partwise>`);
+    const ed = new ScoreEditor(s);
+    expect(ed.soundingShift(0)).toBe(-2);
+    expect(ed.soundingShift(1)).toBe(0);
+  });
+
+  it("finds the drum a key plays, where the part writes it", () => {
+    const s = new ScoreDoc(`<score-partwise version="4.0"><part-list><score-part id="P1"><part-name>Drums</part-name><score-instrument id="P1-I36"><instrument-name>Bass Drum</instrument-name></score-instrument><score-instrument id="P1-I39"><instrument-name>Snare</instrument-name></score-instrument><midi-instrument id="P1-I36"><midi-channel>10</midi-channel><midi-unpitched>37</midi-unpitched></midi-instrument><midi-instrument id="P1-I39"><midi-channel>10</midi-channel><midi-unpitched>39</midi-unpitched></midi-instrument></score-part></part-list><part id="P1"><measure number="1"><attributes><divisions>1</divisions><clef><sign>percussion</sign></clef></attributes><note><unpitched><display-step>F</display-step><display-octave>4</display-octave></unpitched><duration>4</duration><instrument id="P1-I36"/><voice>1</voice><type>whole</type></note></measure></part></score-partwise>`);
+    const ed = new ScoreEditor(s);
+    expect(ed.drumForKey(0, 36)).toMatchObject({ step: "F", octave: 4, unpitched: true, instrument: "P1-I36" });
+    expect(ed.drumForKey(0, 38)).toMatchObject({ step: "C", octave: 5, unpitched: true, instrument: "P1-I39" });
+    expect(ed.drumForKey(0, 60)).toBeNull();
+  });
+});
