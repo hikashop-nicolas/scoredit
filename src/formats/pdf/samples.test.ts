@@ -46,9 +46,10 @@ const SAMPLES: Expect[] = [
   { file: "cm-Flohwalzer.pdf", coverage: 1, counts: { 0xe0a4: 197, 0xe260: 36, 0xe000: 3 } },
   // LilyPond 2.24 examples in its own manual (Commons: LilyPond 2.24.4 Changes).
   { file: "cm-LilyPond_2_24_4_Changes.pdf", coverage: 1, counts: { 0xe939: 3 }, chords: ["Bb", "Eb7", "A7/C#", "Bbm7", "Cm7", "Em7"] },
-  // LilyPond guitar sheets with chord names in plain text (the last draws its music as outlines) (Commons: Kiefer Wolfowitz's tuning charts).
+  // LilyPond guitar sheets with chord names in plain text (Commons: major-thirds tuning charts).
   { file: "cm-Sevenths_chords_on_C_M3_tuning.pdf", coverage: 1, counts: {}, harmonies: 5 },
   { file: "cm-Major_thirds_tuning_guitar_chords_1.pdf", coverage: 1, counts: {}, harmonies: 7 },
+  // Guitar Pro (Qt PDF): music drawn as shapes, no music font; chord names in Arial.
   { file: "cm-New_Standard_Tuning_-_C_major_scale_harmonized_in_sevenths_and_triads__arpeggios.pdf", coverage: 1, counts: {}, harmonies: 46 },
   // LilyPond 1.x feta fonts through dvips (Commons: BWV 269).
   { file: "cm-Johann_Sebastian_Bach_BWV_269_Aus_meines.pdf", coverage: 1, counts: { 0xe0a4: 184, 0xe0a3: 45 } },
