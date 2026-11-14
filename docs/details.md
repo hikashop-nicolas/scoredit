@@ -91,7 +91,9 @@ times less work per tile) trained on seg_net's own output over MuseScore renders
 degradations. With `tiles: "strips"` it reads the test bed as well as seg_net and the symbol step
 takes about 10 seconds a page on one laptop thread. `render.py` renders scores to train on,
 `label.py` makes the training tiles, `train.py` trains (MPS, CUDA or CPU) and `export.py` writes
-the ONNX file.
+the ONNX file. The published network was trained on pages of 24 scores: 15 from the OpenScore
+corpus (CC0), 6 test files from OpenSheetMusicDisplay's test suite (BSD-3) and 3 guitar scores
+published by their users on musescore.com.
 
 All models, seg_net's int8 copy and the distilled network included, are published at
 [huggingface.co/hikashop-nicolas/scoredit-scan](https://huggingface.co/hikashop-nicolas/scoredit-scan)
