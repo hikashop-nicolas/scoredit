@@ -63,6 +63,27 @@ again, grace notes never block and an ornament or tremolo expects its written no
 keyboard outlines the keys to play and shows those pressed (green expected, red not); "Hear my
 notes" sounds the keys with the part's instrument.
 
+### Note entry from a MIDI keyboard
+
+The same input feeds the editor; practice and editing are exclusive (while editing, keys never
+reach wait mode). In note input (N), a key enters its pitch at the caret with the chosen length
+and the caret moves on, like a typed letter; lengths, dots, ties, voices and rests keep coming
+from the computer keyboard and the palette.
+
+- Spelling: a note of the key's scale is written as the key writes it (E♯ in F♯ major, C♭ in
+  G♭ major); any other black key takes a sharp in sharp keys and in C, a flat in flat keys
+  (`spellInKey`).
+- Chords: keys struck within 60 ms of a group's first key make one chord (`ChordGrouper`);
+  holding a key while striking another does not, so legato melodies stay single notes.
+- Rests: pressing the sustain pedal (CC64) enters a rest of the chosen length; 0 still does too.
+- Undo: each note, chord or rest entered is one step.
+- Transposing instruments: keys sound concert pitch, so the written note is the key moved by the
+  part's transposition (B♭ on the keyboard is a written C for a B♭ clarinet).
+- Drums: a key enters the part's drum on that General MIDI key (38 snare, 42 closed hi-hat...),
+  as the part writes it; a key the part has no drum for is ignored.
+- Out of note input, a key gives the one selected note its pitch (a chord or range selected is
+  left alone). With "Hear my notes" on, keys also sound with the edited part's instrument.
+
 ## Sound
 
 Playback starts on a built-in synthesizer (webaudio-tinysynth, Apache-2.0) and a plucked-string
