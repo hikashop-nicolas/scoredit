@@ -56,6 +56,10 @@ export interface MeasureSpan {
   tempo: [number, number][];
   /** Silences (caesura, section end): [quarter offset, seconds], taken before what starts there. */
   pauses?: [number, number][];
+  /** Length of a beat in quarters (from the time signature; 1 when none). */
+  beat?: number;
+  /** A full bar of that time signature in quarters (longer than `quarters` in a pickup). */
+  bar?: number;
 }
 
 export interface Timeline {
@@ -339,6 +343,20 @@ export function buildTimeline(score: ScoreDoc, opts: { straight?: boolean; bpm?:
     return out;
   };
 
+  // The beat and the bar's full length from the time signature of the first part: a dotted
+  // quarter in 6/8, 9/8 and 12/8, else the signature's note value; a quarter when none is written.
+  const meter = (m: number): { beat: number; bar: number } => {
+    const meas = score.measures[0]?.[m];
+    const own = meas ? kids(meas, "attributes").flatMap((a) => kids(a, "time"))[0] : undefined;
+    const time = own ?? score.attributesAt(0, m).find((e) => e.tagName === "time");
+    const beats = Number(text(time, "beats")) || 0;
+    const type = Number(text(time, "beat-type")) || 0;
+    if (!beats || !type) return { beat: 1, bar: lengths.get(m) ?? 4 };
+    const unit = 4 / type;
+    const compound = type >= 8 && beats > 3 && beats % 3 === 0;
+    return { beat: compound ? unit * 3 : unit, bar: beats * unit };
+  };
+
   // Lay the played measures out in time.
   // Until the score marks a tempo.
   let secPerQ = 60 / (opts.bpm ?? DEFAULT_BPM);
@@ -352,7 +370,7 @@ export function buildTimeline(score: ScoreDoc, opts: { straight?: boolean; bpm?:
       if (q <= 0) tempo[0] = [0, secPerQ];
       else tempo.push([q, secPerQ]);
     }
-    const span: MeasureSpan = { measure: m, start: t, end: 0, quarters, tempo: stretch(tempo, m, quarters) };
+    const span: MeasureSpan = { measure: m, start: t, end: 0, quarters, tempo: stretch(tempo, m, quarters), ...meter(m) };
     // A caesura, and the end of a section, are followed by a silence.
     const pauses: [number, number][] = (caesuras.get(m) ?? []).filter(([q]) => q > 0).map(([q, sec]) => [Math.min(q, quarters), sec]);
     if (score.sections.includes(m + 1)) {
