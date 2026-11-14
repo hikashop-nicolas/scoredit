@@ -20,6 +20,8 @@ export interface PlayerOptions {
   /** Notes starting (true) and ending (false), at the moment they sound. */
   onNotes?(events: NoteEvent[], on: boolean): void;
   onStateChange?(playing: boolean): void;
+  /** Playback was moved to `time` by a seek or a restart, not by playing on. */
+  onSeek?(time: number): void;
 }
 
 const LOOKAHEAD = 0.25;
@@ -83,6 +85,10 @@ export class Player {
   private raf = 0;
   private speed = 1;
   private sounding: NoteEvent[] = [];
+  // Wait mode: playback holds just before `gate` until it is moved; `skip` notes are not sounded.
+  private gate: number | null = null;
+  private held = false;
+  private skip: ((e: NoteEvent) => boolean) | null = null;
 
   private pedal = pedalSpans([]);
 
@@ -104,8 +110,44 @@ export class Player {
   /** Current position in seconds of the piece. */
   get time(): number {
     if (!this.playing) return this.offset;
+    if (this.held) return this.offset;
     const ctx = synth().getAudioContext();
-    return Math.min(this.timeline.duration, (ctx.currentTime - this.startAt) * this.speed);
+    return Math.min(this.timeline.duration, this.stopAt(), (ctx.currentTime - this.startAt) * this.speed);
+  }
+
+  // Where playback holds: a moment before the gate, so the notes there are not yet sounding.
+  private stopAt(): number {
+    return this.gate === null ? Infinity : Math.max(0, this.gate - 1e-3);
+  }
+
+  /** Wait mode: hold playback just before piece time `t` (null: play on freely). */
+  setGate(t: number | null): void {
+    this.gate = t;
+    if (!this.held || (t !== null && t - 1e-3 <= this.offset + 1e-9)) return;
+    // Released: the clock goes on from where it held.
+    this.held = false;
+    this.startAt = synth().getAudioContext().currentTime - this.offset / this.speed;
+  }
+
+  /** Whether playback is holding at the gate. */
+  get waiting(): boolean {
+    return this.playing && this.held;
+  }
+
+  /** Notes not to sound (the practised part, which the player plays). */
+  setSkip(skip: ((e: NoteEvent) => boolean) | null): void {
+    this.skip = skip;
+  }
+
+  /** Sounds a note at once on a part's channel (a MIDI key echoed); velocity 0 ends it. */
+  live(channel: number, program: number, midi: number, velocity: number): void {
+    const s = synth();
+    const ctx = s.getAudioContext();
+    if (ctx.state === "suspended") void ctx.resume();
+    if (velocity > 0) {
+      if (channel !== 9) s.send([0xc0 | channel, program]);
+      s.send([0x90 | channel, midi, velocity]);
+    } else s.send([0x80 | channel, midi, 0]);
   }
 
   setTimeline(tl: Timeline): void {
@@ -133,7 +175,11 @@ export class Player {
 
   play(): void {
     if (this.playing) return;
-    if (this.offset >= this.timeline.duration - 0.01) this.offset = 0;
+    if (this.offset >= this.timeline.duration - 0.01) {
+      this.offset = 0;
+      this.opts.onSeek?.(0);
+    }
+    this.held = false;
     const s = synth();
     const ctx = s.getAudioContext();
     if (ctx.state === "suspended") void ctx.resume();
@@ -160,6 +206,7 @@ export class Player {
     if (!this.playing) return;
     this.offset = this.time;
     this.playing = false;
+    this.held = false;
     clearInterval(this.timer);
     cancelAnimationFrame(this.raf);
     const s = synth();
@@ -184,6 +231,7 @@ export class Player {
     const was = this.playing;
     this.pause();
     this.offset = Math.min(Math.max(0, t), this.timeline.duration);
+    this.opts.onSeek?.(this.offset);
     this.report();
     if (was) this.play();
   }
@@ -199,6 +247,7 @@ export class Player {
   stop(): void {
     this.pause();
     this.offset = 0;
+    this.opts.onSeek?.(0);
     this.report();
   }
 
@@ -228,10 +277,12 @@ export class Player {
   private schedule = (): void => {
     const s = synth();
     const now = s.getAudioContext().currentTime;
-    const horizon = (now - this.startAt + LOOKAHEAD) * this.speed;
+    if (this.held) return;
+    const horizon = Math.min((now - this.startAt + LOOKAHEAD) * this.speed, this.stopAt());
     const evs = this.timeline.events;
     while (this.next < evs.length && evs[this.next].time <= horizon) {
       const e = evs[this.next++];
+      if (this.skip?.(e)) continue;
       const on = this.startAt + e.time / this.speed;
       const off = on + Math.max(0.05, e.dur / this.speed - 0.01);
       const program = e.program;
@@ -250,7 +301,7 @@ export class Player {
       const c = ctl[this.nextCtl++];
       s.send([0xb0 | c.channel, c.cc, c.value], this.startAt + c.time / this.speed);
     }
-    if (this.next >= evs.length && now - this.startAt >= this.timeline.duration / this.speed + 0.3) {
+    if (this.gate === null && this.next >= evs.length && now - this.startAt >= this.timeline.duration / this.speed + 0.3) {
       this.pause();
       this.offset = this.timeline.duration;
     }
@@ -258,6 +309,10 @@ export class Player {
 
   private frame = (): void => {
     if (!this.playing) return;
+    if (!this.held && this.gate !== null && (synth().getAudioContext().currentTime - this.startAt) * this.speed >= this.stopAt()) {
+      this.offset = this.stopAt();
+      this.held = true;
+    }
     const t = this.time;
     // What sounds now: started, not yet ended.
     const evs = this.timeline.events;
