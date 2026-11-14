@@ -36,7 +36,12 @@ export interface PracticeState {
   echo: boolean;
   /** In time: ms taken off every key's time, for the delay of the instrument and the ear (the host calibrates it). */
   latencyMs: number;
+  /** The parts not practised are played (false: you play alone). */
+  accompany: boolean;
 }
+
+/** Practice settings before the user or the host changes them. */
+export const PRACTICE_DEFAULTS: PracticeState = { mode: "off", hand: "both", echo: false, latencyMs: 0, accompany: true };
 
 /** What the end of an in-time run shows. */
 export interface PracticeSummaryView {
@@ -90,7 +95,7 @@ export interface Bar {
   /** The parts of the score and those shown (null: all); no button for a single part. */
   setParts(names: string[], shown: number[] | null): void;
   setFretboard(available: boolean): void;
-  /** The practice button (shown when available), whether a hand can be chosen, and the settings. */
+  /** The practice button: whether an instrument is connected, whether a hand can be chosen, and the settings. */
   setPractice(available: boolean, hands: boolean, state: PracticeState): void;
   /** The end-of-run summary pop-up (null hides it). */
   showSummary(s: PracticeSummaryView | null): void;
@@ -285,7 +290,7 @@ export function createBar(o: BarOptions): Bar {
   const pracPop = document.createElement("div");
   pracPop.className = "sv-pop sv-pop-parts sv-pop-practice";
   pracPop.hidden = true;
-  let prac: PracticeState = { mode: "off", hand: "both", echo: false, latencyMs: 0 };
+  let prac: PracticeState = { ...PRACTICE_DEFAULTS };
   const choice = (name: string, options: [string, string][], pick: (v: string) => void) => {
     const box = document.createElement("div");
     box.className = "sv-choice";
@@ -312,23 +317,31 @@ export function createBar(o: BarOptions): Bar {
   const modeChoice = choice(t("practice"), [["off", t("practiceOff")], ["wait", t("practiceWait")], ["time", t("practiceTime")]], (v) => ((prac.mode = v as PracticeState["mode"]), emit()));
   const handChoice = choice(t("practiceHand"), [["both", t("handsBoth")], ["right", t("handRight")], ["left", t("handLeft")]], (v) => ((prac.hand = v as PracticeState["hand"]), emit()));
   handChoice.box.classList.add("sv-hands");
-  const echoLabel = document.createElement("label");
-  const echoBox = document.createElement("input");
-  echoBox.type = "checkbox";
-  echoBox.addEventListener("change", () => ((prac.echo = echoBox.checked), emit()));
-  echoLabel.append(echoBox, document.createTextNode(t("practiceEcho")));
+  const tick = (text: string, change: (on: boolean) => void) => {
+    const l = document.createElement("label");
+    const c = document.createElement("input");
+    c.type = "checkbox";
+    c.addEventListener("change", () => change(c.checked));
+    l.append(c, document.createTextNode(text));
+    return { label: l, box: c };
+  };
+  const echo = tick(t("practiceEcho"), (on) => ((prac.echo = on), emit()));
+  const accompany = tick(t("practiceAccompany"), (on) => ((prac.accompany = on), emit()));
   const hint = document.createElement("p");
   hint.className = "sv-hint";
   hint.textContent = t("practiceHint");
-  pracPop.append(modeChoice.box, handChoice.box, echoLabel, hint);
+  pracPop.append(modeChoice.box, handChoice.box, accompany.label, echo.label, hint);
   const setPractice = (available: boolean, hands: boolean, state: PracticeState) => {
-    prac = { ...state };
+    prac = { ...PRACTICE_DEFAULTS, ...state };
     pracBtn.hidden = !available || !o.onPractice;
     if (pracBtn.hidden) pracPop.hidden = true;
     modeChoice.set(prac.mode);
     handChoice.set(prac.hand);
     handChoice.box.hidden = !hands;
-    echoBox.checked = prac.echo;
+    echo.box.checked = prac.echo;
+    accompany.box.checked = prac.accompany;
+    // Only practice leaves notes to the player: outside it, everything plays.
+    accompany.label.hidden = prac.mode === "off";
     pracBtn.classList.toggle("is-on", prac.mode !== "off");
     pracBtn.setAttribute("aria-pressed", String(prac.mode !== "off"));
   };

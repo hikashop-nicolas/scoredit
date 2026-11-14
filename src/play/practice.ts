@@ -4,7 +4,8 @@
 // Rules:
 // - The practised notes are those of the chosen parts (all when none are chosen); a hand
 //   keeps staff 1 (right) or staff 2 and below (left) of parts written on several staves,
-//   and the whole of single-staff parts.
+//   and the whole of single-staff parts. Parts named as hands ("Right", "Left": see
+//   handParts) are a hand each, whole, even when written on two staves.
 // - Notes starting together (same pass through a measure, same beat) form one group; an
 //   arpeggiated chord is one group too.
 // - Grace notes are never expected: playing them or not does not block.
@@ -19,6 +20,28 @@ import type { NoteEvent, Timeline } from "./timeline";
 export interface PracticeTarget {
   parts?: number[] | null;
   hand?: "both" | "right" | "left";
+  /** Parts that are one hand each (see handParts): a hand keeps its part whole, whatever its staves. */
+  hands?: Map<number, "right" | "left">;
+}
+
+// Names of a part that holds one hand, as MIDI files and piano scores split in tracks call them.
+const RIGHT_NAME = /(^|[^\p{L}])(right|rh|r\.\s?h\.?|droite|m\.\s?d\.?|rechts|rechte|derecha|direita|destra|правая)([^\p{L}]|$)|右手/iu;
+const LEFT_NAME = /(^|[^\p{L}])(left|lh|l\.\s?h\.?|gauche|m\.\s?g\.?|links|linke|izquierda|esquerda|sinistra|левая)([^\p{L}]|$)|左手/iu;
+
+/**
+ * Parts that are one hand of a keyboard each, by their names ("Right" and "Left", "Piano RH"
+ * and "Piano LH", "Main droite"...): only when the score has at least one of each, so a part
+ * merely named "Left" in another score is not taken for a hand.
+ */
+export function handParts(names: readonly string[]): Map<number, "right" | "left"> {
+  const out = new Map<number, "right" | "left">();
+  names.forEach((name, i) => {
+    const r = RIGHT_NAME.test(name);
+    const l = LEFT_NAME.test(name);
+    if (r !== l) out.set(i, r ? "right" : "left");
+  });
+  const kinds = new Set(out.values());
+  return kinds.size === 2 ? out : new Map();
 }
 
 /** Notes the player starts together. */
@@ -37,8 +60,11 @@ export function practisedBy(tl: Timeline, target: PracticeTarget): (e: NoteEvent
   const hand = target.hand ?? "both";
   const multi = new Set<number>();
   for (const e of tl.events) if (e.staff > 1) multi.add(e.part);
+  const hands = target.hands;
   return (e) => {
     if (parts && !parts.has(e.part)) return false;
+    const own = hands?.get(e.part);
+    if (own) return hand === "both" || hand === own;
     if (hand === "both" || !multi.has(e.part)) return true;
     return hand === "right" ? e.staff === 1 : e.staff > 1;
   };
