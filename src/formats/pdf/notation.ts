@@ -88,6 +88,8 @@ export interface PDirection {
   staff: number;
   dynamics?: string;
   words?: string;
+  /** A chord symbol, as ASCII chord text. */
+  harmony?: string;
   above: boolean;
   onset?: number;
 }
@@ -523,7 +525,7 @@ export function readPage(page: NormPage): PageResult {
   const header: TextRun[] = [];
   const firstTop = systems[0].top - 4 * sp;
   for (const t of page.texts) {
-    if (t.y < firstTop) {
+    if (t.y < firstTop && t.kind !== "chord") {
       header.push(t);
       continue;
     }
@@ -665,6 +667,10 @@ const EXPRESSION = /^\(?((cresc|decresc|dim|rit|rall|accel|espr|stacc|smorz|pizz
 /** Tempo marks (bold, above a staff) and expression words: directions at the measure under them. */
 function words(page: NormPage, systems: PSystem[], sp: number): void {
   for (const t of page.texts) {
+    if (t.kind === "chord") {
+      chordAt(t, systems, sp);
+      continue;
+    }
     const bold = t.bold && !/^[\d.,\s]+$/.test(t.str);
     if (!bold && !EXPRESSION.test(t.str)) continue;
     for (const sys of systems) {
@@ -674,6 +680,17 @@ function words(page: NormPage, systems: PSystem[], sp: number): void {
       if (m) m.dirs.push({ x: t.x, staff: k, words: t.str, above: t.y < sys.staves[k].top });
       break;
     }
+  }
+}
+
+/** A chord symbol: a harmony at the measure of the staff under it (over the top staff when between). */
+function chordAt(t: TextRun, systems: PSystem[], sp: number): void {
+  for (const sys of systems) {
+    const k = sys.staves.findIndex((st) => t.y < st.top + sp && t.y > st.top - 8 * sp);
+    if (k < 0 || t.x < sys.x0 - sp) continue;
+    const m = sys.measures.find((q) => t.x >= q.x0 - sp && t.x < q.x1);
+    if (m) m.dirs.push({ x: t.x, staff: k, harmony: t.str, above: true });
+    return;
   }
 }
 

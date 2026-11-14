@@ -1,5 +1,6 @@
 // Reads a PDF made by notation software (MuseScore and other SMuFL engravers, and the font
 // families normalize.ts maps) into a MusicXML score-partwise document. Read-only.
+import { parseChord } from "../../edit/chords";
 import { parseXml } from "../../model/xml";
 import { readEmbeddedScore } from "./embed";
 import { extractPdf } from "./extract";
@@ -192,7 +193,7 @@ function writeScore(systems: PSystem[], header: TextRun[], width: number, docTit
         }
         const evs = m.events[k];
         const mid = m.attrs[k].filter((a) => a.clef && !leading(a, m)).sort((a, b) => a.x - b.x);
-        const dirs = m.dirs.filter((d) => d.staff === k);
+        const dirs = m.dirs.filter((d) => d.staff === k).sort((a, b) => a.x - b.x);
         const voices = [...new Set(evs.map((e) => e.voice))].sort((a, b) => a - b);
         if (!voices.length) voices.push(1);
         // Pitches: the clef and accidentals in force at each chord, left to right.
@@ -443,6 +444,16 @@ function noteXml(e: PEvent, dur: number, voice: number, staff: number, tup: Retu
 }
 
 function directionXml(d: PMeasure["dirs"][number], staff: number): string {
+  if (d.harmony !== undefined) return harmonyXml(d.harmony, staff);
   const inner = d.dynamics ? `<dynamics>${DYN.has(d.dynamics) ? `<${d.dynamics}/>` : `<other-dynamics>${esc(d.dynamics)}</other-dynamics>`}</dynamics>` : `<words>${esc(d.words ?? "")}</words>`;
   return `<direction placement="${d.above ? "above" : "below"}"><direction-type>${inner}</direction-type>${staff ? `<staff>${staff}</staff>` : ""}</direction>`;
+}
+
+/** A chord symbol as <harmony>; text that does not parse as a chord stays words above the staff. */
+function harmonyXml(str: string, staff: number): string {
+  const c = parseChord(str);
+  const st = staff ? `<staff>${staff}</staff>` : "";
+  if (!c) return `<direction placement="above"><direction-type><words>${esc(str)}</words></direction-type>${st}</direction>`;
+  const note = (tag: string, n: { step: string; alter: number }) => `<${tag}><${tag}-step>${n.step}</${tag}-step>${n.alter ? `<${tag}-alter>${n.alter}</${tag}-alter>` : ""}</${tag}>`;
+  return `<harmony>${note("root", c.root)}<kind text="${esc(c.suffix)}">${c.kind}</kind>${c.bass ? note("bass", c.bass) : ""}${st}</harmony>`;
 }

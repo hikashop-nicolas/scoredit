@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 // Engravers' PDFs read through the font tables. The PDFs are not in the repository: put them in
 // corpus/pdf (or point SCOREDIT_PDF_SAMPLES at a folder); each test is skipped when its file is missing.
 import { existsSync, readFileSync } from "node:fs";
@@ -5,6 +6,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { extractPdf } from "./extract";
 import { normalizePage } from "./normalize";
+import { readPdfScore } from "./read";
 
 const dir = process.env.SCOREDIT_PDF_SAMPLES ?? join(__dirname, "../../../corpus/pdf");
 
@@ -16,19 +18,21 @@ interface Expect {
   counts: Record<number, number>;
   /** Chord symbols that must be read (as ASCII chord text). */
   chords?: string[];
+  /** Chord symbols written as <harmony> by the reader. */
+  harmonies?: number;
 }
 
 const SAMPLES: Expect[] = [
   // Sibelius 7.1, Opus fonts (Wikimedia Commons: Odeon, Ernesto Nazareth, guitar).
-  { file: "c2.pdf", coverage: 1, counts: { 0xe0a4: 1398, 0xe4e7: 170, 0xe262: 100, 0xe050: 29, 0xe240: 68 }, chords: ["F#m7b5", "B(sus4)", "Am/G", "Bbdim", "Am11"] },
+  { file: "c2.pdf", coverage: 1, counts: { 0xe0a4: 1398, 0xe4e7: 170, 0xe262: 100, 0xe050: 29, 0xe240: 68 }, chords: ["F#m7b5", "B(sus4)", "Am/G", "Bbdim", "Am11"], harmonies: 55 },
   // Sibelius via PDFsam (Commons: Baroque Prog Suite, Eduardo Feld).
-  { file: "c1.pdf", coverage: 1, counts: { 0xe0a4: 3645, 0xe0a3: 816, 0xe050: 157, 0xe263: 57, 0xe07d: 120, 0xe1e7: 354, 0xe564: 12 }, chords: ["Gm(maj7)", "G#maj7", "F#maj7(sus4)", "D#m7/D"] },
+  { file: "c1.pdf", coverage: 1, counts: { 0xe0a4: 3645, 0xe0a3: 816, 0xe050: 157, 0xe263: 57, 0xe07d: 120, 0xe1e7: 354, 0xe564: 12 }, chords: ["Gm(maj7)", "G#maj7", "F#maj7(sus4)", "D#m7/D"], harmonies: 252 },
   // Sibelius 7.1 with add9 chords and strum arrows (Commons: Escuridao).
-  { file: "cm-Escuridao_partitura.pdf", coverage: 1, counts: { 0xe0a4: 295, 0xeb7c: 12 }, chords: ["Dmaj7(add9)", "Dm7/G", "C#dim", "A7(sus4)"] },
+  { file: "cm-Escuridao_partitura.pdf", coverage: 1, counts: { 0xe0a4: 295, 0xeb7c: 12 }, chords: ["Dmaj7(add9)", "Dm7/G", "C#dim", "A7(sus4)"], harmonies: 72 },
   // Sibelius 7.1, choir with tuplet ratios and x heads (Commons: Orestes chorus).
   { file: "cm-Orestes_Chorus_Score.pdf", coverage: 1, counts: { 0xe0a4: 636, 0xe88a: 20, 0xe0a9: 11, 0xe4cf: 7 } },
   // Finale 2002 (Maestro) with chord symbols in Helvetica (Commons: Internationale piano arrangement).
-  { file: "cm-Internationale_piano_arrangement_2001.pdf", coverage: 1, counts: { 0xe0a4: 768, 0xe250: 8 }, chords: ["F#m", "C#7", "Bm7", "F#7", "Cm7b5", "Bb7"] },
+  { file: "cm-Internationale_piano_arrangement_2001.pdf", coverage: 1, counts: { 0xe0a4: 768, 0xe250: 8 }, chords: ["F#m", "C#7", "Bm7", "F#7", "Cm7b5", "Bb7"], harmonies: 62 },
   // Finale 2007 (Maestro) and Finale on macOS (Commons: Anna Bon flute sonatas; Hino patriotico).
   { file: "cm-6_Flute_Sonatas_Op_1_IA_imslp_flute_sona.pdf", coverage: 1, counts: { 0xe0a4: 10818, 0xe566: 110, 0xe56c: 22 } },
   { file: "cm-Hino_patri_tico_da_Na_o_Portuguesa_Marco.pdf", coverage: 1, counts: { 0xe0a4: 2609, 0xe52f: 42, 0xe4ac: 25 } },
@@ -66,6 +70,7 @@ describe("sample PDFs", () => {
       expect(mapped / (mapped + missed)).toBeGreaterThanOrEqual(s.coverage);
       for (const [cp, count] of Object.entries(s.counts)) expect(hist.get(Number(cp)) ?? 0, `U+${Number(cp).toString(16)}`).toBe(count);
       for (const c of s.chords ?? []) expect([...chords]).toContain(c);
+      if (s.harmonies !== undefined) expect((await readPdfScore(new Uint8Array(readFileSync(path)))).getElementsByTagName("harmony").length).toBe(s.harmonies);
     }, 60000);
   }
 });

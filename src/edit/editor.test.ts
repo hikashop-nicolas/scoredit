@@ -569,6 +569,8 @@ describe("Chord symbols", () => {
     expect(parseChord("Cm7")).toMatchObject({ root: { step: "C", alter: 0 }, kind: "minor-seventh", suffix: "m7" });
     expect(parseChord("Bb/D")).toMatchObject({ root: { step: "B", alter: -1 }, kind: "major", bass: { step: "D", alter: 0 } });
     expect(parseChord("F#m7b5")?.kind).toBe("half-diminished");
+    expect([parseChord("B(sus4)")?.kind, parseChord("Gm(maj7)")?.kind, parseChord("Am11")?.kind]).toEqual(["suspended-fourth", "major-minor", "minor-11th"]);
+    expect(parseChord("B(sus4)")?.suffix).toBe("(sus4)");
     expect(parseChord("hello")).toBe(null);
     expect(chordText(parseChord("bb7")!)).toBe("B♭7");
     const s = score(note("C", 2, "half") + note("D", 2, "half"));

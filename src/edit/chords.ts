@@ -33,7 +33,8 @@ const KINDS: [RegExp, string][] = [
   [/^(m9|min9|-9)$/, "minor-ninth"],
   [/^11$/, "dominant-11th"],
   [/^13$/, "dominant-13th"],
-  [/^(mMaj7|m\(maj7\)|mM7|-Δ7)$/, "major-minor"],
+  [/^(mMaj7|mmaj7|m\(maj7\)|mM7|-Δ7)$/, "major-minor"],
+  [/^(m11|min11|-11)$/, "minor-11th"],
   [/^5$/, "power"],
 ];
 
@@ -44,7 +45,9 @@ export function parseChord(input: string): ChordSymbol | null {
   const m = /^([A-Ga-g])(##|bb|[#b♯♭𝄪𝄫]?)(.*?)(?:\/([A-Ga-g])(##|bb|[#b♯♭𝄪𝄫]?))?$/.exec(input.trim());
   if (!m) return null;
   const suffix = m[3].trim();
-  const kind = KINDS.find(([re]) => re.test(suffix))?.[1] ?? "other";
+  // "B(sus4)", "Gm(maj7)": the brackets are only how it is written.
+  const bare = suffix.replace(/[()]/g, "");
+  const kind = KINDS.find(([re]) => re.test(suffix))?.[1] ?? KINDS.find(([re]) => re.test(bare))?.[1] ?? "other";
   return {
     root: { step: m[1].toUpperCase(), alter: alterOf(m[2]) },
     kind,
