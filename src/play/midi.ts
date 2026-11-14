@@ -27,6 +27,49 @@ export function parseNote(data: Uint8Array | number[]): { pitch: number; velocit
   return { pitch: data[1] & 0x7f, velocity: data[2] & 0x7f, on, channel: data[0] & 0x0f };
 }
 
+/** A control change (CC64 is the sustain pedal), from a message; null for anything else. */
+export function parseControl(data: Uint8Array | number[]): { controller: number; value: number; channel: number } | null {
+  if (data.length < 3 || (data[0] & 0xf0) !== 0xb0) return null;
+  return { controller: data[1] & 0x7f, value: data[2] & 0x7f, channel: data[0] & 0x0f };
+}
+
+/**
+ * Groups keys struck together into chords for step entry: a key struck within `windowMs` of
+ * the first key of a group joins it; the group is handed over `windowMs` after its first key.
+ */
+export class ChordGrouper {
+  private pitches: number[] = [];
+  private start = 0;
+  private timer: ReturnType<typeof setTimeout> | null = null;
+  constructor(
+    private emit: (pitches: number[]) => void,
+    readonly windowMs = 60,
+  ) {}
+  /** A key struck at `time` (ms, as MIDI messages carry it). */
+  noteOn(pitch: number, time: number): void {
+    if (this.pitches.length && time - this.start > this.windowMs) this.flush();
+    if (!this.pitches.length) {
+      this.start = time;
+      this.timer = setTimeout(() => this.flush(), this.windowMs);
+    }
+    if (!this.pitches.includes(pitch)) this.pitches.push(pitch);
+  }
+  /** Hands over the group now (lowest key first); nothing when there is none. */
+  flush(): void {
+    if (this.timer !== null) clearTimeout(this.timer);
+    this.timer = null;
+    const p = this.pitches.sort((a, b) => a - b);
+    this.pitches = [];
+    if (p.length) this.emit(p);
+  }
+  /** Forgets a group not handed over yet. */
+  cancel(): void {
+    if (this.timer !== null) clearTimeout(this.timer);
+    this.timer = null;
+    this.pitches = [];
+  }
+}
+
 /**
  * A filter that drops a message identical to one seen within `windowMs` before it, as when a
  * device shows up as two ports and every message arrives twice. Returns true to keep it.

@@ -21,7 +21,7 @@ export { ScoreEditor, type Caret, type Change, type NoteInput } from "./edit/edi
 export { createScoreViewer, type LayoutMode, type PracticeState, type PracticeStatus, type ScoreViewerHandle, type ScoreViewerOptions } from "./render/viewer";
 export type { LineView } from "./render/line-view";
 export { buildTimeline, type Timeline, type NoteEvent } from "./play/timeline";
-export { midiDeduper, parseNote, webMidiInput, type MidiAccessLike, type MidiInput, type MidiMessage, type MidiOutput } from "./play/midi";
+export { ChordGrouper, midiDeduper, parseControl, parseNote, webMidiInput, type MidiAccessLike, type MidiInput, type MidiMessage, type MidiOutput } from "./play/midi";
 export { WaitMatcher, practiceGroups, practisedBy, type PracticeGroup, type PracticeTarget } from "./play/practice";
 export { remoteSounds, SOUNDS_CDN, type RemoteSoundsOptions, type SoundDownloads, type SoundRequest } from "./play/sounds";
 export { setLocale, t } from "./ui/i18n";

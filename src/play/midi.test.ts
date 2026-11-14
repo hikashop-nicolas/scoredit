@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { midiDeduper, parseNote, webMidiInput, type MidiMessage, type MidiPortLike } from "./midi";
+import { describe, expect, it, vi } from "vitest";
+import { ChordGrouper, midiDeduper, parseControl, parseNote, webMidiInput, type MidiMessage, type MidiPortLike } from "./midi";
 
 const msg = (data: number[], time: number, source = "a"): MidiMessage => ({ data: new Uint8Array(data), time, source });
 
@@ -84,5 +84,47 @@ describe("webMidiInput", () => {
     stop();
     a.feed([0x80, 60, 0]);
     expect(got).toHaveLength(2);
+  });
+});
+
+describe("ChordGrouper", () => {
+  it("groups keys struck within the window and hands each group over once", () => {
+    vi.useFakeTimers();
+    const got: number[][] = [];
+    const g = new ChordGrouper((p) => got.push(p), 60);
+    g.noteOn(64, 1000);
+    g.noteOn(60, 1020);
+    g.noteOn(67, 1050);
+    expect(got).toEqual([]);
+    vi.advanceTimersByTime(60);
+    expect(got).toEqual([[60, 64, 67]]);
+    g.noteOn(62, 1300);
+    vi.advanceTimersByTime(60);
+    expect(got).toEqual([[60, 64, 67], [62]]);
+    vi.useRealTimers();
+  });
+
+  it("starts a new group for a key struck after the window, even before the timer ran", () => {
+    vi.useFakeTimers();
+    const got: number[][] = [];
+    const g = new ChordGrouper((p) => got.push(p), 60);
+    g.noteOn(60, 0);
+    g.noteOn(62, 100);
+    expect(got).toEqual([[60]]);
+    g.noteOn(62, 110);
+    g.flush();
+    expect(got).toEqual([[60], [62]]);
+    g.noteOn(64, 200);
+    g.cancel();
+    vi.advanceTimersByTime(100);
+    expect(got).toEqual([[60], [62]]);
+    vi.useRealTimers();
+  });
+});
+
+describe("parseControl", () => {
+  it("reads a control change, nothing else", () => {
+    expect(parseControl([0xb2, 64, 127])).toEqual({ controller: 64, value: 127, channel: 2 });
+    expect(parseControl([0x90, 64, 127])).toBeNull();
   });
 });

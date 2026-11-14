@@ -94,6 +94,21 @@ export function spellMidi(midi: number, fifths = 0): Pitch {
   return { step, alter, octave };
 }
 
+/**
+ * A key played on a keyboard, spelled for a key signature: a note of the key's scale as the
+ * key writes it (E♯ in F♯ major, C♭ in G♭ major); any other note with a sharp in sharp keys
+ * and in C, with a flat in flat keys.
+ */
+export function spellInKey(midi: number, fifths = 0): Pitch {
+  const pc = ((midi % 12) + 12) % 12;
+  for (const step of "CDEFGAB") {
+    const alter = keyAlter(step, fifths);
+    if ((((STEP_SEMIS[step] + alter) % 12) + 12) % 12 !== pc) continue;
+    return { step, alter, octave: Math.floor((midi - STEP_SEMIS[step] - alter) / 12) - 1 };
+  }
+  return spellMidi(midi, fifths);
+}
+
 /** The alteration the key signature gives a step (fifths > 0 sharps F C G..., < 0 flats B E A...). */
 export function keyAlter(step: string, fifths: number): number {
   if (fifths > 0) return "FCGDAEB".slice(0, fifths).includes(step) ? 1 : 0;
