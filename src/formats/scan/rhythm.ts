@@ -8,7 +8,7 @@ import { PySet, uniqueSet } from "./sci";
 import { center, type Layers, type Staffs } from "./staff";
 import type { Barline } from "./symbols";
 
-function scanDot(noStem: Img<Uint8Array>, noteId: Img<Int32Array>, b: Box, unit: number, min: number, max: number): boolean {
+function scanDot(noStem: Img<Uint8Array>, noteId: Img<Int32Array>, b: Box, unit: number, min: number): boolean {
   const { w, h } = noteId;
   let right = b[2] + 1;
   const startY = b[1] - pyRound(unit / 2);
@@ -23,9 +23,38 @@ function scanDot(noStem: Img<Uint8Array>, noteId: Img<Int32Array>, b: Box, unit:
   }
   const left = b[2] + pyRound(unit * 0.4);
   const [x0, x1] = pySlice(Math.trunc(left), Math.trunc(right), w);
-  let px = 0;
-  for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) px += noStem.d[y * w + x];
-  return min <= px && px <= max;
+  return hasDotBlob(noStem, x0, x1, y0, y1, unit, min);
+}
+
+// One blob in the window the size and shape of a dot (a neighbour's dot or a sharp beside it is another blob).
+function hasDotBlob(img: Img<Uint8Array>, x0: number, x1: number, y0: number, y1: number, unit: number, min: number): boolean {
+  const { w } = img;
+  const max = Math.max(min, unit * unit * 0.35);
+  const seen = new Set<number>();
+  for (let y = y0; y < y1; y++)
+    for (let x = x0; x < x1; x++) {
+      const i = y * w + x;
+      if (!img.d[i] || seen.has(i)) continue;
+      let area = 0;
+      let bx0 = x, bx1 = x, by0 = y, by1 = y;
+      const stack = [i];
+      seen.add(i);
+      while (stack.length) {
+        const j = stack.pop()!;
+        const jx = j % w, jy = (j - jx) / w;
+        area++;
+        bx0 = Math.min(bx0, jx); bx1 = Math.max(bx1, jx); by0 = Math.min(by0, jy); by1 = Math.max(by1, jy);
+        for (const k of [j - 1, j + 1, j - w, j + w]) {
+          const kx = k % w, ky = (k - kx) / w;
+          if (kx < x0 || kx >= x1 || ky < y0 || ky >= y1 || seen.has(k) || !img.d[k]) continue;
+          seen.add(k);
+          stack.push(k);
+        }
+      }
+      const bw = bx1 - bx0 + 1, bh = by1 - by0 + 1;
+      if (area >= min && area <= max && bw <= unit * 0.8 && bh <= unit * 0.8) return true;
+    }
+  return false;
 }
 
 function parseDot(L: Layers, S: Staffs, groups: NoteGroup[], notes: NoteHead[], noteId: Img<Int32Array>) {
@@ -37,10 +66,9 @@ function parseDot(L: Layers, S: Staffs, groups: NoteGroup[], notes: NoteHead[], 
   for (const g of groups) {
     const unit = S.unitSize(...center(g.bbox));
     const min = pyRound(unit ** 2 * 0.08);
-    const max = pyRound(unit ** 2 * 0.2);
     const dots = g.noteIds.map((nid) => {
       const b = notes[nid].bbox;
-      const d = scanDot(noStem, noteId, [b[0], b[1], Math.max(b[2], g.bbox[2]), b[3]], unit, min, max);
+      const d = scanDot(noStem, noteId, [b[0], b[1], Math.max(b[2], g.bbox[2]), b[3]], unit, min);
       notes[nid].hasDot = d;
       return d;
     });
