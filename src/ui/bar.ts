@@ -46,6 +46,8 @@ export interface PracticeSummaryView {
   missed: number;
   wrong: number;
   accuracy: number | null;
+  /** Average of played notes against their time, ms (positive late). */
+  meanOffsetMs?: number | null;
 }
 
 export interface BarOptions {
@@ -355,6 +357,7 @@ export function createBar(o: BarOptions): Bar {
       ["wrong", t("summaryWrong"), String(s.wrong)],
       ["accuracy", t("summaryAccuracy"), s.accuracy === null ? "-" : `${s.accuracy}%`],
     ];
+    if (s.meanOffsetMs != null) rows.push(["offset", t("summaryOffset"), `${s.meanOffsetMs > 0 ? "+" : ""}${s.meanOffsetMs} ms`]);
     for (const [k, label, value] of rows) {
       const dt = document.createElement("dt");
       dt.textContent = label;

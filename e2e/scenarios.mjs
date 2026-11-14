@@ -1290,7 +1290,8 @@ export const scenarios = [
         for (let i = 0; i < 80 && !(await d.eval(`!!document.querySelector(".sv-pop-summary:not([hidden])")`)); i++) await new Promise((r) => setTimeout(r, 100));
       });
       const sum = await d.eval(`Object.fromEntries([...document.querySelectorAll(".sv-pop-summary dd")].map((x) => [x.dataset.k, x.textContent]))`);
-      d.check("The summary shows 3 on time, 1 early, 1 late, 1 missed, 1 wrong key and 57% accuracy", JSON.stringify(sum) === JSON.stringify({ on: "3", early: "1", late: "1", missed: "1", wrong: "1", accuracy: "57%" }), JSON.stringify(sum));
+      const { offset, ...counts } = sum;
+      d.check("The summary shows 3 on time, 1 early, 1 late, 1 missed, 1 wrong key, 57% accuracy and the average timing in ms", JSON.stringify(counts) === JSON.stringify({ on: "3", early: "1", late: "1", missed: "1", wrong: "1", accuracy: "57%" }) && /^[+-]?\d+ ms$/.test(offset ?? ""), JSON.stringify(sum));
       const host = await d.eval(`window.svPracticeEnd`);
       d.check("The host heard the same summary", host && host.onTime === 3 && host.missed === 1 && host.wrong === 1 && host.accuracy === 57, JSON.stringify(host));
       const marks = await d.eval(`({ on: document.querySelectorAll(".sv-mark-on").length, near: document.querySelectorAll(".sv-mark-near").length, miss: document.querySelectorAll(".sv-mark-miss").length })`);
