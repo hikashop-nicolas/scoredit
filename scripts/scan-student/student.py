@@ -46,8 +46,8 @@ ARCHS = {
     'm': dict(w=(16, 32, 64, 128, 192), nres=(0, 1, 2, 3, 3)),
 }
 
-def make_student(arch):
-    return Student(**ARCHS[arch or 's'])
+def make_student(arch, classes=4):
+    return Student(**ARCHS[arch or 's'], classes=classes)
 
 if __name__ == '__main__':
     import sys

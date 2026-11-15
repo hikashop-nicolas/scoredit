@@ -1,5 +1,7 @@
 # Distils seg_net into a student with scan-like augmentation (done on CPU workers), on MPS, CUDA or CPU.
 # usage: python train.py <arch> <out.pt> <minutes> --data <dir from label.py> --val <dir from label.py> [--init ckpt]
+# 6 classes (data from label_marks.py): --classes 6 --init <4-class ckpt> --keep <same ckpt>; the kept student then
+# supplies the 4 original classes' targets so they do not drift, and the dot/tuplet outputs learn from the colours.
 import sys, os, time, math, argparse, copy
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import numpy as np, cv2, torch, torch.nn.functional as F
@@ -16,7 +18,8 @@ def warp_pair(x, y, rng):
     dst += rng.uniform(-6, 6, dst.shape).astype(np.float32)
     P = cv2.getPerspectiveTransform(src, dst.astype(np.float32))
     xw = cv2.warpPerspective(x, P, (w, h), flags=cv2.INTER_LINEAR, borderValue=(255, 255, 255))
-    yw = cv2.warpPerspective(y, P, (w, h), flags=cv2.INTER_LINEAR, borderValue=(255, 0, 0, 0))
+    yw = np.concatenate([cv2.warpPerspective(y[..., :3], P, (w, h), flags=cv2.INTER_LINEAR, borderValue=(255, 0, 0)),
+                         cv2.warpPerspective(y[..., 3:], P, (w, h), flags=cv2.INTER_LINEAR, borderValue=(0, 0, 0))], 2)
     return xw, yw
 
 def degrade(x, other, rng):
@@ -85,25 +88,39 @@ if __name__ == '__main__':
     ap.add_argument('--data'); ap.add_argument('--val'); ap.add_argument('--crop', type=int, default=192)
     ap.add_argument('--bs', type=int, default=16); ap.add_argument('--lr', type=float, default=2e-3)
     ap.add_argument('--workers', type=int, default=5); ap.add_argument('--init')
+    ap.add_argument('--classes', type=int, default=4); ap.add_argument('--keep')
     a = ap.parse_args()
     torch.set_num_threads(2)
     dev = torch.device('mps' if torch.backends.mps.is_available() else 'cuda' if torch.cuda.is_available() else 'cpu')
     VX = np.load(a.val + '/x.npy', mmap_mode='r'); VY = np.load(a.val + '/y.npy', mmap_mode='r')
-    net = make_student(a.arch).to(dev)
+    C = a.classes
+    net = make_student(a.arch, classes=C).to(dev)
     if a.init:
-        net.load_state_dict(torch.load(a.init, map_location='cpu'))
+        sd = torch.load(a.init, map_location='cpu')
+        if sd['head.weight'].shape[0] < C:
+            # Keep the learnt outputs; new ones start low so nothing is called a dot at first.
+            k = sd['head.weight'].shape[0]
+            hw, hb = net.head.weight.data.clone(), net.head.bias.data.clone()
+            hw[:k] = sd['head.weight']; hb[:k] = sd['head.bias']; hb[k:] = sd['head.bias'][0] - 6
+            sd['head.weight'], sd['head.bias'] = hw, hb
+        net.load_state_dict(sd)
     ema = copy.deepcopy(net).eval()
+    old = None
+    if a.keep:
+        old = make_student(a.arch).to(dev).eval()
+        old.load_state_dict(torch.load(a.keep, map_location='cpu'))
+        for p_ in old.parameters(): p_.requires_grad_(False)
     opt = torch.optim.AdamW(net.parameters(), a.lr, weight_decay=1e-4)
     dl = torch.utils.data.DataLoader(DS(a.data, a.crop, 10**8), batch_size=a.bs, num_workers=a.workers, persistent_workers=True, prefetch_factor=4)
 
     def evaluate(m):
-        agree, inter, union = 0, np.zeros(4), np.zeros(4)
+        agree, inter, union = 0, np.zeros(C), np.zeros(C)
         with torch.no_grad():
             for i in range(0, len(VX), 16):
                 p = m(torch.from_numpy(np.array(VX[i:i + 16])).to(dev).float()).argmax(-1).cpu().numpy()
                 t = np.array(VY[i:i + 16]).argmax(-1)
                 agree += (p == t).sum()
-                for k in range(4):
+                for k in range(C):
                     inter[k] += ((p == k) & (t == k)).sum(); union[k] += ((p == k) | (t == k)).sum()
         return agree / VY[..., 0].size, inter / np.maximum(union, 1)
 
@@ -115,8 +132,12 @@ if __name__ == '__main__':
         lr = a.lr * (min(1, step / 300) * 0.5 * (1 + math.cos(math.pi * frac)))
         for g in opt.param_groups: g['lr'] = lr
         x = x.to(dev).float(); y = y.to(dev).float() / 255
+        if old is not None:
+            with torch.no_grad():
+                rest = (1 - y[..., 4:].sum(-1)).clamp(min=0)[..., None]
+                y = torch.cat([old(x) * rest, y[..., 4:]], -1)
         logp = F.log_softmax(net(x, logits=True), 1).permute(0, 2, 3, 1)
-        w = 1 + 4 * (1 - y[..., 0])
+        w = 1 + 4 * (1 - y[..., 0]) + (10 * y[..., 4:].sum(-1) if C > 4 else 0)
         loss = -((y * logp).sum(-1) * w).mean()
         opt.zero_grad(); loss.backward(); opt.step(); step += 1; tl += loss.item()
         with torch.no_grad():

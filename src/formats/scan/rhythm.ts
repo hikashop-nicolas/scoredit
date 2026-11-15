@@ -527,7 +527,7 @@ function findTuplets(map: Img, S: Staffs, groups: NoteGroup[], regions: Map<numb
   const g = Math.max(1, pyRound(S.globalUnitSize()));
 
   // A digit covers about 0.65 square spaces; smaller bits are stray pixels.
-  const marks = joinBlobs(blobs(map), g * 1.2, g * 0.5).filter((b) => b.area >= S.unitSize(pyRound(b.x), pyRound(b.y)) ** 2 * 0.3);
+  const marks = joinBlobs(blobs(map), g * 2, g * 0.5).filter((b) => b.area >= S.unitSize(pyRound(b.x), pyRound(b.y)) ** 2 * 0.3);
   const regionOf = new Map<number, number>();
   for (const [reg, inf] of regions) for (const g of inf.gids) regionOf.set(g, reg);
   const near = (g: NoteGroup, m: { y: number }, u: number) => m.y > g.bbox[1] - u * 4 && m.y < g.bbox[3] + u * 4;

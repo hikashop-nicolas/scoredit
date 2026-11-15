@@ -15,8 +15,9 @@ a = ap.parse_args()
 
 if a.student:
     from student import make_student
-    net = make_student(a.arch)
-    net.load_state_dict(torch.load(a.student, map_location='cpu'))
+    sd = torch.load(a.student, map_location='cpu')
+    net = make_student(a.arch, classes=sd['head.weight'].shape[0])
+    net.load_state_dict(sd)
 else:
     from seg_net_torch import teacher
     net = teacher()
