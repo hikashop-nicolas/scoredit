@@ -94,7 +94,7 @@ const CSS = `
 .sv-pop-summary dd[data-k=wrong]{color:#f87171}
 .sv-pop-summary dd[data-k=missed]{color:#b4bac3}
 .sv-pop-summary dd[data-k=accuracy]{font-weight:600}
-.sv-pop-practice .sv-hint{margin:4px 4px 0;max-width:220px;white-space:normal;font-size:12px;opacity:.75}
+.sv-pop-practice .sv-hint{margin:4px 4px 0;max-width:none;white-space:normal;font-size:12px;opacity:.75}
 .sv-seek{flex:0 0 auto;box-sizing:border-box;height:var(--sv-seek-h,26px);display:flex;align-items:center;gap:10px;padding:3px 12px 0;font:12px system-ui,sans-serif;font-variant-numeric:tabular-nums;color:var(--sv-bar-fg,#e6e6e6);background:var(--sv-chrome,#2b2f36);border-top:1px solid var(--sv-border,#1c1f24)}
 .sv-seek[hidden]{display:none}
 .sv-seek+.sv-bar{border-top:0}
