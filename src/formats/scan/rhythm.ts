@@ -57,8 +57,64 @@ function hasDotBlob(img: Img<Uint8Array>, x0: number, x1: number, y0: number, y1
   return false;
 }
 
+type Blob = { x: number; y: number; area: number; box: Box };
+const blobCache = new WeakMap<object, Blob[]>();
+
+/** Blobs of a class map (centre, area, box), e.g. the network's augmentation dots; computed once per map. */
+export function blobs(img: Img<Float32Array | Uint8Array>): Blob[] {
+  const hit = blobCache.get(img);
+  if (hit) return hit;
+  let any = false;
+  for (let i = 0; i < img.d.length && !any; i++) any = img.d[i] > 0;
+  if (!any) {
+    blobCache.set(img, []);
+    return [];
+  }
+  const { map, n } = label(img);
+  const acc = Array.from({ length: n + 1 }, () => ({ sx: 0, sy: 0, area: 0, box: [Infinity, Infinity, -Infinity, -Infinity] as Box }));
+  for (let y = 0; y < map.h; y++)
+    for (let x = 0; x < map.w; x++) {
+      const k = map.d[y * map.w + x];
+      if (!k) continue;
+      const a = acc[k];
+      a.sx += x;
+      a.sy += y;
+      a.area++;
+      a.box = [Math.min(a.box[0], x), Math.min(a.box[1], y), Math.max(a.box[2], x), Math.max(a.box[3], y)];
+    }
+  const out = acc.slice(1).filter((a) => a.area > 0).map((a) => ({ x: a.sx / a.area, y: a.sy / a.area, area: a.area, box: a.box }));
+  blobCache.set(img, out);
+  return out;
+}
+
+// Joins blobs whose boxes lie within `dx` across and `dy` up or down of each other.
+function joinBlobs(list: Blob[], dx: number, dy: number): Blob[] {
+  const parts = list.map((b) => ({ ...b, box: [...b.box] as Box }));
+  for (let merged = true; merged; ) {
+    merged = false;
+    for (let i = 0; i < parts.length && !merged; i++)
+      for (let j = i + 1; j < parts.length && !merged; j++) {
+        const a = parts[i].box, b = parts[j].box;
+        if (b[0] - a[2] > dx || a[0] - b[2] > dx || b[1] - a[3] > dy || a[1] - b[3] > dy) continue;
+        const A = parts[i], B = parts[j], area = A.area + B.area;
+        parts[i] = { x: (A.x * A.area + B.x * B.area) / area, y: (A.y * A.area + B.y * B.area) / area, area, box: [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[2], b[2]), Math.max(a[3], b[3])] };
+        parts.splice(j, 1);
+        merged = true;
+      }
+  }
+  return parts;
+}
+
+/** Whether a dot blob sits right of box `b`: within 1.8 spaces, at its height or up to a half space above. */
+export function dotRightOf(dots: { x: number; y: number; area: number }[], b: Box, unit: number): boolean {
+  const cy = (b[1] + b[3]) / 2;
+  return dots.some((d) => d.area >= unit * unit * 0.03 && d.x > b[2] - unit * 0.1 && d.x < b[2] + unit * 1.8 && d.y > cy - unit * 0.8 && d.y < cy + unit * 0.35);
+}
+
 function parseDot(L: Layers, S: Staffs, groups: NoteGroup[], notes: NoteHead[], noteId: Img<Int32Array>) {
   const { w, h } = L.symbols;
+  // A 6-class model marks augmentation dots itself.
+  const net = L.dots ? blobs(L.dots) : null;
   const ns = new Uint8Array(w * h);
   for (let i = 0; i < ns.length; i++) ns[i] = L.symbols.d[i] - L.stems.d[i] - L.clefs.d[i] > 0 ? 1 : 0;
   const k = ellipseKernel(4, 4);
@@ -68,7 +124,7 @@ function parseDot(L: Layers, S: Staffs, groups: NoteGroup[], notes: NoteHead[], 
     const min = pyRound(unit ** 2 * 0.08);
     const dots = g.noteIds.map((nid) => {
       const b = notes[nid].bbox;
-      const d = scanDot(noStem, noteId, [b[0], b[1], Math.max(b[2], g.bbox[2]), b[3]], unit, min);
+      const d = net ? dotRightOf(net, b, unit) : scanDot(noStem, noteId, [b[0], b[1], Math.max(b[2], g.bbox[2]), b[3]], unit, min);
       notes[nid].hasDot = d;
       return d;
     });
@@ -449,5 +505,61 @@ export function extractRhythm(
   // The groups hanging from one beam: a region holding two or more of them.
   const beamOf = new Map<number, number>();
   for (const [reg, inf] of regions) if (inf.gids.size > 1) for (const g of inf.gids) beamOf.set(g, reg);
-  return { maps: { poly, out }, beamOf };
+  const tupletOf = L.tuplets ? findTuplets(L.tuplets, S, groups, regions) : new Map<number, Tuplet>();
+  return { maps: { poly, out }, beamOf, tupletOf };
+}
+
+/** A tuplet a note group belongs to: `actual` notes in the time of `normal`, `id` per tuplet, first/last. */
+export interface Tuplet {
+  actual: number;
+  normal: number;
+  id: number;
+  start: boolean;
+  stop: boolean;
+}
+
+// Each tuplet number (with or without its bracket) claims the groups under it: those its bracket
+// spans, else those of the beam it sits on (shared out when one beam carries several numbers),
+// else the nearest ones on its staff. Their count gives the ratio (3:2, then 5, 6, 7 in 4).
+function findTuplets(map: Img, S: Staffs, groups: NoteGroup[], regions: Map<number, RegionInfo>): Map<number, Tuplet> {
+  const out = new Map<number, Tuplet>();
+  // The number splits its bracket: close small gaps so one tuplet is one blob.
+  const g = Math.max(1, pyRound(S.globalUnitSize()));
+
+  // A digit covers about 0.65 square spaces; smaller bits are stray pixels.
+  const marks = joinBlobs(blobs(map), g * 1.2, g * 0.5).filter((b) => b.area >= S.unitSize(pyRound(b.x), pyRound(b.y)) ** 2 * 0.3);
+  const regionOf = new Map<number, number>();
+  for (const [reg, inf] of regions) for (const g of inf.gids) regionOf.set(g, reg);
+  const near = (g: NoteGroup, m: { y: number }, u: number) => m.y > g.bbox[1] - u * 4 && m.y < g.bbox[3] + u * 4;
+  // Marks per beam region, to share a beam between several numbers.
+  const perRegion = new Map<number, number>();
+  // Beamed notes under the number take their beam (reliable); unbeamed ones the bracket's span.
+  const chosen = marks.map((m) => {
+    const u = S.unitSize(pyRound(m.x), pyRound(m.y));
+    const beamed = groups.filter((g) => near(g, m, u) && regionOf.has(g.id) && Math.abs(g.xCenter - m.x) < u * 3);
+    if (beamed.length) {
+      beamed.sort((a, b) => Math.abs(a.xCenter - m.x) - Math.abs(b.xCenter - m.x));
+      const reg = regionOf.get(beamed[0].id)!;
+      perRegion.set(reg, (perRegion.get(reg) ?? 0) + 1);
+      return { reg, ids: [...regions.get(reg)!.gids] };
+    }
+    const ids = groups.filter((g) => g.xCenter > m.box[0] - u * 0.8 && g.xCenter < m.box[2] + u * 0.8 && near(g, m, u)).map((g) => g.id);
+    return { reg: -1, ids };
+  });
+  marks.forEach((m, i) => {
+    let ids = chosen[i].ids;
+    const share = chosen[i].reg >= 0 ? perRegion.get(chosen[i].reg) ?? 1 : 1;
+    if (share > 1) {
+      const k = Math.round(ids.length / share);
+      ids = [...ids].sort((a, b) => Math.abs(groups[a].xCenter - m.x) - Math.abs(groups[b].xCenter - m.x)).slice(0, k);
+    }
+    const n = ids.length;
+    if (n < 3 || n > 7 || n === 4) return;
+    const normal = n === 3 ? 2 : 4;
+    ids.sort((a, b) => groups[a].xCenter - groups[b].xCenter);
+    ids.forEach((g, j) => {
+      if (!out.has(g)) out.set(g, { actual: n, normal, id: i, start: j === 0, stop: j === n - 1 });
+    });
+  });
+  return out;
 }

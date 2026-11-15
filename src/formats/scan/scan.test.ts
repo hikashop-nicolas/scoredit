@@ -9,6 +9,7 @@ import { classicStaffMap } from "./stafflines";
 import { scanToMusicXml, type ScanReply, type ScanRequest } from "./index";
 import { segment, staffStrips, staffTiles, type OrtLike } from "./infer";
 import { handleScan } from "./scan-worker";
+import { blobs, dotRightOf } from "./rhythm";
 
 const grid = (w: number, h: number, on: (x: number, y: number) => boolean): Img<Uint8Array> => {
   const d = new Uint8Array(w * h);
@@ -169,6 +170,47 @@ describe("staff tiles", () => {
     const strip = await segment(ort as unknown as OrtLike, session, new Uint8Array(w * h * 3), w, h, 288, 4, { tiles: [[100, 0, 64, 512]] });
     expect(strip[150 * w + 500]).toBe(2);
     expect(strip[170 * w + 10]).toBe(0);
+  });
+
+  it("takes the class count from the model's output", async () => {
+    // A 6-class network that calls every pixel a dot (class 4), while the caller asks for 4.
+    const ort = { InferenceSession: { create: async () => session }, Tensor: class { constructor(public type: string, public data: Uint8Array, public dims: number[]) {} } };
+    const session = {
+      inputNames: ["input"],
+      outputNames: ["output"],
+      run: async (f: Record<string, { dims: number[] }>) => {
+        const [b, th, tw] = f.input.dims;
+        const out = new Float32Array(b * th * tw * 6);
+        for (let p = 0; p < b * th * tw; p++) out[p * 6 + 4] = 1;
+        return { output: { data: out, dims: [b, th, tw, 6] } };
+      },
+    };
+    const info: { classes?: number } = {};
+    const map = await segment(ort as unknown as OrtLike, session, new Uint8Array(300 * 300 * 3), 300, 300, 288, 4, { tiles: [[0, 0]], info });
+    expect(info.classes).toBe(6);
+    expect(map[10 * 300 + 10]).toBe(4);
+  });
+});
+
+describe("dots and tuplets from the network", () => {
+  it("finds blobs with their centre and area", () => {
+    const b = blobs(grid(40, 20, (x, y) => inside(x, y, 2, 5, 3, 6) || inside(x, y, 20, 30, 10, 12)));
+    expect(b.map((k) => [k.x, k.y, k.area])).toEqual([
+      [3, 4, 9],
+      [24.5, 10.5, 20],
+    ]);
+  });
+
+  it("gives a note its dot: right of the head, at its height or a half space above, not a neighbour's", () => {
+    const unit = 10;
+    const head: [number, number, number, number] = [100, 95, 112, 105];
+    const dot = (x: number, y: number) => [{ x, y, area: 12 }];
+    expect(dotRightOf(dot(118, 100), head, unit)).toBe(true);
+    expect(dotRightOf(dot(118, 95), head, unit)).toBe(true);
+    expect(dotRightOf(dot(118, 90), head, unit)).toBe(false);
+    expect(dotRightOf(dot(118, 110), head, unit)).toBe(false);
+    expect(dotRightOf(dot(140, 100), head, unit)).toBe(false);
+    expect(dotRightOf([{ x: 118, y: 100, area: 1 }], head, unit)).toBe(false);
   });
 });
 

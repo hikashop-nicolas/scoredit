@@ -302,6 +302,9 @@ export interface Layers {
   stems: Img;
   notehead: Img;
   clefs: Img;
+  /** From a 6-class symbol model: augmentation dots and tuplet numbers/brackets. */
+  dots?: Img;
+  tuplets?: Img;
 }
 
 function naiveUnitSize(flat: Staff[], x: number, y: number) {

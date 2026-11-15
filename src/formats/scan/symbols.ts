@@ -5,6 +5,7 @@ import { dilate, erode, getBbox, label, ones, u8, type Box, type Img } from "./n
 import { crop, pySlice, type NoteHead, type SfnType } from "./notehead";
 import { mean, pyRound, sortedBy } from "./py";
 import { predictRegion, type Classifiers } from "./svm";
+import { blobs, dotRightOf } from "./rhythm";
 import { center, type Layers, type Staffs } from "./staff";
 
 export type ClefType = "G" | "F";
@@ -214,6 +215,7 @@ export function extractSymbols(
     return s;
   });
   const pr = parseRests(L, S, cls, groupMap, lineBox, unit);
+  const netDots = L.dots ? blobs(L.dots) : null;
   const rests: Rest[] = pr.valid.map((b, i) => {
     const [st] = S.closest(...center(b));
     const r: Rest = { kind: "rest", bbox: b, label: REST_NAMES[pr.labels[i]], hasDot: null, track: st.track, group: st.group };
@@ -221,7 +223,8 @@ export function extractSymbols(
     let sum = 0;
     for (let y = Math.max(0, b[1]); y < Math.min(L.symbols.h, b[3]); y++)
       for (let x = b[2] + 1; x < b[2] + u && x < L.symbols.w; x++) sum += L.symbols.d[y * L.symbols.w + x];
-    if (0 < sum && sum < u ** 2 / 7) r.hasDot = true;
+    if (netDots) r.hasDot = dotRightOf(netDots, b, u) || null;
+    else if (0 < sum && sum < u ** 2 / 7) r.hasDot = true;
     return r;
   });
   return { barlines, clefs, sfns, rests };

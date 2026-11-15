@@ -2,9 +2,10 @@
 import type { NoteGroup } from "./group";
 import { NoteType, type NoteHead, type SfnType } from "./notehead";
 import { pyMod, pyRound, sortedBy } from "./py";
+import type { Tuplet } from "./rhythm";
 import { RestType, xCenter, type Barline, type Clef, type ClefType, type Rest, type Sfn, type Symbols } from "./symbols";
 
-const DIV = 16;
+const DIV = 48;
 const G_PITCH = ["D", "E", "F", "G", "A", "B", "C"];
 const F_PITCH = ["F", "G", "A", "B", "C", "D", "E"];
 const SHARP_ORDER = ["F", "C", "G", "D", "A", "E"];
@@ -48,6 +49,7 @@ class Voice {
   noteIds: number[] = [];
   stemUp: boolean | null = null;
   groupId = 0;
+  tuplet: Tuplet | null = null;
   x = 0;
   label: NoteType = NoteType.QUARTER;
   hasDot = false;
@@ -66,6 +68,7 @@ class Voice {
     }
     this.duration = RHYTHM[this.label].duration;
     if (this.hasDot) this.duration = pyRound(this.duration * 1.5);
+    if (this.tuplet) this.duration = pyRound((this.duration * this.tuplet.normal) / this.tuplet.actual);
   }
 }
 
@@ -294,7 +297,7 @@ function chroma(pos: number, clef: ClefType) {
   return order[pos >= 0 ? pos % 7 : (pyMod(pos, -7) + 7) % 7];
 }
 
-function noteXml(n: NoteHead, clef: ClefType, chord: boolean, voice: number): string | null {
+function noteXml(n: NoteHead, clef: ClefType, chord: boolean, voice: number, tup: Tuplet | null = null): string | null {
   if (n.invalid) return null;
   const pos = Math.trunc(n.staffLinePos);
   const [order, octOff, pOff] = clef === "G" ? [G_PITCH, 4, 1] : [F_PITCH, 2, 3];
@@ -303,11 +306,14 @@ function noteXml(n: NoteHead, clef: ClefType, chord: boolean, voice: number): st
   const alter = n.sfn === "sharp" ? 1 : n.sfn === "flat" ? -1 : 0;
   if (octave < 0 || octave > 8 || (octave === 0 && step !== "A") || (octave === 8 && step !== "C")) return null;
   const r = RHYTHM[n.label ?? NoteType.QUARTER];
-  const dura = n.hasDot ? pyRound(r.duration * 1.5) : r.duration;
+  let dura = n.hasDot ? pyRound(r.duration * 1.5) : r.duration;
+  if (tup) dura = pyRound((dura * tup.normal) / tup.actual);
+  const tm = tup ? `<time-modification><actual-notes>${tup.actual}</actual-notes><normal-notes>${tup.normal}</normal-notes></time-modification>` : "";
+  const mark = tup && !chord && (tup.start || tup.stop) ? `<notations>${tup.start ? '<tuplet type="start" bracket="no"/>' : ""}${tup.stop ? '<tuplet type="stop"/>' : ""}</notations>` : "";
   return (
     `<note>${chord ? "<chord/>" : ""}<pitch><step>${step}</step><alter>${alter}</alter><octave>${octave}</octave></pitch>` +
-    `<duration>${dura}</duration><voice>${voice}</voice><type>${r.name}</type>${n.hasDot ? "<dot/>" : ""}<stem>${n.stemUp ? "up" : "down"}</stem>` +
-    `<staff>${n.track + 1}</staff></note>`
+    `<duration>${dura}</duration><voice>${voice}</voice><type>${r.name}</type>${n.hasDot ? "<dot/>" : ""}${tm}<stem>${n.stemUp ? "up" : "down"}</stem>` +
+    `<staff>${n.track + 1}</staff>${mark}</note>`
   );
 }
 
@@ -319,8 +325,9 @@ function restXml(r: Rest): string {
 }
 
 /** Builds the MusicXML text (oemer's MusicXMLBuilder). */
-export function buildMusicXml(notes: NoteHead[], groups: NoteGroup[], sym: Symbols, unit: number, tracks: number, title = "Scan", beamOf?: Map<number, number>): string {
-  const c = new Ctx(notes, tracks, unit, new Set(beamOf?.keys()));
+export function buildMusicXml(notes: NoteHead[], groups: NoteGroup[], sym: Symbols, unit: number, tracks: number, title = "Scan", beamOf?: Map<number, number>, tupletOf?: Map<number, Tuplet>): string {
+  // Tuplet notes keep their length when the staffs are aligned, as beamed ones do.
+  const c = new Ctx(notes, tracks, unit, new Set([...(beamOf?.keys() ?? []), ...(tupletOf?.keys() ?? [])]));
   const voices: Voice[] = [];
   const addVoice = (g: NoteGroup, ids: number[], up: boolean | null) => {
     ids = ids.filter((n) => !notes[n].invalid);
@@ -328,6 +335,7 @@ export function buildMusicXml(notes: NoteHead[], groups: NoteGroup[], sym: Symbo
     const v = new Voice();
     v.group = g.group;
     v.groupId = g.id;
+    v.tuplet = tupletOf?.get(g.id) ?? null;
     v.track = g.track;
     v.noteIds = ids;
     v.stemUp = up;
@@ -412,13 +420,13 @@ export function buildMusicXml(notes: NoteHead[], groups: NoteGroup[], sym: Symbo
     body: [`<attributes><divisions>${DIV}</divisions><key><fifths>${first.getKey()}</fifths></key><staves>${tracks}</staves>${clefs.map(clefXml).join("")}</attributes>`],
   });
   let cur = measuresXml[0];
-  const addNote = (n: NoteHead, chord = false, voice = 1) => {
+  const addNote = (n: NoteHead, chord = false, voice = 1, tup: Tuplet | null = null) => {
     const clef = clefs[n.track].label;
     const ch = chroma(Math.trunc(n.staffLinePos), clef);
     const st = sfnState[ch];
     if (n.sfn !== null && st !== n.sfn) sfnState[ch] = n.sfn;
     else n.sfn = st;
-    const x = noteXml(n, clef, chord, voice);
+    const x = noteXml(n, clef, chord, voice, tup);
     if (x) cur.body.push(x);
   };
   // Beams: consecutive short notes of one staff and voice hanging from the same beam, within a bar.
@@ -429,13 +437,14 @@ export function buildMusicXml(notes: NoteHead[], groups: NoteGroup[], sym: Symbo
     if (!r || r.idx.length < 2) return;
     r.idx.forEach((bi, i) => {
       const kind = i === 0 ? "begin" : i === r.idx.length - 1 ? "end" : "continue";
-      cur.body[bi] = cur.body[bi].replace(/<\/note>$/, `<beam number="1">${kind}</beam></note>`);
+      // MusicXML puts <beam> before <notations>.
+      cur.body[bi] = cur.body[bi].replace(/(<notations>.*)?<\/note>$/, (_, nt) => `<beam number="1">${kind}</beam>${nt ?? ""}</note>`);
     });
   };
   const addVoiceNotes = (s: Voice, voice: number) => {
     const at = cur.body.length;
-    addNote(notes[s.noteIds[0]], false, voice);
-    for (const n of s.noteIds.slice(1)) addNote(notes[n], true, voice);
+    addNote(notes[s.noteIds[0]], false, voice, s.tuplet);
+    for (const n of s.noteIds.slice(1)) addNote(notes[n], true, voice, s.tuplet);
     const k = `${s.track}:${voice}`;
     const reg = beamOf?.get(s.groupId);
     const short = s.label >= NoteType.EIGHTH && s.label <= NoteType.SIXTY_FOURTH;

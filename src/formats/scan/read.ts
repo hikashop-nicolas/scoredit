@@ -119,10 +119,10 @@ export async function classMaps(bgr: Uint8Array, w: number, h: number, opts: Sca
     if (opts.wasmPaths) ort.env.wasm.wasmPaths = opts.wasmPaths;
     if (opts.threads) ort.env.wasm.numThreads = opts.threads;
   }
-  const run = async (src: ModelSource, win: number, classes: number, name: string, tiles?: TileWindow[]) => {
+  const run = async (src: ModelSource, win: number, classes: number, name: string, tiles?: TileWindow[], info?: { classes?: number }) => {
     const session: OrtSession = await ort.InferenceSession.create(await bytesOf(src), opts.session);
     try {
-      return await segment(ort, session, bgr, w, h, win, classes, { batch: opts.batch, step: opts.step, name, tiles, progress: opts.progress });
+      return await segment(ort, session, bgr, w, h, win, classes, { batch: opts.batch, step: opts.step, name, tiles, progress: opts.progress, info });
     } finally {
       await session.release?.();
     }
@@ -145,8 +145,9 @@ export async function classMaps(bgr: Uint8Array, w: number, h: number, opts: Sca
     opts.progress?.({ model: "lines", done: 1, total: 1 });
   }
   opts.signal?.throwIfAborted();
-  const seg = await run(opts.models.symbols, 288, 4, "symbols", tiles);
-  return { w, h, unet, seg, lines };
+  const info: { classes?: number } = {};
+  const seg = await run(opts.models.symbols, 288, 4, "symbols", tiles, info);
+  return { w, h, unet, seg, lines, segClasses: info.classes };
 }
 
 /** Reads one page on this thread (the scan worker runs this). */

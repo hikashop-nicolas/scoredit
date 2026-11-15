@@ -17,6 +17,8 @@ export interface ClassMaps {
   seg: Uint8Array;
   /** Staff lines already followed across the page (classic detector): deskew from them. */
   lines?: SampledLine[];
+  /** Output classes of the symbol model: 6 adds augmentation dots (4) and tuplet numbers (5). */
+  segClasses?: number;
 }
 
 /** The layers oemer works on; with deskew, each map straightened along the staff lines first. */
@@ -34,10 +36,17 @@ export function layersOf(m: ClassMaps, deskew = false): Layers {
   let stems = L((i) => +(m.seg[i] === 1));
   let notehead = L((i) => +(m.seg[i] === 2));
   let clefs = L((i) => +(m.seg[i] === 3));
+  const extra = (m.segClasses ?? 4) >= 6;
+  let dots = extra ? L((i) => +(m.seg[i] === 4)) : null;
+  let tuplets = extra ? L((i) => +(m.seg[i] === 5)) : null;
   const coords = !deskew ? null : m.lines ? coordsFromRows(m.lines, w, h) : estimateCoords(staff);
-  if (coords) [staff, sym, stems, notehead, clefs] = [staff, sym, stems, notehead, clefs].map((a) => dewarp(a, coords));
+  if (coords) {
+    [staff, sym, stems, notehead, clefs] = [staff, sym, stems, notehead, clefs].map((a) => dewarp(a, coords));
+    if (dots) dots = dewarp(dots, coords);
+    if (tuplets) tuplets = dewarp(tuplets, coords);
+  }
   const symbols = L((i) => Math.min(1, sym.d[i] + clefs.d[i] + stems.d[i]));
-  return { staff, symbols, stems, notehead, clefs };
+  return { staff, symbols, stems, notehead, clefs, ...(dots && tuplets ? { dots, tuplets } : {}) };
 }
 
 export interface Recognised {
@@ -65,9 +74,9 @@ export function recognise(L: Layers, cls: Classifiers, title = "Scan"): Recognis
   const { groups, map: groupMap } = extractGroups(L, S, notes, noteId);
   const sym = extractSymbols(L, S, cls, notes, noteId, groupMap, issues);
   const restsBefore = sym.rests.map((r) => ({ bbox: r.bbox, label: r.label, dot: r.hasDot }));
-  const { maps, beamOf } = extractRhythm(L, S, groups, notes, noteId, groupMap, sym.barlines, issues);
+  const { maps, beamOf, tupletOf } = extractRhythm(L, S, groups, notes, noteId, groupMap, sym.barlines, issues);
   const rhythm = notes.map((n) => ({ label: n.rawLabel, dot: n.hasDot, invalid: n.invalid, stem_up: n.stemUp }));
-  const xml = buildMusicXml(notes, groups, sym, S.globalUnitSize(), S.tracks(), title, beamOf);
+  const xml = buildMusicXml(notes, groups, sym, S.globalUnitSize(), S.tracks(), title, beamOf, tupletOf);
   const debug = {
     zones: zones.map((z) => [z[0], z[1] - 1]),
     staffs: staffs.map((col) => col.map((st) => ({ y: st.yCenter, x: st.xCenter, unit: st.unitSize, track: st.track, group: st.group }))),

@@ -113,7 +113,7 @@ export async function segment(
   h: number,
   win: number,
   classes: number,
-  opts: { step?: number; batch?: number; name?: string; tiles?: TileWindow[]; progress?: (p: TileProgress) => void } = {},
+  opts: { step?: number; batch?: number; name?: string; tiles?: TileWindow[]; progress?: (p: TileProgress) => void; info?: { classes?: number } } = {},
 ): Promise<Uint8Array> {
   const step = opts.step ?? 128;
   const batch = opts.batch ?? 1;
@@ -129,7 +129,8 @@ export async function segment(
     else uniq.set(k, { y, x, th, tw, n: 1 });
   }
   const todo = [...uniq.values()];
-  const sum = new Float32Array(w * h * classes);
+  // The model may have more outputs than asked (dots, tuplets): taken from its first result.
+  let sum: Float32Array | null = null;
   const cnt = new Uint8Array(w * h);
   const inName = session.inputNames[0];
   const outName = session.outputNames[0];
@@ -150,20 +151,27 @@ export async function segment(
     });
     const res = await session.run({ [inName]: new ort.Tensor("uint8", data, [part.length, th, tw, 3]) });
     const out = res[outName].data as Float32Array;
+    if (!sum) {
+      classes = Math.round(out.length / (part.length * th * tw)) || classes;
+      sum = new Float32Array(w * h * classes);
+    }
+    const acc = sum;
     part.forEach((t, b) => {
       for (let r = 0; r < th; r++) {
         const row = t.y + r;
         for (let c = 0; c < tw; c++) {
           const p = row * w + t.x + c;
           const o = ((b * th + r) * tw + c) * classes;
-          for (let k = 0; k < classes; k++) sum[p * classes + k] += out[o + k] * t.n;
+          for (let k = 0; k < classes; k++) acc[p * classes + k] += out[o + k] * t.n;
           cnt[p] += t.n;
         }
       }
     });
     opts.progress?.({ model: opts.name ?? "", done: i, total: todo.length });
   }
+  if (opts.info) opts.info.classes = classes;
   const map = new Uint8Array(w * h);
+  if (!sum) return map;
   for (let p = 0; p < w * h; p++) {
     if (!cnt[p]) continue;
     let best = 0;
