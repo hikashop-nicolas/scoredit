@@ -5,7 +5,8 @@ import { pyMod, pyRound, sortedBy } from "./py";
 import type { Tuplet } from "./rhythm";
 import { RestType, xCenter, type Barline, type Clef, type ClefType, type Rest, type Sfn, type Symbols } from "./symbols";
 
-const DIV = 48;
+// Divisible by 3, 5 and 7 down to a 16th, so tuplet notes add up exactly.
+const DIV = 1680;
 const G_PITCH = ["D", "E", "F", "G", "A", "B", "C"];
 const F_PITCH = ["F", "G", "A", "B", "C", "D", "E"];
 const SHARP_ORDER = ["F", "C", "G", "D", "A", "E"];
@@ -324,6 +325,92 @@ function restXml(r: Rest): string {
   return `<note><rest measure="yes"/><duration>${dura}</duration>${r.hasDot ? "<dot/>" : ""}<staff>${r.track + 1}</staff></note>`;
 }
 
+/**
+ * Moves a note whose voice is still sounding on its staff to a free voice, and closes gaps inside a tuplet:
+ * MuseScore refuses a file with either.
+ */
+export function freeVoices(body: string[]): string[] {
+  let t = 0;
+  let start = 0;
+  let voice = 0;
+  const ends = new Map<string, number>();
+  const inTuplet = new Set<string>();
+  let pending = 0;
+  let skip = false;
+  const out = body.map((el) => {
+    if (pending && !el.includes("<chord/>")) {
+      const fwd = `<forward><duration>${pending}</duration></forward>`;
+      pending = 0;
+      return fwd + freeOne(el);
+    }
+    return freeOne(el);
+  });
+  if (pending) out.push(`<forward><duration>${pending}</duration></forward>`);
+  return dropSplitBeams(out);
+
+  function freeOne(el: string): string {
+    const dur = Number(/<duration>(\d+)<\/duration>/.exec(el)?.[1] ?? 0);
+    if (el.startsWith("<backup>")) {
+      // Never back up past the start of the measure.
+      const d = Math.min(dur, t);
+      t -= d;
+      return d ? `<backup><duration>${d}</duration></backup>` : "";
+    }
+    if (el.startsWith("<forward>")) t += dur;
+    if (!el.startsWith("<note>")) return el;
+    const staff = /<staff>(\d+)<\/staff>/.exec(el)?.[1] ?? "1";
+    const had = /<voice>(\d+)<\/voice>/.exec(el);
+    let gap = 0;
+    if (el.includes("<chord/>") && skip) return "";
+    if (!el.includes("<chord/>")) {
+      start = t;
+      voice = Number(had?.[1] ?? 1);
+      while ((ends.get(`${staff}:${voice}`) ?? -Infinity) > start) voice++;
+      // MuseScore takes four voices a staff; past that the note is lost, its time kept.
+      skip = voice > 4;
+      if (skip) {
+        t += dur;
+        return `<forward><duration>${dur}</duration></forward>`;
+      }
+      const k = `${staff}:${voice}`;
+      const tup = el.includes("<time-modification>");
+      if (tup && !el.includes('<tuplet type="start"') && inTuplet.has(k)) gap = start - ends.get(k)!;
+      if (!tup || el.includes('<tuplet type="stop"')) inTuplet.delete(k);
+      else inTuplet.add(k);
+      t += dur;
+      ends.set(k, t - gap);
+    }
+    const v = `<voice>${voice}</voice>`;
+    el = had ? el.replace(had[0], v) : el.replace(/(<duration>\d+<\/duration>)/, `$1${v}`);
+    if (gap <= 0) return el;
+    // The note goes right after the previous one of its tuplet; the cursor catches up after its chord.
+    pending = gap;
+    return `<backup><duration>${gap}</duration></backup>${el}`;
+  }
+}
+
+/** Drops a beam whose notes ended up in different voices. */
+function dropSplitBeams(out: string[]): string[] {
+  const open = new Map<string, number[]>();
+  const bad = new Set<number>();
+  out.forEach((el, i) => {
+    const b = /<beam number="1">(\w+)<\/beam>/.exec(el)?.[1];
+    if (!b) return;
+    const k = `${/<staff>(\d+)/.exec(el)?.[1]}:${/<voice>(\d+)/.exec(el)?.[1]}`;
+    const run = open.get(k);
+    if (b === "begin") {
+      run?.forEach((j) => bad.add(j));
+      open.set(k, [i]);
+    } else if (!run) bad.add(i);
+    else {
+      run.push(i);
+      if (b === "end") open.delete(k);
+    }
+  });
+  for (const run of open.values()) run.forEach((j) => bad.add(j));
+  return out.map((el, i) => (bad.has(i) ? el.replace(/<beam number="1">\w+<\/beam>/, "") : el));
+}
+
 /** Builds the MusicXML text (oemer's MusicXMLBuilder). */
 export function buildMusicXml(notes: NoteHead[], groups: NoteGroup[], sym: Symbols, unit: number, tracks: number, title = "Scan", beamOf?: Map<number, number>, tupletOf?: Map<number, Tuplet>): string {
   // Tuplet notes keep their length when the staffs are aligned, as beamed ones do.
@@ -538,7 +625,7 @@ export function buildMusicXml(notes: NoteHead[], groups: NoteGroup[], sym: Symbo
     measuresXml.splice(1, 1);
   }
   const parts = measuresXml.map(
-    (m) => `<measure number="${m.number}">${m.newSystem ? '<print new-system="yes"/>' : ""}${m.body.join("")}</measure>`,
+    (m) => `<measure number="${m.number}">${m.newSystem ? '<print new-system="yes"/>' : ""}${freeVoices(m.body).join("")}</measure>`,
   );
   return (
     `<?xml version="1.0" encoding="UTF-8"?>\n` +

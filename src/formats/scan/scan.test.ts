@@ -10,6 +10,7 @@ import { scanToMusicXml, type ScanReply, type ScanRequest } from "./index";
 import { segment, staffStrips, staffTiles, type OrtLike } from "./infer";
 import { handleScan } from "./scan-worker";
 import { blobs, dotRightOf } from "./rhythm";
+import { freeVoices } from "./build";
 
 const grid = (w: number, h: number, on: (x: number, y: number) => boolean): Img<Uint8Array> => {
   const d = new Uint8Array(w * h);
@@ -244,5 +245,35 @@ describe("scan worker", () => {
     ac.abort(new Error("stopped"));
     const run = scanToMusicXml(image, { models: { symbols: "a", classifiers: "b" }, worker: () => new FakeWorker() as unknown as Worker, signal: ac.signal });
     await expect(run).rejects.toThrow("stopped");
+  });
+});
+
+describe("freeVoices", () => {
+  const n = (dur: number, staff: number, voice = 1, extra = "") => `<note><pitch><step>C</step><octave>4</octave></pitch><duration>${dur}</duration><voice>${voice}</voice><type>quarter</type>${extra}<staff>${staff}</staff></note>`;
+  const back = (d: number) => `<backup><duration>${d}</duration></backup>`;
+  const voices = (xs: string[]) => xs.join("").match(/<voice>\d+/g)!.map((v) => Number(v.slice(7)));
+  it("moves a note whose voice is still sounding to a free voice", () => {
+    expect(voices(freeVoices([n(96, 1), back(48), n(48, 1)]))).toEqual([1, 2]);
+  });
+  it("keeps one voice when the notes follow each other", () => {
+    expect(voices(freeVoices([n(48, 1), n(48, 1), back(96), n(96, 2)]))).toEqual([1, 1, 1]);
+  });
+  it("never backs up past the start of the measure", () => {
+    expect(freeVoices([n(48, 1), back(96)]).join("")).toContain("<backup><duration>48</duration></backup>");
+  });
+  it("drops a note when the staff already has four voices sounding, keeping its time", () => {
+    const out = freeVoices([n(96, 1), back(96), n(96, 1), back(96), n(96, 1), back(96), n(96, 1), back(96), n(96, 1)]).join("");
+    expect(out.match(/<note>/g)).toHaveLength(4);
+    expect(out.endsWith("<forward><duration>96</duration></forward>")).toBe(true);
+  });
+  it("pulls a tuplet note back against the previous one", () => {
+    const tm = "<time-modification><actual-notes>3</actual-notes><normal-notes>2</normal-notes></time-modification>";
+    const out = freeVoices([n(32, 1, 1, tm + '<notations><tuplet type="start"/></notations>'), back(32), n(48, 2), n(32, 1, 1, tm)]).join("");
+    expect(out).toContain(`</note><backup><duration>16</duration></backup><note>`);
+    expect(out.endsWith("<forward><duration>16</duration></forward>")).toBe(true);
+  });
+  it("drops a beam split across voices", () => {
+    const out = freeVoices([n(60, 1), back(48), n(48, 1, 1, '<beam number="1">begin</beam>'), n(24, 1, 1, '<beam number="1">end</beam>')]).join("");
+    expect(out).not.toContain("<beam");
   });
 });
