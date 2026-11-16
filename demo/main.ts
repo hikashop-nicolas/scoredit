@@ -37,7 +37,7 @@ async function open(bytes: Uint8Array, name: string): Promise<void> {
       // The end of an in-time run, as a host would hear it (e2e reads it).
       onPracticeEnd: (s) => ((window as unknown as { svPracticeEnd?: unknown }).svPracticeEnd = s),
       // ?parts=drums shows the parts of one instrument family, as a host setting would.
-      parts: { show: ((f) => (f ? score.parts.flatMap((p, i) => (partFamily(p) === f ? [i] : [])) : null))(new URLSearchParams(location.search).get("parts")) },
+      parts: { show: ((f) => (f ? score.parts.flatMap((p, i) => (partFamily(p) === f ? [i] : [])) : null))(new URLSearchParams(location.search).get("parts")), onSilentChange: () => {} },
       tablature: loaded.fretted ? { on: loaded.tab, toggle: (on) => loadScore(bytes, { tab: on ? "always" : "never" }).score } : undefined,
       onFullscreen: () => (document.fullscreenElement ? void document.exitFullscreen() : void host.requestFullscreen()),
       onSystemRendered: (i, ms) => {
