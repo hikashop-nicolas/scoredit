@@ -166,6 +166,11 @@ export interface ScoreViewerHandle {
   follow(t: Transport): void;
   /** How late this device sounds the followed playback (ms), null when not following a playing one. */
   readonly followLag: number | null;
+  /**
+   * For measuring: the follow decisions since the last call (lag found on arrival, ms, and
+   * whether playback was placed again) and the audio clocks as the browser reports them.
+   */
+  followDebug(): { decisions: { lag: number | null; replaced: boolean }[]; probe: ReturnType<Player["probe"]> | null; lag: ReturnType<Player["lagDetail"]> };
   setOutputDelay(ms: number): void;
   /** Lays the score out again, e.g. after it changed. */
   relayout(): void;
@@ -744,6 +749,8 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
     });
   }
   let followed: Transport | null = null;
+  let decisions: { lag: number | null; replaced: boolean }[] = [];
+  let recheck: number[] = [];
   let outputDelay = opts.outputDelayMs ?? 0;
   // A playing conductor says where it is now and then, so clock drift on either side is caught.
   const reemit = window.setInterval(() => {
@@ -759,7 +766,7 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
   shell.addEventListener("pointerdown", () => {
     if (followed?.playing && !audioRunning()) void resumeAudio().then((ok) => ok && followed && follow(followed));
   });
-  function follow(t: Transport): void {
+  function follow(t: Transport, again = false): void {
     followed = t;
     if (t.speed !== speed) {
       speed = t.speed;
@@ -768,12 +775,21 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
     const p = ensurePlayer();
     // Already in step: left alone, since placing playback again cuts the notes sounding.
     const lag = t.playing && p.getSpeed() === t.speed ? p.lagBehind(t.time, t.at) : null;
+    decisions.push({ lag, replaced: !(lag !== null && Math.abs(lag) < FOLLOW_SLACK_MS) });
+    if (decisions.length > 50) decisions.shift();
     if (lag !== null && Math.abs(lag) < FOLLOW_SLACK_MS) {
       tapHint.hidden = audioRunning();
       return;
     }
     p.setSpeed(t.speed);
-    if (t.playing) p.playAt(t.time, t.at);
+    if (t.playing) {
+      p.playAt(t.time, t.at);
+      // Placed while the audio was still starting, the moment it is heard is only a guess: look again.
+      if (!again) {
+        recheck.forEach(clearTimeout);
+        recheck = [400, 1200, 2500].map((ms) => window.setTimeout(() => followed === t && follow(t, true), ms));
+      }
+    }
     else {
       p.pause();
       p.seek(t.time);
@@ -1014,6 +1030,11 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
     },
     setLock,
     follow,
+    followDebug() {
+      const out = { decisions, probe: player?.probe() ?? null, lag: followed?.playing && player ? player.lagDetail(followed.time, followed.at) : null };
+      decisions = [];
+      return out;
+    },
     get followLag() {
       return followed?.playing && player ? player.lagBehind(followed.time, followed.at) : null;
     },
@@ -1025,6 +1046,7 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
     relayout: () => view.relayout(),
     destroy() {
       clearInterval(reemit);
+      recheck.forEach(clearTimeout);
       unsubscribe?.();
       player?.dispose();
       kbd = null;

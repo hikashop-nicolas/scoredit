@@ -264,16 +264,46 @@ export class Player {
     this.delay = Math.max(0, sec);
   }
 
+  /**
+   * An audio time and the moment it is heard (performance.now() ms), plus any delay still to
+   * add. From the browser's output timestamp when it has one: currentTime moves in steps of
+   * the audio buffer (tens of ms on Android) and outputLatency is not always right there.
+   */
+  private heard(): { audio: number; perf: number; latency: number } {
+    const ctx = synth().getAudioContext() as AudioContext & { getOutputTimestamp?: () => AudioTimestamp };
+    const ts = ctx.state === "running" ? ctx.getOutputTimestamp?.() : undefined;
+    if (ts?.contextTime && ts.performanceTime) return { audio: ts.contextTime, perf: ts.performanceTime, latency: this.delay };
+    return { ...this.clock(), latency: this.outputLatency + this.delay };
+  }
+
+  /** The clocks as the browser reports them, for measuring how followers keep time. */
+  probe(): { currentTime: number; perf: number; outputLatency: number; baseLatency: number; contextTime: number | null; performanceTime: number | null; state: string } {
+    const ctx = synth().getAudioContext() as AudioContext & { getOutputTimestamp?: () => AudioTimestamp; outputLatency?: number };
+    const ts = ctx.getOutputTimestamp?.();
+    return { currentTime: ctx.currentTime, perf: performance.now(), outputLatency: ctx.outputLatency ?? 0, baseLatency: ctx.baseLatency ?? 0, contextTime: ts?.contextTime ?? null, performanceTime: ts?.performanceTime ?? null, state: ctx.state };
+  }
+
+  /** lagBehind both ways, for measuring: from the output timestamp, and from currentTime plus outputLatency. */
+  lagDetail(t: number, at: number): { timestamp: number | null; currentTime: number } | null {
+    if (!this.playing || this.held) return null;
+    const ctx = synth().getAudioContext() as AudioContext & { getOutputTimestamp?: () => AudioTimestamp };
+    const ts = ctx.getOutputTimestamp?.();
+    const viaTs = ts?.contextTime && ts.performanceTime ? heardWhen(t, { audio: ts.contextTime, perf: ts.performanceTime }, this.startAt, this.speed, this.delay) - at : null;
+    return { timestamp: viaTs, currentTime: heardWhen(t, this.clock(), this.startAt, this.speed, this.outputLatency + this.delay) - at };
+  }
+
   /** While playing: a piece time and when it is heard (performance.now() ms), to start other devices from. */
   anchor(): { time: number; at: number } | null {
     if (!this.playing || this.held) return null;
-    return { time: this.from, at: heardWhen(this.from, this.clock(), this.startAt, this.speed, this.outputLatency + this.delay) };
+    const h = this.heard();
+    return { time: this.from, at: heardWhen(this.from, h, this.startAt, this.speed, h.latency) };
   }
 
   /** While playing: how late piece time `t` is heard compared with `at` (ms, negative: early). */
   lagBehind(t: number, at: number): number | null {
     if (!this.playing || this.held) return null;
-    return heardWhen(t, this.clock(), this.startAt, this.speed, this.outputLatency + this.delay) - at;
+    const h = this.heard();
+    return heardWhen(t, h, this.startAt, this.speed, h.latency) - at;
   }
 
   /**
@@ -282,7 +312,10 @@ export class Player {
    */
   playAt(t: number, at: number): void {
     if (this.playing) this.pause();
-    const { start, offset } = followStart(t, at, this.clock(), this.speed, this.outputLatency + this.delay);
+    const h = this.heard();
+    const { start } = followStart(t, at, h, this.speed, h.latency);
+    // The output timestamp trails the clock notes are scheduled on: start at least 50 ms ahead of that.
+    const offset = Math.max(t, (synth().getAudioContext().currentTime + 0.05 - start) * this.speed);
     if (offset >= this.timeline.duration - 0.01) {
       this.offset = this.timeline.duration;
       this.report();
