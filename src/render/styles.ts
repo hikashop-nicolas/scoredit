@@ -1,7 +1,7 @@
 // One stylesheet for the viewer, scoped under .sv-shell, injected once per document. Colors
 // come from CSS variables so a host can theme the chrome (the paper stays white).
 const CSS = `
-.sv-shell{height:100%;min-height:0;display:flex;flex-direction:column}
+.sv-shell{position:relative;height:100%;min-height:0;display:flex;flex-direction:column}
 .sv-root{flex:1 1 auto;min-height:0;overflow:auto;scrollbar-gutter:stable;background:var(--sv-bg,#e9e9ec);-webkit-overflow-scrolling:touch;touch-action:pan-x pan-y}
 .sv-page{background:var(--sv-paper,#fff);max-width:100%;margin:0 auto;min-height:100%;padding-bottom:24px;box-sizing:border-box}
 .sv-system{position:relative;overflow:hidden}
@@ -9,6 +9,9 @@ const CSS = `
 .sv-bar{flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:5px 8px;box-sizing:border-box;background:var(--sv-chrome,#2b2f36);color:var(--sv-bar-fg,#e6e6e6);border-top:1px solid var(--sv-border,#1c1f24);font:13px system-ui,sans-serif}
 .sv-bb-btn{min-width:30px;height:30px;flex:0 0 auto;padding:0 8px;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;font:inherit;background:var(--sv-btn,#3a3f47);color:inherit;border:1px solid var(--sv-btn-border,#4a4f57);border-radius:5px;cursor:pointer}
 .sv-bb-btn:hover{border-color:var(--sv-accent,#6e7bff)}
+.sv-bb-btn:disabled{opacity:.4;cursor:default;border-color:var(--sv-btn-border,#4a4f57)}
+.sv-seek.sv-locked .sv-seek-track{pointer-events:none}
+.sv-tap-hint{position:absolute;left:50%;top:12px;transform:translateX(-50%);z-index:20;font:600 14px system-ui,sans-serif;padding:8px 14px;border-radius:18px;border:0;background:var(--sv-accent,#5b7cfa);color:#fff;cursor:pointer;box-shadow:0 4px 12px rgba(0,0,0,.3)}.sv-tap-hint[hidden]{display:none}
 .sv-bb-btn:focus-visible,.sv-zoom:focus-visible{outline:2px solid var(--sv-accent,#6e7bff);outline-offset:1px}
 .sv-bb-icon{padding:0;width:30px}
 .sv-bb-grow{flex:1 1 auto;min-width:0}

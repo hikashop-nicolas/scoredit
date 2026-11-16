@@ -55,6 +55,21 @@ export function setVolume(v: number, mute = false): void {
   if (master) master.gain.setTargetAtTime(level(), master.context.currentTime, 0.015);
 }
 
+/** Lets sound start (call from a click or tap: browsers keep audio stopped until one). */
+export function resumeAudio(): Promise<boolean> {
+  const ctx = synth().getAudioContext();
+  if (ctx.state === "running") return Promise.resolve(true);
+  return ctx.resume().then(
+    () => (ctx.state as string) === "running",
+    () => false,
+  );
+}
+
+/** Whether the page's audio runs (a follower's position only moves while it does). */
+export function audioRunning(): boolean {
+  return !!shared && shared.getAudioContext().state === "running";
+}
+
 export function getVolume(): { volume: number; muted: boolean } {
   return { volume, muted };
 }
@@ -87,6 +102,16 @@ function synth(): WebAudioTinySynth {
   return shared;
 }
 
+/**
+ * Where to start so piece time `t` is heard at `at` (performance.now() ms): the audio time of
+ * piece time 0, and the piece time to start from (later than `t` when `at` is past, so the
+ * start is at least 50 ms ahead of the audio clock).
+ */
+export function followStart(t: number, at: number, clock: { audio: number; perf: number }, speed: number, latency: number): { start: number; offset: number } {
+  const start = clock.audio + (at - clock.perf) / 1000 - latency - t / speed;
+  return { start, offset: Math.max(t, (clock.audio + 0.05 - start) * speed) };
+}
+
 // Plays a timeline on the built-in synthesizer: notes are handed to the synth a quarter
 // second ahead on the audio clock, and the position is reported every frame.
 export class Player {
@@ -113,6 +138,10 @@ export class Player {
   // A MIDI instrument playing the notes instead of the built-in sounds.
   private out: MidiOutput | null = null;
   private stopToken = 0;
+  // Delay of this device's sound the browser does not report (a Bluetooth speaker), in seconds.
+  private delay = 0;
+  // The audio time of piece time 0 for the next start, set by playAt.
+  private pendingStart: number | null = null;
 
   private pedal = pedalSpans([]);
 
@@ -230,6 +259,40 @@ export class Player {
     return heardWhen(t, this.clock(), this.startAt, this.speed, this.outputLatency + extra);
   }
 
+  /** Delay of this device's sound beyond what the browser reports, in seconds (playAt and anchor use it). */
+  setDelay(sec: number): void {
+    this.delay = Math.max(0, sec);
+  }
+
+  /** While playing: a piece time and when it is heard (performance.now() ms), to start other devices from. */
+  anchor(): { time: number; at: number } | null {
+    if (!this.playing || this.held) return null;
+    return { time: this.from, at: heardWhen(this.from, this.clock(), this.startAt, this.speed, this.outputLatency + this.delay) };
+  }
+
+  /** While playing: how late piece time `t` is heard compared with `at` (ms, negative: early). */
+  lagBehind(t: number, at: number): number | null {
+    if (!this.playing || this.held) return null;
+    return heardWhen(t, this.clock(), this.startAt, this.speed, this.outputLatency + this.delay) - at;
+  }
+
+  /**
+   * Plays so that piece time `t` is heard at `at` (performance.now() ms). A moment already
+   * past starts at once, from where the piece is by then.
+   */
+  playAt(t: number, at: number): void {
+    if (this.playing) this.pause();
+    const { start, offset } = followStart(t, at, this.clock(), this.speed, this.outputLatency + this.delay);
+    if (offset >= this.timeline.duration - 0.01) {
+      this.offset = this.timeline.duration;
+      this.report();
+      return;
+    }
+    this.offset = offset;
+    this.pendingStart = start;
+    this.resume();
+  }
+
   /** Wait mode: hold playback just before piece time `t` (null: play on freely). */
   setGate(t: number | null): void {
     this.gate = t;
@@ -330,7 +393,10 @@ export class Player {
     const s = synth();
     const ctx = s.getAudioContext();
     let lead = 0.05;
-    if (withCountIn && this.clickOpts.countIn) {
+    const pending = this.pendingStart;
+    this.pendingStart = null;
+    if (pending !== null) lead = pending + this.offset / this.speed - ctx.currentTime;
+    else if (withCountIn && this.clickOpts.countIn) {
       const c = countIn(this.timeline.spans, this.offset);
       const beat = c.beatSec / this.speed;
       for (let i = 0; i < c.beats; i++) this.click(ctx.currentTime + lead + i * beat, i === 0);

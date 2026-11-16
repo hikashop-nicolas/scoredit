@@ -1,4 +1,5 @@
-import { heldUntil, pedalSpans, positionAt } from "./player";
+import { followStart, heldUntil, pedalSpans, positionAt } from "./player";
+import { heardWhen } from "./practice";
 
 describe("pedal", () => {
   const spans = pedalSpans([
@@ -23,5 +24,21 @@ describe("cursor", () => {
     expect(positionAt(spans, 1).quarter).toBeCloseTo(2);
     expect(positionAt(spans, 1.5).quarter).toBeCloseTo(2);
     expect(positionAt(spans, 2.25).quarter).toBeCloseTo(2.5);
+  });
+});
+
+describe("following another device", () => {
+  const clock = { audio: 10, perf: 5000 };
+  it("starts so the piece time is heard at the moment given", () => {
+    const { start, offset } = followStart(4, 6000, clock, 1, 0.02);
+    expect(offset).toBe(4);
+    // The leader's own heardWhen of that start gives the moment back.
+    expect(heardWhen(4, clock, start, 1, 0.02)).toBeCloseTo(6000);
+  });
+  it("joins a playback already under way where it is by now", () => {
+    const { start, offset } = followStart(4, 3000, clock, 2, 0);
+    // Two seconds ago at double speed, plus the 50 ms lead: 4 + 2 * 2.05.
+    expect(offset).toBeCloseTo(8.1);
+    expect((clock.audio + 0.05 - start) * 2).toBeCloseTo(offset);
   });
 });

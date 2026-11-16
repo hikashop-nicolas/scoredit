@@ -19,7 +19,7 @@ export { ScoreDoc, partFamily, PART_FAMILIES, type PartFamily, type PartInfo } f
 export { breakSystems, systemOf, type SystemRange, type BreakOptions } from "./layout/systems";
 export { ScoreEditor, type Caret, type Change, type NoteInput } from "./edit/editor";
 export { spellInKey } from "./edit/notes";
-export { createScoreViewer, type LayoutMode, type PracticeState, type PracticeStatus, type PracticeSummary, type ScoreViewerHandle, type ScoreViewerOptions } from "./render/viewer";
+export { createScoreViewer, type LayoutMode, type PracticeState, type PracticeStatus, type PracticeSummary, type ScoreViewerHandle, type ScoreViewerOptions, type BarLock, type Transport } from "./render/viewer";
 export type { LineView } from "./render/line-view";
 export { buildTimeline, type Timeline, type NoteEvent } from "./play/timeline";
 export { ChordGrouper, midiDeduper, parseControl, parseNote, webMidiInput, webMidiOutput, type MidiOutputLike, type MidiAccessLike, type MidiInput, type MidiMessage, type MidiOutput } from "./play/midi";
@@ -27,7 +27,7 @@ export { PRACTICE_DEFAULTS } from "./ui/bar";
 export { SPEED_STEP, TIME_WINDOW, TimeMatcher, WaitMatcher, beatClicks, cleanPass, countIn, handParts, heardAt, heardWhen, loopRange, nextSpeed, practiceGroups, practisedBy, timeWindow, type Click, type ExpectedNote, type PracticeCounts, type PracticeGroup, type PracticeTarget, type TimeOutcome, type Timing } from "./play/practice";
 export { remoteSounds, SOUNDS_CDN, type RemoteSoundsOptions, type SoundDownloads, type SoundRequest } from "./play/sounds";
 export { setLocale, t } from "./ui/i18n";
-export { getVolume, setVolume } from "./play/player";
+export { audioRunning, getVolume, resumeAudio, setVolume } from "./play/player";
 export { isNotationMidi, isScorePdf, pdfNotationApp } from "./formats/sniff";
 export { embedScore, exportPdf, renderPages, type FontScript, type FontSource, type PageOptions, type Paper, type PdfExportOptions, type PdfFonts } from "./render/pdf-export";
 export { encodeMp3, encodeWav, exportMp3, exportWav, renderAudio, type AudioExportOptions, type RenderedAudio } from "./play/audio-export";

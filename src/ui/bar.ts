@@ -103,6 +103,14 @@ export interface BarOptions {
   currentMeasure?(): number;
 }
 
+/** Controls greyed out, each with the reason shown as its tooltip. */
+export interface BarLock {
+  /** Play, speed and practice. */
+  play?: string | null;
+  edit?: string | null;
+  practice?: string | null;
+}
+
 export interface Bar {
   el: HTMLElement;
   end: HTMLElement;
@@ -119,6 +127,8 @@ export interface Bar {
    * and whether the MIDI keyboard can sound the app's notes.
    */
   setPractice(available: boolean, hands: boolean, state: PracticeState, measures?: number, labels?: string[], output?: boolean): void;
+  /** Greys out controls, each with why as its tooltip (absent: back on). */
+  lock(l: BarLock): void;
   /** Shows a speed set from elsewhere (a loop speeding up). */
   setSpeed(speed: number): void;
   /** The end-of-run summary pop-up (null hides it). */
@@ -598,7 +608,8 @@ export function createBar(o: BarOptions): Bar {
     tabBtn.setAttribute("aria-pressed", String(tabOn));
     el.append(tabBtn);
   }
-  if (o.onEdit) el.append(button(ICON_EDIT, t("edit"), () => o.onEdit?.()));
+  const editBtn = o.onEdit ? button(ICON_EDIT, t("edit"), () => o.onEdit?.()) : null;
+  if (editBtn) el.append(editBtn);
   el.append(partsBtn, partsPop, pracBtn, pracPop, sumPop, grow, slider, label);
   let fs: HTMLButtonElement | null = null;
   if (o.onFullscreen) {
@@ -633,8 +644,23 @@ export function createBar(o: BarOptions): Bar {
     setPlaying(on: boolean) {
       const lbl = t(on ? "pause" : "play");
       playBtn.innerHTML = on ? ICON_PAUSE : ICON_PLAY;
-      playBtn.title = lbl;
+      if (!playBtn.disabled) playBtn.title = lbl;
       playBtn.setAttribute("aria-label", lbl);
+    },
+    lock(l: BarLock) {
+      // Disabled, with the reason as the tooltip; the label comes back when unlocked.
+      const set = (b: HTMLButtonElement | null, why: string | null | undefined, label: string) => {
+        if (!b) return;
+        b.disabled = !!why;
+        b.title = why || label;
+      };
+      set(playBtn, l.play, playBtn.getAttribute("aria-label") ?? t("play"));
+      set(speedBtn, l.play, t("speed"));
+      set(pracBtn, l.play || l.practice, t("practice"));
+      set(editBtn, l.edit, t("edit"));
+      if (l.play) pop.hidden = true;
+      if (l.play || l.practice) pracPop.hidden = true;
+      speedBtn.setAttribute("aria-expanded", String(!pop.hidden));
     },
     setParts,
     setPractice,

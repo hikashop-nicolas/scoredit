@@ -1,7 +1,8 @@
 import type { SystemRange } from "../layout/systems";
 import type { ScoreDoc } from "../model/score";
-import { PRACTICE_DEFAULTS, clampZoom, createBar, type LayoutMode, type PracticeState } from "../ui/bar";
-import { Player, getVolume, positionAt, setVolume } from "../play/player";
+import { PRACTICE_DEFAULTS, clampZoom, createBar, type BarLock, type LayoutMode, type PracticeState } from "../ui/bar";
+import { Player, audioRunning, getVolume, positionAt, resumeAudio, setVolume } from "../play/player";
+import { t as tr } from "../ui/i18n";
 import type { SoundDownloads } from "../play/sounds";
 import { buildTimeline, type Timeline } from "../play/timeline";
 import { Fretboard, fretTuning, position } from "../ui/fretboard";
@@ -17,7 +18,21 @@ import { createPageView, type PageView } from "./page-view";
 import { injectStyles } from "./styles";
 import type { PracticeMarks, View } from "./view";
 
-export type { LayoutMode, PracticeState } from "../ui/bar";
+export type { BarLock, LayoutMode, PracticeState } from "../ui/bar";
+
+/**
+ * Where playback is, to make other devices follow: playing, piece time `time` is heard at
+ * `at` (performance.now() ms on the device that sent it); paused, it stands at `time`.
+ */
+/** How far a follower may drift before its playback is placed again (ms). */
+const FOLLOW_SLACK_MS = 25;
+
+export interface Transport {
+  playing: boolean;
+  time: number;
+  at: number;
+  speed: number;
+}
 
 export interface ScoreViewerOptions {
   /** "page": lines stacked down the page (default). "line": one long line, sideways, sized to the height. */
@@ -63,6 +78,10 @@ export interface ScoreViewerOptions {
   practice?: Partial<PracticeState> & { onChange?(p: PracticeState): void };
   /** An in-time run ended (playback reached the end or stopped): its counts, kept nowhere by scoredit. */
   onPracticeEnd?(summary: PracticeSummary): void;
+  /** Playback started, paused, moved or changed speed here: for other devices to follow. */
+  onTransport?(t: Transport): void;
+  /** Delay of this device's sound the browser does not report (a Bluetooth speaker), in ms. */
+  outputDelayMs?: number;
 }
 
 /** The counts of an in-time run. */
@@ -129,6 +148,16 @@ export interface ScoreViewerHandle {
   getBarEnd(): HTMLElement;
   /** Fullscreen reading: the host's buttons in the bar hide. */
   setReadingMode(on: boolean): void;
+  /**
+   * Greys out controls, each with why as its tooltip (null: all back on). Locked playback
+   * also stops tapping the score or the timeline from moving it.
+   */
+  setLock(lock: BarLock | null): void;
+  /** Plays, pauses and moves as another device says (see onTransport). */
+  follow(t: Transport): void;
+  /** How late this device sounds the followed playback (ms), null when not following a playing one. */
+  readonly followLag: number | null;
+  setOutputDelay(ms: number): void;
   /** Lays the score out again, e.g. after it changed. */
   relayout(): void;
   destroy(): void;
@@ -195,6 +224,7 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
   const seek = createSeekBar({
     measureLabel: (m) => score.measureLabel(m),
     onSeek: (t) => {
+      if (lock?.play) return;
       followPaused = 0;
       ensurePlayer().seek(t);
     },
@@ -258,7 +288,7 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
     done: () => setEditing(false),
   });
   function setEditing(on: boolean): void {
-    if (on === editingOn || (on && !opts.editable)) return;
+    if (on === editingOn || (on && (!opts.editable || lock?.edit))) return;
     editingOn = on;
     if (on) {
       player?.pause();
@@ -375,8 +405,10 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
       onStateChange: (on) => {
         bar.setPlaying(on);
         runState(on);
+        emitTransport();
       },
       onSeek: (t) => {
+        emitTransport();
         passWrong = 0;
         if (timeMatcher) startRun(t);
         if (passSummary) bar.showSummary(passSummary);
@@ -390,6 +422,7 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
       onLoop: () => endPass(),
     });
     player.setSpeed(speed);
+    player.setDelay(outputDelay / 1000);
     applyPractice(player);
     return player;
   }
@@ -672,12 +705,76 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
     p.live(e && e.channel !== 9 ? e.channel : 0, e && e.channel !== 9 ? e.program : 0, pitch, velocity);
   }
   function togglePlay(): void {
+    if (lock?.play) return;
     ensurePlayer().toggle();
   }
   let speed = 1;
   function setSpeed(v: number): void {
     speed = v;
     player?.setSpeed(v);
+    emitTransport();
+  }
+
+  // Shared playback: this device either says where playback is, or follows another one.
+  let lock: BarLock | null = null;
+  let emitQueued = false;
+  function emitTransport(): void {
+    if (!opts.onTransport || emitQueued) return;
+    // A seek pauses and plays again: one message once it settled.
+    emitQueued = true;
+    queueMicrotask(() => {
+      emitQueued = false;
+      const a = player?.anchor();
+      opts.onTransport?.(a ? { playing: true, time: a.time, at: a.at, speed } : { playing: false, time: player?.time ?? 0, at: performance.now(), speed });
+    });
+  }
+  let followed: Transport | null = null;
+  let outputDelay = opts.outputDelayMs ?? 0;
+  // A playing conductor says where it is now and then, so clock drift on either side is caught.
+  const reemit = window.setInterval(() => {
+    if (player?.isPlaying && !lock?.play) emitTransport();
+  }, 4000);
+  // Shown while a followed playback cannot sound or move: the browser waits for a tap.
+  const tapHint = document.createElement("button");
+  tapHint.type = "button";
+  tapHint.className = "sv-tap-hint";
+  tapHint.hidden = true;
+  tapHint.textContent = tr("followTap");
+  // Any tap on the viewer lets the sound start; the followed playback is placed again then.
+  shell.addEventListener("pointerdown", () => {
+    if (followed?.playing && !audioRunning()) void resumeAudio().then((ok) => ok && followed && follow(followed));
+  });
+  function follow(t: Transport): void {
+    followed = t;
+    if (t.speed !== speed) {
+      speed = t.speed;
+      bar.setSpeed(t.speed);
+    }
+    const p = ensurePlayer();
+    // Already in step: left alone, since placing playback again cuts the notes sounding.
+    const lag = t.playing && p.getSpeed() === t.speed ? p.lagBehind(t.time, t.at) : null;
+    if (lag !== null && Math.abs(lag) < FOLLOW_SLACK_MS) {
+      tapHint.hidden = audioRunning();
+      return;
+    }
+    p.setSpeed(t.speed);
+    if (t.playing) p.playAt(t.time, t.at);
+    else {
+      p.pause();
+      p.seek(t.time);
+    }
+    tapHint.hidden = !t.playing || audioRunning();
+  }
+  function setLock(next: BarLock | null): void {
+    lock = next && (next.play || next.edit || next.practice) ? { ...next } : null;
+    bar.lock(lock ?? {});
+    seek.el.classList.toggle("sv-locked", !!lock?.play);
+    if (lock?.edit && editingOn) setEditing(false);
+    if ((lock?.play || lock?.practice) && practice.mode !== "off") setPractice({ mode: "off" });
+    if (!lock?.play) {
+      followed = null;
+      tapHint.hidden = true;
+    }
   }
 
   // A tap on the score moves playback there (and plays on if it was playing).
@@ -689,7 +786,7 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
     el.addEventListener("pointerup", (e) => {
       const d = down;
       down = null;
-      if (!d || e.pointerId !== d.id || pinching || editingOn) return;
+      if (!d || e.pointerId !== d.id || pinching || editingOn || lock?.play) return;
       if (Math.hypot(e.clientX - d.x, e.clientY - d.y) > 8 || performance.now() - d.t > 400) return;
       const hit = view.hit(e.clientX, e.clientY);
       if (!hit) return;
@@ -741,6 +838,7 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
     remount();
     syncPracticeBar();
     refreshSeek();
+    if (followed) follow(followed);
   }
 
   // Shows other parts: playback goes on, the views and strips are built again.
@@ -823,7 +921,7 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
     el.addEventListener("touchcancel", end, { passive: true });
   }
 
-  shell.append(editing.el, seek.el, bar.el);
+  shell.append(editing.el, seek.el, bar.el, tapHint);
   refreshSeek();
   mount();
   setMidiInput(opts.midi ?? null);
@@ -887,8 +985,19 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
       shell.classList.toggle("sv-reading", on);
       bar.reading(on);
     },
+    setLock,
+    follow,
+    get followLag() {
+      return followed?.playing && player ? player.lagBehind(followed.time, followed.at) : null;
+    },
+    setOutputDelay(ms: number) {
+      outputDelay = Math.max(0, ms);
+      player?.setDelay(outputDelay / 1000);
+      if (followed) follow(followed);
+    },
     relayout: () => view.relayout(),
     destroy() {
+      clearInterval(reemit);
       unsubscribe?.();
       player?.dispose();
       kbd = null;
