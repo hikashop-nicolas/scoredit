@@ -60,7 +60,13 @@ export interface ScoreViewerOptions {
    * Parts shown: a Parts button in the bar ticks them (playback keeps them all). `show` is
    * the first choice (indices into score.parts, null for all); `onChange` hears the user's.
    */
-  parts?: { show?: number[] | null; onChange?(shown: number[] | null): void };
+  parts?: {
+    show?: number[] | null;
+    onChange?(shown: number[] | null): void;
+    /** Parts this device does not sound (a sound button beside each part when `onSilentChange` is given). */
+    silent?: number[];
+    onSilentChange?(silent: number[]): void;
+  };
   /** Playback volume (0 to 1) and mute as they start; `onChange` hears the user's (to keep them). */
   volume?: { value?: number; muted?: boolean; onChange?(value: number, muted: boolean): void };
   /** Shows an Edit button: notes can then be entered and changed (on the page layout). */
@@ -119,6 +125,9 @@ export interface ScoreViewerHandle {
   /** Indices of the parts shown, null for all. */
   readonly parts: number[] | null;
   setParts(shown: number[] | null): void;
+  /** Parts this device does not sound. */
+  readonly silentParts: number[];
+  setSilentParts(silent: number[]): void;
   /**
    * The client point of a staff position (half spaces below its top line) at a beat, in the
    * page layout, for driving the viewer in tests. Part indices are the score's.
@@ -176,6 +185,9 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
   let shownParts = validParts(opts.parts?.show, score);
   let shownScore = shownParts ? score.only(shownParts) : score;
   const visible = (e: { part: number }) => !shownParts || shownParts.includes(e.part);
+  // Parts this device leaves silent, whatever it shows.
+  let silentParts = new Set<number>(opts.parts?.silent ?? []);
+  const silent = (e: { part: number }) => silentParts.has(e.part);
   injectStyles();
   let mode: LayoutMode = opts.layout ?? "page";
   let pageZoom = clampZoom(opts.zoom ?? (container.clientWidth > 0 && container.clientWidth < 700 ? 0.6 : 1));
@@ -211,6 +223,7 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
     tab: opts.tablature ? { on: opts.tablature.on, toggle: (on) => setScore(opts.tablature!.toggle(on)) } : undefined,
     onFullscreen: opts.onFullscreen,
     onParts: opts.parts ? (p) => setParts(p, true) : undefined,
+    onPartSound: opts.parts?.onSilentChange ? (silent) => setSilent(silent, true) : undefined,
     onEdit: opts.editable ? () => setEditing(true) : undefined,
     onPractice: (p) => setPractice(p),
     onConnectMidi: opts.connectMidi ? () => opts.connectMidi?.() : undefined,
@@ -307,7 +320,7 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
       e.stopPropagation();
     }
   });
-  bar.setParts(score.parts.map((p) => p.name), shownParts);
+  bar.setParts(score.parts.map((p) => p.name), shownParts, [...silentParts]);
 
   // The timeline is built once, when playback or the keyboard first needs it.
   let timeline: Timeline | null = null;
@@ -464,11 +477,13 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
     showLoop();
     // Wait mode waits for the player anyway: no count-in there.
     p.setClicks({ countIn: practice.countIn && !waitOn(), metronome: practice.metronome });
-    // Outside practice the app plays every part, whatever "Play the other parts" says.
-    if (!practising()) p.setSkip(null);
+    // Outside practice the app plays every part not silenced, whatever "Play the other parts" says.
+    const quiet = silentParts.size ? silent : null;
+    if (!practising()) p.setSkip(quiet);
     else {
       const mine = practisedBy(tl, target());
-      p.setSkip(practice.accompany ? mine : () => true);
+      const skip = practice.accompany ? mine : () => true;
+      p.setSkip(quiet ? (e) => skip(e) || quiet(e) : skip);
     }
   }
   // Wait mode holds before the group waited for, unless it lies past the loop's end: the
@@ -834,17 +849,25 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
     editing.reset();
     color = noteColors(score);
     shownParts = validParts(shownParts, score);
-    bar.setParts(score.parts.map((p) => p.name), shownParts);
+    bar.setParts(score.parts.map((p) => p.name), shownParts, [...silentParts]);
     remount();
     syncPracticeBar();
     refreshSeek();
     if (followed) follow(followed);
   }
 
+  // Parts not sounded here: playback goes on without them.
+  function setSilent(next: number[], fromBar = false): void {
+    silentParts = new Set(next.filter((i) => i >= 0 && i < score.parts.length));
+    if (!fromBar) bar.setParts(score.parts.map((p) => p.name), shownParts, [...silentParts]);
+    if (player) applyPlayback(player);
+    opts.parts?.onSilentChange?.([...silentParts].sort((a, b) => a - b));
+  }
+
   // Shows other parts: playback goes on, the views and strips are built again.
   function setParts(next: number[] | null, fromBar = false): void {
     shownParts = validParts(next, score);
-    if (!fromBar) bar.setParts(score.parts.map((p) => p.name), shownParts);
+    if (!fromBar) bar.setParts(score.parts.map((p) => p.name), shownParts, [...silentParts]);
     remount();
     resetPractice();
     opts.parts?.onChange?.(shownParts);
@@ -957,6 +980,10 @@ export function createScoreViewer(container: HTMLElement, initial: ScoreDoc, opt
     },
     setEditing,
     setParts: (p) => setParts(p),
+    get silentParts() {
+      return [...silentParts].sort((a, b) => a - b);
+    },
+    setSilentParts: (p) => setSilent(p),
     togglePlay,
     get player() {
       return player;

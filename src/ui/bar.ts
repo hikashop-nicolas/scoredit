@@ -93,6 +93,8 @@ export interface BarOptions {
   tab?: { on: boolean; toggle(on: boolean): void };
   /** Shows or hides parts: the indices shown, null for all. */
   onParts?(shown: number[] | null): void;
+  /** The parts this device leaves silent changed (a sound button beside each part). */
+  onPartSound?(silent: number[]): void;
   /** An Edit button, for scores that can be edited. */
   onEdit?(): void;
   /** The practice settings changed (the button shows once setPractice makes it available). */
@@ -119,7 +121,7 @@ export interface Bar {
   setPlaying(on: boolean): void;
   reading(on: boolean): void;
   /** The parts of the score and those shown (null: all); no button for a single part. */
-  setParts(names: string[], shown: number[] | null): void;
+  setParts(names: string[], shown: number[] | null, silent?: number[]): void;
   setFretboard(available: boolean): void;
   /**
    * The practice button: whether an instrument is connected, whether a hand can be chosen, the
@@ -265,15 +267,37 @@ export function createBar(o: BarOptions): Bar {
   partsPop.hidden = true;
   let partBoxes: HTMLInputElement[] = [];
   let allBox: HTMLInputElement | null = null;
-  const checkbox = (labelText: string, cls?: string) => {
+  let silentParts = new Set<number>();
+  const checkbox = (labelText: string, cls?: string, parent: HTMLElement = partsPop) => {
     const l = document.createElement("label");
     if (cls) l.className = cls;
     const c = document.createElement("input");
     c.type = "checkbox";
     l.append(c, document.createTextNode(labelText));
     l.title = labelText;
-    partsPop.append(l);
+    parent.append(l);
     return c;
+  };
+  // Beside each part: whether this device sounds it (shown or not).
+  const soundButton = (i: number, name: string) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "sv-part-sound";
+    const sync = () => {
+      const on = !silentParts.has(i);
+      b.innerHTML = on ? ICON_VOL : ICON_MUTED;
+      b.setAttribute("aria-pressed", String(on));
+      b.setAttribute("aria-label", `${t("partPlays")}: ${name}`);
+      b.title = t("partPlays");
+    };
+    b.addEventListener("click", () => {
+      if (silentParts.has(i)) silentParts.delete(i);
+      else silentParts.add(i);
+      sync();
+      o.onPartSound?.([...silentParts].sort((x, y) => x - y));
+    });
+    sync();
+    return b;
   };
   const shownNow = (): number[] | null => {
     const on = partBoxes.flatMap((b, i) => (b.checked ? [i] : []));
@@ -288,8 +312,9 @@ export function createBar(o: BarOptions): Bar {
     partsBtn.classList.toggle("is-on", n < partBoxes.length);
     partsBtn.setAttribute("aria-pressed", String(n < partBoxes.length));
   };
-  const setParts = (names: string[], shown: number[] | null) => {
+  const setParts = (names: string[], shown: number[] | null, silent: number[] = []) => {
     partsPop.replaceChildren();
+    silentParts = new Set(silent.filter((i) => i >= 0 && i < names.length));
     partsBtn.hidden = names.length < 2 || !o.onParts;
     if (partsBtn.hidden) partsPop.hidden = true;
     allBox = checkbox(t("allParts"), "sv-all");
@@ -301,7 +326,15 @@ export function createBar(o: BarOptions): Bar {
     });
     const set = shown ? new Set(shown) : null;
     partBoxes = names.map((name, i) => {
-      const b = checkbox(name || `${t("parts")} ${i + 1}`);
+      const label = name || `${t("parts")} ${i + 1}`;
+      let parent: HTMLElement = partsPop;
+      if (o.onPartSound) {
+        parent = document.createElement("div");
+        parent.className = "sv-part-row";
+        partsPop.append(parent);
+      }
+      const b = checkbox(label, undefined, parent);
+      if (o.onPartSound) parent.append(soundButton(i, label));
       b.checked = !set || set.has(i);
       b.addEventListener("change", () => {
         if (!partBoxes.some((x) => x.checked)) b.checked = true;

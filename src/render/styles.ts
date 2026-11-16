@@ -82,7 +82,7 @@ const CSS = `
 .sv-pop input{width:180px;accent-color:var(--sv-accent,#6e7bff)}
 .sv-pop-parts{max-height:min(60vh,420px);overflow-y:auto;display:flex;flex-direction:column;gap:2px;min-width:180px;max-width:calc(100% - 16px)}
 .sv-pop-parts label{flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:6px 4px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.sv-pop-parts input{width:auto;margin:0;flex:0 0 auto}
+.sv-pop-parts input{width:auto;margin:0;flex:0 0 auto}.sv-part-row{display:flex;align-items:center;gap:4px}.sv-part-row label{flex:1 1 auto;min-width:0}.sv-part-sound{flex:0 0 auto;width:30px;height:30px;display:inline-flex;align-items:center;justify-content:center;padding:0;border:1px solid transparent;border-radius:5px;background:transparent;color:inherit;cursor:pointer}.sv-part-sound:hover{border-color:var(--sv-btn-border,#4a4f57)}.sv-part-sound[aria-pressed="false"]{opacity:.6}.sv-part-sound svg{width:18px;height:18px}
 .sv-pop-practice .sv-choice{display:flex;flex-direction:column;border-bottom:1px solid var(--sv-btn-border,#4a4f57);margin-bottom:4px;padding-bottom:4px}
 .sv-pop-practice .sv-choice[hidden]{display:none}
 .sv-pop-summary{min-width:180px}

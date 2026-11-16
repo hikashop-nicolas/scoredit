@@ -55,3 +55,41 @@ describe("practice pop-up sections", () => {
     expect(state("clicks")).toBe("Count-in");
   });
 });
+
+describe("parts sounded on this device", () => {
+  const makeParts = () => {
+    const silent: number[][] = [];
+    const bar = createBar({ zoom: 1, layout: "page", onZoomInput: noop, onZoomCommit: noop, onLayout: noop, onKeyboard: noop, onPlay: noop, onSpeed: noop, onPractice: noop, onParts: noop, onPartSound: (s) => silent.push(s) });
+    bar.setParts(["Guitar", "Piano", "Bass"], null, [1]);
+    const buttons = [...bar.el.querySelectorAll<HTMLButtonElement>(".sv-part-sound")];
+    return { bar, silent, buttons };
+  };
+  it("shows a sound button per part, pressed for the parts that sound", () => {
+    const { buttons } = makeParts();
+    expect(buttons.map((b) => b.getAttribute("aria-pressed"))).toEqual(["true", "false", "true"]);
+    expect(buttons[0].getAttribute("aria-label")).toBe("Play this part: Guitar");
+  });
+  it("silences a part, or sounds it again, without touching what is shown", () => {
+    const { buttons, silent, bar } = makeParts();
+    buttons[0].click();
+    buttons[1].click();
+    expect(silent).toEqual([[0, 1], [0]]);
+    const boxes = [...bar.el.querySelectorAll<HTMLInputElement>(".sv-pop-parts input")];
+    expect(boxes.slice(0, 4).map((b) => b.checked)).toEqual([true, true, true, true]);
+  });
+});
+
+describe("locked controls", () => {
+  it("greys out playback and editing with the reason, and gives them back", () => {
+    const bar = createBar({ zoom: 1, layout: "page", onZoomInput: noop, onZoomCommit: noop, onLayout: noop, onKeyboard: noop, onPlay: noop, onSpeed: noop, onPractice: noop, onEdit: noop });
+    const play = bar.el.querySelector<HTMLButtonElement>(".sv-bb-play")!;
+    bar.lock({ play: "The host plays", edit: "No editing" });
+    expect(play.disabled).toBe(true);
+    expect(play.title).toBe("The host plays");
+    bar.setPlaying(true);
+    expect(play.title).toBe("The host plays");
+    bar.lock({});
+    expect(play.disabled).toBe(false);
+    expect(play.title).toBe("Pause");
+  });
+});
