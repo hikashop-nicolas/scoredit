@@ -5,7 +5,8 @@ import { readMscx, readMscz, readMsczExcerpts, type MscxOptions } from "./mscx";
 import { readMxl } from "./mxl";
 import { readGuitarPro } from "./gp";
 import { writeGuitarPro } from "./gp-write";
-import { midiToMusicXml } from "./midi";
+import { readMidi } from "./midi";
+import { midiSaver } from "./midi-save";
 import { rememberMeasure, writeMuseScore, type Dropped } from "./mscx-write";
 
 export interface LoadedScore {
@@ -19,6 +20,8 @@ export interface LoadedScore {
    * MuseScore files: the file with the edits made since it was read, written back into the
    * measures they changed (everything else as it was), and what could not be carried over.
    * Guitar Pro files (any version): the score written whole as a Guitar Pro 7 .gp file.
+   * MIDI files (types 0 and 1): the file with only the notes, tempos, time and key signatures
+   * an edit changed written again; every other event as it was.
    */
   save?: (opts?: { fresh?: boolean }) => { bytes: Uint8Array; dropped: Dropped };
 }
@@ -60,9 +63,13 @@ export function loadScore(bytes: Uint8Array, opts: LoadOptions = {}): LoadedScor
       // Saved as Guitar Pro 7 (.gp), whichever version was read.
       return { format, score, fretted, tab, save: () => writeGuitarPro(score) };
     }
-    case "midi":
-      // Read-only: no save.
-      return { format, score: new ScoreDoc(midiToMusicXml(bytes)), fretted: false, tab: false };
+    case "midi": {
+      const { xml, link } = readMidi(bytes);
+      const score = new ScoreDoc(xml);
+      // Types 0 and 1 in ticks a quarter can be written back; type 2 (separate songs) and SMPTE time not.
+      const writable = link.file.format !== 2 && !(link.file.division & 0x8000);
+      return { format, score, fretted: false, tab: false, save: writable ? midiSaver(bytes, score, link) : undefined };
+    }
     case "pdf":
       throw new Error("PDF scores are read with loadScoreAsync");
     default:

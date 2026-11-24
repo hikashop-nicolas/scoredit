@@ -15,6 +15,9 @@ interface RawNote {
   pitch: number;
   start: number;
   end: number;
+  /** Its note-on and note-off events. */
+  on: MidiEvent;
+  off: MidiEvent;
 }
 
 interface Smf {
@@ -26,6 +29,8 @@ interface Smf {
   times: { tick: number; n: number; d: number }[];
   keys: { tick: number; fifths: number }[];
   title: string;
+  /** The events the notes were read from. */
+  file: MidiFile;
 }
 
 /** Text in a meta event: UTF-8 when it is, else Latin-1. */
@@ -40,8 +45,47 @@ function text(data: Uint8Array): string {
   return s.replace(/[\x00-\x1f\x7f]/g, " ").trim();
 }
 
-/** Reads the events of a standard MIDI file. */
-export function parseSmf(bytes: Uint8Array): Smf {
+/** One event of a track, its status byte included even where the file used running status. */
+export interface MidiEvent {
+  tick: number;
+  status: number;
+  /** The whole event: status, then data (meta: type, length, data; sysex: length, data). */
+  bytes: Uint8Array;
+  /** The file left the status byte out (running status). */
+  running: boolean;
+  /** Meta events: their type and data. */
+  type?: number;
+  data?: Uint8Array;
+}
+
+export interface MidiChunk {
+  /** The chunk as it is in the file, its header included. */
+  raw: Uint8Array;
+  /** MTrk chunks: their events up to the end of track (which is not one of them). */
+  events?: MidiEvent[];
+  /** Tick of the end-of-track event, -1 when the track has none. */
+  eot: number;
+  /** Bytes after the end-of-track event, inside the chunk. */
+  tail: Uint8Array;
+}
+
+export interface MidiFile {
+  format: number;
+  /** Tracks the header counts. */
+  tracks: number;
+  /** The division as written; ppq is 480 for SMPTE time. */
+  division: number;
+  ppq: number;
+  /** The header chunk as in the file. */
+  head: Uint8Array;
+  /** Chunks the header counts, in file order: their index is the track number. */
+  chunks: MidiChunk[];
+  /** Whatever follows those chunks. */
+  trailing: Uint8Array;
+}
+
+/** Splits a standard MIDI file into its tracks' events, keeping every byte to write it back. */
+export function readMidiEvents(bytes: Uint8Array): MidiFile {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const str = (o: number, n: number) => String.fromCharCode(...bytes.subarray(o, o + n));
   if (str(0, 4) !== "MThd") throw new Error("Not a MIDI file");
@@ -50,19 +94,22 @@ export function parseSmf(bytes: Uint8Array): Smf {
   const division = view.getUint16(12);
   // SMPTE time (rare in notation files): taken as 480 ticks a quarter.
   const ppq = division & 0x8000 ? 480 : division || 480;
-  const out: Smf = { ppq, notes: [], names: new Map(), programs: new Map(), tempos: [], times: [], keys: [], title: "" };
   let o = 8 + headLen;
+  const file: MidiFile = { format: view.getUint16(8), tracks, division, ppq, head: bytes.subarray(0, o), chunks: [], trailing: bytes.subarray(0, 0) };
   for (let tr = 0; tr < tracks && o + 8 <= bytes.length; tr++) {
     const len = view.getUint32(o + 4);
+    const raw = bytes.subarray(o, Math.min(bytes.length, o + 8 + len));
     if (str(o, 4) !== "MTrk") {
+      file.chunks.push({ raw, eot: -1, tail: raw.subarray(raw.length) });
       o += 8 + len;
       continue;
     }
+    const events: MidiEvent[] = [];
     let p = o + 8;
     const end = Math.min(bytes.length, p + len);
     let tick = 0;
     let status = 0;
-    const open = new Map<string, number[]>();
+    let eot = -1;
     const varint = () => {
       let v = 0;
       for (let i = 0; i < 4 && p < end; i++) {
@@ -74,49 +121,83 @@ export function parseSmf(bytes: Uint8Array): Smf {
     };
     while (p < end) {
       tick += varint();
+      const at = p;
       let s = bytes[p];
-      if (s & 0x80) p++;
+      const running = !(s & 0x80);
+      if (!running) p++;
       else s = status; // running status
       if (s === 0xff) {
         const type = bytes[p++];
         const n = varint();
-        const data = bytes.subarray(p, p + n);
+        const data = bytes.subarray(p, Math.min(end, p + n));
         p += n;
-        if (type === 0x03 && !out.names.has(tr)) out.names.set(tr, text(data));
-        else if (type === 0x51 && n >= 3) out.tempos.push({ tick, bpm: Math.round(60000000 / ((data[0] << 16) | (data[1] << 8) | data[2])) });
-        else if (type === 0x58 && n >= 2) out.times.push({ tick, n: data[0], d: 2 ** data[1] });
-        else if (type === 0x59 && n >= 1) out.keys.push({ tick, fifths: (data[0] << 24) >> 24 });
-        else if (type === 0x2f) break;
+        if (type === 0x2f) {
+          eot = tick;
+          break;
+        }
+        events.push({ tick, status: s, bytes: bytes.subarray(at, Math.min(end, p)), running, type, data });
         continue;
       }
       if (s === 0xf0 || s === 0xf7) {
-        p += varint();
+        // Length first: `p += varint()` would add to p as it was before the length.
+        const n = varint();
+        p += n;
+        events.push({ tick, status: s, bytes: bytes.subarray(at, Math.min(end, p)), running });
         continue;
       }
       status = s;
       const kind = s & 0xf0;
-      const ch = s & 0x0f;
-      if (kind === 0xc0 || kind === 0xd0) {
-        const v = bytes[p++];
-        if (kind === 0xc0 && !out.programs.has(`${tr}|${ch}`)) out.programs.set(`${tr}|${ch}`, v);
+      const n = kind === 0xc0 || kind === 0xd0 ? 1 : 2;
+      const ev = new Uint8Array(1 + n);
+      ev[0] = s;
+      for (let i = 1; i <= n; i++) ev[i] = bytes[p++] ?? 0;
+      events.push({ tick, status: s, bytes: ev, running });
+    }
+    file.chunks.push({ raw, events, eot, tail: bytes.subarray(Math.min(p, end), end) });
+    o += 8 + len;
+  }
+  file.trailing = bytes.subarray(Math.min(o, bytes.length));
+  return file;
+}
+
+/** Reads the events of a standard MIDI file. */
+export function parseSmf(bytes: Uint8Array): Smf {
+  const file = readMidiEvents(bytes);
+  const out: Smf = { file, ppq: file.ppq, notes: [], names: new Map(), programs: new Map(), tempos: [], times: [], keys: [], title: "" };
+  file.chunks.forEach((chunk, tr) => {
+    const open = new Map<string, MidiEvent[]>();
+    for (const ev of chunk.events ?? []) {
+      const { tick, status: s } = ev;
+      if (s === 0xff) {
+        const data = ev.data!;
+        const n = data.length;
+        const type = ev.type;
+        if (type === 0x03 && !out.names.has(tr)) out.names.set(tr, text(data));
+        else if (type === 0x51 && n >= 3) out.tempos.push({ tick, bpm: Math.round(60000000 / ((data[0] << 16) | (data[1] << 8) | data[2])) });
+        else if (type === 0x58 && n >= 2) out.times.push({ tick, n: data[0], d: 2 ** data[1] });
+        else if (type === 0x59 && n >= 1) out.keys.push({ tick, fifths: (data[0] << 24) >> 24 });
         continue;
       }
-      const a = bytes[p++];
-      const b = bytes[p++];
+      if (s === 0xf0 || s === 0xf7) continue;
+      const kind = s & 0xf0;
+      const ch = s & 0x0f;
+      if (kind === 0xc0 || kind === 0xd0) {
+        if (kind === 0xc0 && !out.programs.has(`${tr}|${ch}`)) out.programs.set(`${tr}|${ch}`, ev.bytes[1]);
+        continue;
+      }
+      const a = ev.bytes[1];
+      const b = ev.bytes[2];
       const key = `${ch}|${a}`;
       if (kind === 0x90 && b > 0) {
         if (!open.has(key)) open.set(key, []);
-        open.get(key)!.push(tick);
-      }
-      else if (kind === 0x80 || kind === 0x90) {
-        const starts = open.get(key);
-        const start = starts?.shift();
-        if (start !== undefined) out.notes.push({ track: tr, channel: ch, pitch: a, start, end: Math.max(tick, start + 1) });
+        open.get(key)!.push(ev);
+      } else if (kind === 0x80 || kind === 0x90) {
+        const on = open.get(key)?.shift();
+        if (on) out.notes.push({ track: tr, channel: ch, pitch: a, start: on.tick, end: Math.max(tick, on.tick + 1), on, off: ev });
       }
     }
-    o += 8 + len;
-  }
-  if (out.names.size && tracks > 1 && !out.notes.some((n) => n.track === 0)) out.title = out.names.get(0) ?? "";
+  });
+  if (out.names.size && file.tracks > 1 && !out.notes.some((n) => n.track === 0)) out.title = out.names.get(0) ?? "";
   for (const list of [out.tempos, out.times, out.keys]) list.sort((a, b) => a.tick - b.tick);
   return out;
 }
@@ -376,9 +457,26 @@ interface Part {
 
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
 
+/** Where the notes of a MIDI file went in the score read from it, for writing edits back. */
+export interface MidiLink {
+  /** The file's events, the notes' on and off among them. */
+  file: MidiFile;
+  ppq: number;
+  /** Per part: its tracks and channels (staff: the staff from 1 it fills, 0 for all). */
+  parts: { drums: boolean; units: { track: number; channel: number; staff: number }[] }[];
+  /** Every paired note: its part and its quantised start, in quarters. */
+  notes: { raw: RawNote; part: number; start: number }[];
+}
+
 /** A MIDI file as MusicXML text. */
 export function midiToMusicXml(bytes: Uint8Array): string {
+  return readMidi(bytes).xml;
+}
+
+/** A MIDI file as MusicXML text, with where its notes went. */
+export function readMidi(bytes: Uint8Array): { xml: string; link: MidiLink } {
   const smf = parseSmf(bytes);
+  const link: MidiLink = { file: smf.file, ppq: smf.ppq, parts: [], notes: [] };
   const toSteps = (tick: number) => snap((tick / smf.ppq) * Q);
   // Bars: from the time signatures, in steps.
   const times = smf.times.length ? smf.times : [{ tick: 0, n: 4, d: 4 }];
@@ -418,7 +516,7 @@ export function midiToMusicXml(bytes: Uint8Array): string {
         const start = qz.start(n.start / smf.ppq);
         return { start, end: Math.max(start + Q / 8, qz.end(n.end / smf.ppq)), pitch: n.pitch };
       });
-      return { track, channel, drums, program, name, notes, clefs: known?.clefs };
+      return { track, channel, drums, program, name, notes, clefs: known?.clefs, raw: list };
     })
     .sort((a, b) => a.track - b.track || a.channel - b.channel);
   const median = (notes: Note[]) => notes.map((n) => n.pitch).sort((a, b) => a - b)[Math.floor(notes.length / 2)];
@@ -428,6 +526,12 @@ export function midiToMusicXml(bytes: Uint8Array): string {
     return { clef: c ? [c.sign, c.line, c.octave ?? 0] : median(notes) < 55 ? ["F", 4, 0] : ["G", 2, 0], voices: voicesOf(notes) };
   };
   const parts: Part[] = [];
+  // Each part's units, and each raw note's part and quantised start.
+  const linkPart = (...us: { unit: (typeof units)[number]; staff: number }[]) => {
+    const part = link.parts.length;
+    link.parts.push({ drums: us[0].unit.drums, units: us.map(({ unit, staff }) => ({ track: unit.track, channel: unit.channel, staff })) });
+    for (const { unit } of us) unit.raw.forEach((raw, i) => link.notes.push({ raw, part, start: unit.notes[i].start / Q }));
+  };
   for (let u = 0; u < units.length; u++) {
     const { drums, program, name, notes, clefs } = units[u];
     const next = units[u + 1];
@@ -441,12 +545,14 @@ export function midiToMusicXml(bytes: Uint8Array): string {
       };
       const voices = [line(notes.filter((n) => !foot.has(n.pitch))), line(notes.filter((n) => foot.has(n.pitch)))];
       parts.push({ name, program, drums, staves: [{ clef: ["percussion", 2, 0], voices: voices.filter((v) => v.length) }] });
+      linkPart({ unit: units[u], staff: 0 });
       continue;
     }
     // Two tracks of the same name and sound in a row (a piano as written by notation programs): one part, two staves.
     if (next && !next.drums && next.name === name && next.program === program && units[u + 2]?.name !== name) {
       const [hi, lo] = median(notes) >= median(next.notes) ? [notes, next.notes] : [next.notes, notes];
       parts.push({ name, program, drums, staves: [staff(hi), staff(lo)] });
+      linkPart({ unit: units[u], staff: hi === notes ? 1 : 2 }, { unit: next, staff: hi === notes ? 2 : 1 });
       u++;
       continue;
     }
@@ -463,6 +569,7 @@ export function midiToMusicXml(bytes: Uint8Array): string {
         ],
       });
     else parts.push({ name, program, drums, staves: [staff(notes, clefs)] });
+    linkPart({ unit: units[u], staff: 0 });
   }
   // Keys and tempos in steps, once: a long file has hundreds of them.
   const keySteps = smf.keys.map((k) => ({ step: toSteps(k.tick), fifths: k.fifths }));
@@ -544,7 +651,7 @@ export function midiToMusicXml(bytes: Uint8Array): string {
     out.push("</part>");
   });
   out.push("</score-partwise>");
-  return out.join("");
+  return { xml: out.join(""), link };
 }
 
 interface Seg {

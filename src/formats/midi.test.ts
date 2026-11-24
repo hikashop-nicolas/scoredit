@@ -223,7 +223,7 @@ describe("MIDI reader", () => {
     const bytes = smf([[program(0, 40), program(1, 0), ...notes(0, [[76, 0, 4]]), ...notes(1, [[48, 0, 4]])]], 0);
     const { score, format, save } = loadScore(bytes);
     expect(format).toBe("midi");
-    expect(save).toBeUndefined();
+    expect(save).toBeDefined();
     expect(score.parts.map((p) => p.name)).toEqual(["Violin", "Piano"]);
   });
 

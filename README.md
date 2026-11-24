@@ -25,7 +25,7 @@ of the score. No server, no framework, MIT licence.
   files (type 0 and 1, quantised to written values), ABC 2.1 (multi-tune files), and PDFs made
   by notation software (read-only). The format is detected from the bytes, not the file name.
 - Write: MusicXML and `.mxl`, MuseScore 3 and 4 (edits written back into the original file),
-  Guitar Pro 7 (`.gp`), MIDI, PDF (with the score attached, so it opens again losslessly), MP3
+  Guitar Pro 7 (`.gp`), MIDI (edits written back into the original file too), PDF (with the score attached, so it opens again losslessly), MP3
   and WAV. New MuseScore files from a title, instruments, key, time and tempo.
 - Scans and photos of printed music to MusicXML (experimental), with models the host supplies.
 
@@ -88,7 +88,7 @@ viewer.destroy();
 
 `loadScore(bytes)` does the same synchronously for every format but PDF. Both return a
 `LoadedScore`: `format`, `score` (a `ScoreDoc`, a MusicXML DOM with an index), `fretted` and `tab`
-(fretted parts, and whether a tab staff shows) and, for MuseScore and Guitar Pro files, `save()`.
+(fretted parts, and whether a tab staff shows) and, for MuseScore, Guitar Pro and MIDI files, `save()`.
 `detectFormat(bytes)` only names the format.
 
 ## Viewer
@@ -133,12 +133,16 @@ What to write back after `onChange`:
 ```ts
 const xml = viewer.score.serialize();         // MusicXML
 const mxl = writeMxl(xml);                    // .mxl
-const { bytes, dropped } = loaded.save!();    // MuseScore (3, 4) or Guitar Pro 7, when save exists
+const { bytes, dropped } = loaded.save!();    // MuseScore (3, 4), Guitar Pro 7 or MIDI, when save exists
 ```
 
 A MuseScore save writes the edited measures back into the original file and leaves everything
 else as it was; `dropped` lists what could not be carried over. Guitar Pro files of any version
-save as Guitar Pro 7 (`writeGuitarPro(score)` does it for any score).
+save as Guitar Pro 7 (`writeGuitarPro(score)` does it for any score). A MIDI save (types 0 and 1)
+keeps the performance: only the note on/off events of notes the edit changed, added or deleted,
+and the tempo, time and key events it changed, are written again; every other event, velocity,
+controller and track stays as it was, and measures inserted or deleted move what follows them.
+An unedited MIDI file saves to the same bytes; marks MIDI cannot hold are listed in `dropped`.
 
 New scores: `createNewScoreForm()` gives a form (title, composer, instruments by family, key,
 time, tempo, pickup, bars) whose `value()` goes to `newMuseScore(value)`, which returns `.mscz`
