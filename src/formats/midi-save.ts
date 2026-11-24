@@ -11,6 +11,9 @@ import type { MidiEvent, MidiLink } from "./midi";
 // on/off events of written notes that changed (pitch, length, place, deleted; added ones get the
 // velocity of the nearest played note), and tempo, time and key events that changed. Every other
 // event, track and byte stays as it was: an unedited score saves to the very same bytes.
+// A new part gets a track (type 1) or a free channel (type 0); a deleted part takes its channel's
+// events along, and its track when it had it alone. A changed note never overlaps one of its
+// pitch on its channel: the earlier one ends where it starts.
 
 /** A sounding note of a score: tied notes as one, positions in quarters. */
 export interface Sounding {
@@ -124,7 +127,12 @@ function snapshot(score: ScoreDoc): Snapshot {
           const snd = c.tagName === "sound" ? c : kid(c, "sound");
           const bpm = Number(snd?.getAttribute("tempo"));
           const off = (Number(text(c, "offset")) || 0) / div;
-          if (bpm > 0) tempos.push({ pos: at + pos + off, value: Math.round(bpm * 1000) / 1000 });
+          // As playback reads it: the sound's tempo, else a metronome mark; tempo words alone do not play.
+          const metro = c.tagName === "direction" ? c.getElementsByTagName("metronome")[0] : undefined;
+          const unit = ({ whole: 4, half: 2, quarter: 1, eighth: 0.5, "16th": 0.25 } as Record<string, number>)[text(metro, "beat-unit")] ?? 0;
+          const per = metro ? Number(text(metro, "per-minute")) * unit * (kid(metro, "beat-unit-dot") ? 1.5 : 1) : 0;
+          const beat = bpm > 0 ? bpm : per > 0 ? per : 0;
+          if (beat > 0) tempos.push({ pos: at + pos + off, value: Math.round(beat * 1000) / 1000 });
           else for (const dt of kids(c, "direction-type")) for (const x of kids(dt)) if (x.tagName !== "words" || text(x)) count(x.tagName);
         } else if (c.tagName === "harmony") count("harmony");
         else if (c.tagName === "note") {
@@ -196,16 +204,16 @@ function soundingPitch(note: Element, drums: Map<string, number>, shift: number)
 }
 
 /** Old quarters to new, through the measures inserted, deleted or replaced since the read. */
-function timeMap(before: number[], after: number[], origins: number[] | null): (q: number) => number {
+function timeMap(before: number[], after: number[], origins: number[] | null): { map: (q: number) => number; gone: (q: number) => boolean } {
   const nOld = before.length - 1;
   const nNew = after.length - 1;
   const orig = origins ?? Array.from({ length: nNew }, (_, i) => (i < nOld ? i : -1));
   // [old start, old end, new start, new end]: kept measures move whole, the rest between two
   // kept ones maps from its start and is cut at the end of what replaced it.
-  const segs: [number, number, number, number][] = [];
+  const segs: [number, number, number, number, boolean?][] = [];
   let prevO = -1;
   let runFrom = 0;
-  const gap = (nextO: number, m: number) => segs.push([before[prevO + 1], before[nextO], after[runFrom], after[m]]);
+  const gap = (nextO: number, m: number) => segs.push([before[prevO + 1], before[nextO], after[runFrom], after[m], true]);
   for (let m = 0; m <= nNew; m++) {
     const o = m < nNew ? orig[m] : nOld;
     if (o < 0) continue;
@@ -214,10 +222,18 @@ function timeMap(before: number[], after: number[], origins: number[] | null): (
     prevO = o;
     runFrom = m + 1;
   }
-  return (q: number) => {
-    for (const [a, b, c, d] of segs) if (q >= a - 1e-9 && q < b - 1e-9) return Math.min(c + (q - a), d);
-    // Past the last measure: with it.
-    return q + (after[nNew] - before[nOld]);
+  const segAt = (q: number) => segs.find(([a, b]) => q >= a - 1e-9 && q < b - 1e-9);
+  return {
+    map: (q: number) => {
+      const sg = segAt(q);
+      // Past the last measure: with it.
+      return sg ? Math.min(sg[2] + (q - sg[0]), sg[3]) : q + (after[nNew] - before[nOld]);
+    },
+    // In measures deleted with nothing in their place.
+    gone: (q: number) => {
+      const sg = segAt(q);
+      return !!sg?.[4] && sg[2] === sg[3];
+    },
   };
 }
 
@@ -255,10 +271,74 @@ function writeBack(original: Uint8Array, score: ScoreDoc, link: MidiLink, ref: S
   const trackOf = new Map<MidiEvent, number>();
   file.chunks.forEach((ch, t) => ch.events?.forEach((ev) => trackOf.set(ev, t)));
   const edits = new Map<MidiEvent, Edit>();
-  const inserted: { track: number; tick: number; group: number; bytes: Uint8Array }[] = [];
   const edit = (ev: MidiEvent, e: Edit) => edits.set(ev, { ...edits.get(ev), ...e });
+  const inserted: Inserted[] = [];
 
-  const map = timeMap(ref.bars, now.bars, score.origins);
+  // ---- Parts: the edited score's parts against the read ones.
+  const origin = (p: number) => (score.partOrigins ? score.partOrigins[p] : p);
+  const nowOf = new Map<number, number>();
+  now.programs.forEach((_, p) => {
+    const o = origin(p);
+    if (o >= 0 && o < link.parts.length) nowOf.set(o, p);
+  });
+  const units = link.parts.flatMap((lp, o) => lp.units.map((u) => ({ ...u, part: o })));
+  const unitsOfTrack = (t: number) => units.filter((u) => u.track === t);
+  const isChannel = (e: MidiEvent, ch: number) => e.status < 0xf0 && (e.status & 0x0f) === ch;
+  // A deleted part takes its channel's events along, and its track when it had it to itself.
+  link.parts.forEach((lp, o) => {
+    if (nowOf.has(o)) return;
+    for (const u of lp.units) for (const e of file.chunks[u.track].events ?? []) if (isChannel(e, u.channel)) edit(e, { deleted: true });
+  });
+  const removedTracks = new Set<number>();
+  if (file.format === 1)
+    file.chunks.forEach((ch, t) => {
+      const us = unitsOfTrack(t);
+      if (!ch.events || !us.length || us.some((u) => nowOf.has(u.part))) return;
+      if (!ch.events.every((e) => (e.status >= 0xf0 && !(e.type === 0x51 || e.type === 0x58 || e.type === 0x59)) || us.some((u) => isChannel(e, u.channel)))) return;
+      removedTracks.add(t);
+    });
+  const firstTrack = Math.max(0, file.chunks.findIndex((c, t) => c.events && !removedTracks.has(t)));
+  // Channels: free ones for new parts and for parts moved to or from the drum channel.
+  const usedChannels = new Set<number>();
+  for (const ch of file.chunks) for (const e of ch.events ?? []) if (e.status < 0xf0) usedChannels.add(e.status & 0x0f);
+  const freeChannel = () => {
+    for (let c = 0; c < 16; c++)
+      if (c !== 9 && !usedChannels.has(c)) {
+        usedChannels.add(c);
+        return c;
+      }
+    return -1;
+  };
+  const remap = new Map<string, number>();
+  const nameBytes = (name: string, type = 0x03) => {
+    const utf = new TextEncoder().encode(name);
+    return new Uint8Array([0xff, type, ...vlq(utf.length), ...utf]);
+  };
+  const prefixBytes = (ch: number) => new Uint8Array([0xff, 0x20, 0x01, ch]);
+  /** The name a part shows: its track's name when it has the track alone, else a name for its channel. */
+  const named = new Set<string>();
+  const nameUnit = (t: number, ch: number, name: string) => {
+    if (named.has(`${t}|${ch}`)) return;
+    named.add(`${t}|${ch}`);
+    const evs = file.chunks[t].events ?? [];
+    let prefix = -1;
+    let own: MidiEvent | undefined;
+    let track: MidiEvent | undefined;
+    for (const e of evs) {
+      if (e.status < 0xf0) prefix = -1;
+      else if (e.status === 0xff && e.type === 0x20 && e.data!.length === 1) prefix = e.data![0] & 0x0f;
+      else if (e.status === 0xff && (e.type === 0x03 || e.type === 0x04) && prefix >= 0) {
+        if (prefix === ch && !own) own = e;
+      } else if (e.status === 0xff && e.type === 0x03 && prefix < 0 && !track) track = e;
+    }
+    if (own) edit(own, { bytes: nameBytes(name, own.type) });
+    else if (unitsOfTrack(t).length === 1) {
+      if (track) edit(track, { bytes: nameBytes(name) });
+      else inserted.push({ track: t, tick: 0, group: 0, bytes: nameBytes(name) });
+    } else inserted.push({ track: t, tick: 0, group: 3, bytes: prefixBytes(ch) }, { track: t, tick: 0, group: 3, bytes: nameBytes(name) });
+  };
+
+  const { map, gone } = timeMap(ref.bars, now.bars, score.origins);
   const toTick = (q: number) => Math.max(0, Math.round(q * ppq));
   // Offset in ticks the measure under a place moved by.
   const shiftAt = (q: number) => toTick(map(q)) - toTick(q);
@@ -272,7 +352,7 @@ function writeBack(original: Uint8Array, score: ScoreDoc, link: MidiLink, ref: S
   const metaEvents = (type: number) => file.chunks.flatMap((ch) => (ch.events ?? []).filter((e) => e.status === 0xff && e.type === type)).sort((a, b) => a.tick - b.tick);
   const conductor = (type: number) => {
     const e = metaEvents(type)[0];
-    return e ? trackOf.get(e)! : Math.max(0, file.chunks.findIndex((c) => c.events));
+    return e ? trackOf.get(e)! : firstTrack;
   };
   const linkMarks = (marks: Mark[], evs: MidiEvent[], value: (e: MidiEvent) => number) => {
     const out = new Map<Mark, MidiEvent>();
@@ -340,45 +420,44 @@ function writeBack(original: Uint8Array, score: ScoreDoc, link: MidiLink, ref: S
   });
   diffMarks(0x59, ref.keys, now.keys, keyOf, (mk, old) => [mk.value & 0xff, mk.mode ?? old?.data?.[1] ?? metaEvents(0x59)[0]?.data?.[1] ?? 0]);
 
-  // ---- Parts: the edited score's parts against the read ones.
-  const origin = (p: number) => (score.partOrigins ? score.partOrigins[p] : p);
-  const nowOf = new Map<number, number>();
-  now.programs.forEach((_, p) => {
-    const o = origin(p);
-    if (o >= 0 && o < link.parts.length) nowOf.set(o, p);
-  });
-  const unitsOfTrack = (t: number) => link.parts.flatMap((lp) => lp.units).filter((u) => u.track === t).length;
+  // Instruments and names of the parts kept.
+  const vels = link.notes.map((n) => n.raw.on.bytes[2]).sort((x, y) => x - y);
+  const usualVel = vels.length ? vels[vels.length >> 1] : 80;
   now.programs.forEach((prog, p) => {
     const o = origin(p);
-    if (o < 0 || o >= link.parts.length) {
-      if (now.notes.some((n) => n.part === p)) drop("part");
-      return;
-    }
+    if (o < 0 || o >= link.parts.length) return;
     const lp = link.parts[o];
     if (prog !== ref.programs[o]) {
-      if (prog === 128 || ref.programs[o] === 128) drop("instrument");
-      else
+      const toDrums = prog === 128;
+      if (toDrums !== (ref.programs[o] === 128)) {
+        // Between a drum kit and a pitched instrument: the part moves to channel 10, or off it.
+        const to = toDrums ? 9 : freeChannel();
+        if (to < 0) drop("instrument");
+        else
+          for (const u of lp.units) {
+            if (u.channel !== to) remap.set(`${u.track}|${u.channel}`, to);
+            for (const e of file.chunks[u.track].events ?? []) if (e.status === (0xc0 | u.channel)) edit(e, { deleted: true });
+            if (!toDrums) inserted.push({ track: u.track, tick: 0, group: 0, bytes: new Uint8Array([0xc0 | u.channel, prog & 0x7f]) });
+          }
+      } else
         for (const u of lp.units) {
           const pc = file.chunks[u.track].events?.find((e) => e.status === (0xc0 | u.channel));
           if (pc) edit(pc, { bytes: new Uint8Array([pc.status, prog & 0x7f]) });
           else inserted.push({ track: u.track, tick: 0, group: 0, bytes: new Uint8Array([0xc0 | u.channel, prog & 0x7f]) });
         }
     }
-    if (now.names[p] !== ref.names[o]) {
-      if (lp.units.length !== 1 || unitsOfTrack(lp.units[0].track) !== 1) drop("name");
-      else {
-        const t = lp.units[0].track;
-        const nm = file.chunks[t].events?.find((e) => e.status === 0xff && e.type === 0x03);
-        const utf = new TextEncoder().encode(now.names[p]);
-        const vl = vlq(utf.length);
-        const b = new Uint8Array([0xff, 0x03, ...vl, ...utf]);
-        if (nm) edit(nm, { bytes: b });
-        else inserted.push({ track: t, tick: 0, group: 0, bytes: b });
-      }
-    }
+    if (now.names[p] !== ref.names[o]) for (const u of lp.units) nameUnit(u.track, u.channel, now.names[p]);
   });
+  // A part left alone in a track a deleted part shared would take the track's name: it keeps its own.
+  for (const u of units)
+    if (!nowOf.has(u.part))
+      for (const k of unitsOfTrack(u.track)) {
+        const p = nowOf.get(k.part);
+        if (p !== undefined && !removedTracks.has(k.track)) nameUnit(k.track, k.channel, now.names[p]);
+      }
 
   // ---- Notes.
+  let newPair = link.notes.length;
   const rawOn = new Map<string, MidiEvent[]>();
   for (const { raw, part } of link.notes) (rawOn.get(String(part)) ?? rawOn.set(String(part), []).get(String(part))!).push(raw.on);
   const offStyle = new Map<string, boolean>();
@@ -454,16 +533,48 @@ function writeBack(original: Uint8Array, score: ScoreDoc, link: MidiLink, ref: S
       const on = toTick(a.start);
       const off = Math.max(on + 1, toTick(a.start + a.dur));
       // As loud as the nearest note played in the part.
-      let vel = 80;
+      let vel = usualVel;
       let dist = Infinity;
       for (const e of rawOn.get(String(o)) ?? []) {
         const d = Math.abs(e.tick - on);
         if (d < dist) [dist, vel] = [d, e.bytes[2]];
       }
-      inserted.push({ track: u.track, tick: on, group: 2, bytes: new Uint8Array([0x90 | u.channel, a.pitch, vel]) });
-      inserted.push({ track: u.track, tick: off, group: 0, bytes: offStyle.get(`${u.track}|${u.channel}`) ? new Uint8Array([0x90 | u.channel, a.pitch, 0]) : new Uint8Array([0x80 | u.channel, a.pitch, 0]) });
+      const pair = newPair++;
+      inserted.push({ track: u.track, tick: on, group: 2, bytes: new Uint8Array([0x90 | u.channel, a.pitch, vel]), pair });
+      inserted.push({ track: u.track, tick: off, group: 0, bytes: offStyle.get(`${u.track}|${u.channel}`) ? new Uint8Array([0x90 | u.channel, a.pitch, 0]) : new Uint8Array([0x80 | u.channel, a.pitch, 0]), pair });
     }
   }
+
+  // Played notes the score did not show go with the measures deleted around them.
+  for (const n of link.notes)
+    if (!linked.has(n.raw.on) && gone(n.start)) {
+      edit(n.raw.on, { deleted: true });
+      edit(n.raw.off, { deleted: true });
+    }
+
+  // New parts: a track of their own (type 1) or a free channel of the one track (type 0).
+  const newChunks: Uint8Array[] = [];
+  now.programs.forEach((prog, p) => {
+    const o = origin(p);
+    if (o >= 0 && o < link.parts.length) return;
+    const ch = prog === 128 ? 9 : freeChannel();
+    if (ch < 0) {
+      drop("part");
+      return;
+    }
+    const evs: Inserted[] = [];
+    const t = file.format === 0 ? firstTrack : -1;
+    if (t >= 0) evs.push({ track: t, tick: 0, group: 3, bytes: prefixBytes(ch) }, { track: t, tick: 0, group: 3, bytes: nameBytes(now.names[p]) });
+    else evs.push({ track: t, tick: 0, group: 0, bytes: nameBytes(now.names[p]) });
+    if (prog !== 128) evs.push({ track: t, tick: 0, group: 0, bytes: new Uint8Array([0xc0 | ch, prog & 0x7f]) });
+    for (const n of now.notes.filter((x) => x.part === p)) {
+      const on = toTick(n.start);
+      const pair = newPair++;
+      evs.push({ track: t, tick: on, group: 2, bytes: new Uint8Array([0x90 | ch, n.pitch, usualVel]), pair }, { track: t, tick: Math.max(on + 1, toTick(n.start + n.dur)), group: 0, bytes: new Uint8Array([0x80 | ch, n.pitch, 0]), pair });
+    }
+    if (t >= 0) inserted.push(...evs);
+    else newChunks.push(writeTrack([], 0, new Uint8Array(0), edits, evs, null, ppq, {}));
+  });
 
   // Everything else moves with the measure it is in, when measures moved.
   if (score.origins) {
@@ -476,19 +587,31 @@ function writeBack(original: Uint8Array, score: ScoreDoc, link: MidiLink, ref: S
   }
 
   // ---- Writing: tracks with no change are copied as they were.
-  const touched = new Set<number>();
+  const touched = new Set<number>(removedTracks);
   for (const ev of edits.keys()) touched.add(trackOf.get(ev)!);
   for (const ins of inserted) touched.add(ins.track);
-  if (!touched.size) return { bytes: original.slice(), dropped };
-  const out: Uint8Array[] = [file.head];
+  for (const k of remap.keys()) touched.add(Number(k.split("|")[0]));
+  if (!touched.size && !newChunks.length) return { bytes: original.slice(), dropped };
+  // Notes each note-on and note-off belong to, to keep one pitch on one channel from overlapping.
+  const pairOf = new Map<MidiEvent, number>();
+  link.notes.forEach((n, i) => pairOf.set(n.raw.on, i).set(n.raw.off, i));
+  const changed = new Set<number>();
+  for (const [ev, e] of edits) if (!e.deleted && pairOf.has(ev)) changed.add(pairOf.get(ev)!);
+  for (let i = link.notes.length; i < newPair; i++) changed.add(i);
+  const count = file.tracks - removedTracks.size + newChunks.length;
+  const head = file.head.slice();
+  if (count !== file.tracks) head.set([(count >> 8) & 0xff, count & 0xff], 10);
+  const out: Uint8Array[] = [head];
   file.chunks.forEach((ch, t) => {
+    if (removedTracks.has(t)) return;
     if (!touched.has(t) || !ch.events) {
       out.push(ch.raw);
       return;
     }
-    out.push(writeTrack(ch.events, ch.eot, ch.tail, edits, inserted.filter((x) => x.track === t), score.origins ? shiftAt : null, ppq));
+    const moveCh = (c: number) => remap.get(`${t}|${c}`) ?? c;
+    out.push(writeTrack(ch.events, ch.eot, ch.tail, edits, inserted.filter((x) => x.track === t), score.origins ? shiftAt : null, ppq, { remap: moveCh, pairOf, changed }));
   });
-  out.push(file.trailing);
+  out.push(...newChunks, file.trailing);
   const size = out.reduce((s, b) => s + b.length, 0);
   const res = new Uint8Array(size);
   let at = 0;
@@ -505,10 +628,31 @@ const vlq = (n: number): number[] => {
   return out;
 };
 
-/** A track chunk with its events edited, deleted and added; the file's running status kept where it still applies. */
-function writeTrack(events: MidiEvent[], eot: number, tail: Uint8Array, edits: Map<MidiEvent, Edit>, inserted: { tick: number; group: number; bytes: Uint8Array }[], shiftAt: ((q: number) => number) | null, ppq: number): Uint8Array {
-  type Item = { tick: number; group: number; seq: number; bytes: Uint8Array; running: boolean };
+interface Inserted {
+  track: number;
+  tick: number;
+  group: number;
+  bytes: Uint8Array;
+  /** The note it starts or ends, for note events. */
+  pair?: number;
+}
+
+/**
+ * A track chunk with its events edited, deleted and added; the file's running status kept where
+ * it still applies. Where a changed or added note starts on a pitch and channel already sounding,
+ * the earlier note ends there, so no player has to guess which note-off ends which note.
+ */
+function writeTrack(events: MidiEvent[], eot: number, tail: Uint8Array, edits: Map<MidiEvent, Edit>, inserted: Inserted[], shiftAt: ((q: number) => number) | null, ppq: number, o: { remap?: (ch: number) => number; pairOf?: Map<MidiEvent, number>; changed?: Set<number> }): Uint8Array {
+  type Item = { tick: number; group: number; seq: number; bytes: Uint8Array; running: boolean; pair?: number };
   const isOff = (b: Uint8Array) => (b[0] & 0xf0) === 0x80 || ((b[0] & 0xf0) === 0x90 && b[2] === 0);
+  const moveCh = (b: Uint8Array) => {
+    if (b[0] >= 0xf0 || !o.remap) return b;
+    const c = o.remap(b[0] & 0x0f);
+    if (c === (b[0] & 0x0f)) return b;
+    const x = b.slice();
+    x[0] = (b[0] & 0xf0) | c;
+    return x;
+  };
   const items: Item[] = [];
   events.forEach((ev, i) => {
     const e = edits.get(ev);
@@ -517,14 +661,44 @@ function writeTrack(events: MidiEvent[], eot: number, tail: Uint8Array, edits: M
     // A moved event goes before (a note off) or after (a note on) what is at its new tick.
     const moved = e?.tick !== undefined && e.tick !== ev.tick;
     const group = !moved ? 1 : isOff(bytes) ? 0 : (bytes[0] & 0xf0) === 0x90 ? 2 : 1;
-    items.push({ tick: e?.tick ?? ev.tick, group, seq: i, bytes, running: ev.running && bytes[0] === ev.bytes[0] });
+    items.push({ tick: Math.max(0, e?.tick ?? ev.tick), group, seq: i, bytes: moveCh(bytes), running: ev.running && bytes[0] === ev.bytes[0], pair: o.pairOf?.get(ev) });
   });
-  inserted.forEach((x, i) => items.push({ tick: x.tick, group: x.group, seq: events.length + i, bytes: x.bytes, running: false }));
+  inserted.forEach((x, i) => items.push({ tick: Math.max(0, x.tick), group: x.group, seq: events.length + i, bytes: moveCh(x.bytes), running: false, pair: x.pair }));
   items.sort((a, b) => a.tick - b.tick || a.group - b.group || a.seq - b.seq);
+  const list: Item[] = [];
+  const open = new Map<string, number[]>();
+  const ended = new Set<number>();
+  for (const it of items) {
+    const s = it.bytes[0];
+    const kind = s & 0xf0;
+    if (it.pair === undefined || s >= 0xf0 || (kind !== 0x80 && kind !== 0x90)) {
+      list.push(it);
+      continue;
+    }
+    const key = `${s & 0x0f}|${it.bytes[1]}`;
+    const sounding = open.get(key) ?? [];
+    open.set(key, sounding);
+    if (kind === 0x90 && it.bytes[2] > 0) {
+      if (sounding.length && [it.pair, ...sounding].some((x) => o.changed?.has(x))) {
+        for (const y of sounding) {
+          list.push({ tick: it.tick, group: 0, seq: -1, bytes: new Uint8Array([0x80 | (s & 0x0f), it.bytes[1], 0]), running: false });
+          ended.add(y);
+        }
+        sounding.length = 0;
+      }
+      sounding.push(it.pair);
+    } else {
+      // The note-off of a note ended early is not needed any more.
+      if (ended.delete(it.pair)) continue;
+      const i = sounding.indexOf(it.pair);
+      if (i >= 0) sounding.splice(i, 1);
+    }
+    list.push(it);
+  }
   const body: number[] = [];
   let at = 0;
   let status = 0;
-  for (const it of items) {
+  for (const it of list) {
     body.push(...vlq(it.tick - at));
     at = it.tick;
     const s = it.bytes[0];

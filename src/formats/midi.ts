@@ -24,6 +24,8 @@ interface Smf {
   ppq: number;
   notes: RawNote[];
   names: Map<number, string>;
+  /** Names given to one channel of a track (a channel prefix, then a track or instrument name), by "track|channel". */
+  chanNames: Map<string, string>;
   programs: Map<string, number>;
   tempos: { tick: number; bpm: number }[];
   times: { tick: number; n: number; d: number }[];
@@ -163,22 +165,28 @@ export function readMidiEvents(bytes: Uint8Array): MidiFile {
 /** Reads the events of a standard MIDI file. */
 export function parseSmf(bytes: Uint8Array): Smf {
   const file = readMidiEvents(bytes);
-  const out: Smf = { file, ppq: file.ppq, notes: [], names: new Map(), programs: new Map(), tempos: [], times: [], keys: [], title: "" };
+  const out: Smf = { file, ppq: file.ppq, notes: [], names: new Map(), chanNames: new Map(), programs: new Map(), tempos: [], times: [], keys: [], title: "" };
   file.chunks.forEach((chunk, tr) => {
     const open = new Map<string, MidiEvent[]>();
+    // A channel prefix holds until the next channel event.
+    let prefix = -1;
     for (const ev of chunk.events ?? []) {
       const { tick, status: s } = ev;
       if (s === 0xff) {
         const data = ev.data!;
         const n = data.length;
         const type = ev.type;
-        if (type === 0x03 && !out.names.has(tr)) out.names.set(tr, text(data));
+        if (type === 0x20 && n === 1) prefix = data[0] & 0x0f;
+        else if ((type === 0x03 || type === 0x04) && prefix >= 0) {
+          if (!out.chanNames.has(`${tr}|${prefix}`)) out.chanNames.set(`${tr}|${prefix}`, text(data));
+        } else if (type === 0x03 && !out.names.has(tr)) out.names.set(tr, text(data));
         else if (type === 0x51 && n >= 3) out.tempos.push({ tick, bpm: Math.round(60000000 / ((data[0] << 16) | (data[1] << 8) | data[2])) });
         else if (type === 0x58 && n >= 2) out.times.push({ tick, n: data[0], d: 2 ** data[1] });
         else if (type === 0x59 && n >= 1) out.keys.push({ tick, fifths: (data[0] << 24) >> 24 });
         continue;
       }
       if (s === 0xf0 || s === 0xf7) continue;
+      prefix = -1;
       const kind = s & 0xf0;
       const ch = s & 0x0f;
       if (kind === 0xc0 || kind === 0xd0) {
@@ -509,7 +517,7 @@ export function readMidi(bytes: Uint8Array): { xml: string; link: MidiLink } {
       const program = smf.programs.get(key) ?? 0;
       const known = drums ? INSTRUMENTS.find((i) => i.drums) : INSTRUMENTS.find((i) => i.program === program && !i.drums);
       const named = smf.names.get(track);
-      const name = named && !(channelsOf.get(track)!.size > 1) ? named : known ? t(`inst_${known.key}`) : named || `Track ${track + 1}`;
+      const name = smf.chanNames.get(key) || (named && !(channelsOf.get(track)!.size > 1) ? named : known ? t(`inst_${known.key}`) : named || `Track ${track + 1}`);
       const plain = (q: number) => snap(q * Q);
       const qz = drums ? { start: plain, end: plain } : beatQuantizer(list.map((n) => n.start / smf.ppq));
       const notes: Note[] = list.map((n) => {

@@ -142,6 +142,8 @@ save as Guitar Pro 7 (`writeGuitarPro(score)` does it for any score). A MIDI sav
 keeps the performance: only the note on/off events of notes the edit changed, added or deleted,
 and the tempo, time and key events it changed, are written again; every other event, velocity,
 controller and track stays as it was, and measures inserted or deleted move what follows them.
+A new part gets a track of its own (a free channel of the one track in a type 0 file, channel 10
+for drums), and a deleted part takes its channel's events, and its track, along.
 An unedited MIDI file saves to the same bytes; marks MIDI cannot hold are listed in `dropped`.
 
 New scores: `createNewScoreForm()` gives a form (title, composer, instruments by family, key,

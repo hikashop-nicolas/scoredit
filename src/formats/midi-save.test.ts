@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { ScoreEditor, type Caret } from "../edit/editor";
 import { readPitch, type Pitch } from "../edit/notes";
 import { loadScore } from "./load";
+import { instrument } from "../model/instruments";
 import { readMidiEvents } from "./midi";
 import { soundingNotes } from "./midi-save";
 
@@ -19,6 +20,7 @@ const meta = (tick: number, type: number, data: number[]): Ev => [tick, [0xff, t
 const tempo = (tick: number, us: number) => meta(tick, 0x51, [us >> 16, (us >> 8) & 0xff, us & 0xff]);
 const time = (tick: number, n: number, d: number) => meta(tick, 0x58, [n, Math.log2(d), 24, 8]);
 const key = (tick: number, fifths: number) => meta(tick, 0x59, [fifths & 0xff, 0]);
+const program = (ch: number, p: number): Ev => [0, [0xc0 | ch, p]];
 const name = (s: string) => meta(0, 3, [...s].map((c) => c.charCodeAt(0)));
 /** Notes as [pitch, on tick, off tick, velocity], their offs as note on at velocity 0. */
 const notes = (ch: number, list: [number, number, number, number][]): Ev[] => list.flatMap(([p, on, off, v]) => [[on, [0x90 | ch, p, v]] as Ev, [off, [0x90 | ch, p, 0]] as Ev]);
@@ -224,4 +226,160 @@ describe("Saving a MIDI file in place", () => {
     expect(played(bytes)[0]).toEqual(played(zero)[0].filter((n) => !n.startsWith("72@")));
     expect(heard(loadScore(bytes).score)).toEqual(heard(score));
   });
+
+  /** The most notes of one pitch on one channel sounding at once, in any track. */
+  const overlap = (bytes: Uint8Array) => {
+    let most = 0;
+    for (const c of readMidiEvents(bytes).chunks) {
+      const open = new Map<string, number>();
+      for (const e of c.events ?? []) {
+        const k = e.status & 0xf0;
+        if (k !== 0x80 && k !== 0x90) continue;
+        const key = `${e.status & 15}|${e.bytes[1]}`;
+        const n = (open.get(key) ?? 0) + (k === 0x90 && e.bytes[2] > 0 ? 1 : -1);
+        open.set(key, Math.max(0, n));
+        most = Math.max(most, n);
+      }
+    }
+    return most;
+  };
+  const names = (bytes: Uint8Array) => loadScore(bytes).score.parts.map((p) => p.name);
+
+  it("writes a new part as a track of its own, on a free channel", () => {
+    const { ed, score, save } = open(file);
+    ed.addPart(instrument("flute")!, "Flute");
+    ed.enter(at(0, 0, 1), { pitches: [P("A", 5)], quarters: 2 });
+    const { bytes, dropped } = save!();
+    expect(dropped).toEqual({});
+    expect(others(bytes).slice(0, 2)).toEqual(others(file));
+    expect(played(bytes).slice(0, 2)).toEqual(played(file));
+    // Track name, program 73 (flute) on channel 2, the note on the grid at the file's usual velocity.
+    expect(others(bytes)[2]).toEqual(["0:255,3,5,70,108,117,116,101", "0:193,73"]);
+    expect(played(bytes)[2]).toEqual(["81@0-960 v77"]);
+    expect(names(bytes)).toEqual(["Piano", "Flute"]);
+    expect(heard(loadScore(bytes).score)).toEqual(heard(score));
+  });
+
+  it("writes a new part of a type 0 file on a free channel of its track, named for that channel", () => {
+    const zero = smf([[...conductor(), ...piano()]], 0);
+    const { ed, score, save } = open(zero);
+    ed.addPart(instrument("flute")!, "Flute");
+    ed.enter(at(0, 1, 1), { pitches: [P("A", 5)], quarters: 1 });
+    const { bytes, dropped } = save!();
+    expect(dropped).toEqual({});
+    expect(readMidiEvents(bytes).chunks.length).toBe(1);
+    expect(played(bytes)[0]).toEqual([...played(zero)[0], "81@480-960 v77"].sort());
+    expect(names(bytes)).toEqual(["Piano", "Flute"]);
+    expect(heard(loadScore(bytes).score)).toEqual(heard(score));
+  });
+
+  it("writes a new drum part on channel 10", () => {
+    const { ed, score, save } = open(file);
+    ed.addPart(instrument("drumset")!, "Drums");
+    ed.enter(at(0, 0, 1), { pitches: [ed.drumForKey(1, 36)!], quarters: 1 });
+    const { bytes, dropped } = save!();
+    expect(dropped).toEqual({});
+    expect(readMidiEvents(bytes).chunks[2].events!.filter((e) => (e.status & 0xf0) === 0x90).map((e) => e.status)).toEqual([0x99]);
+    expect(heard(loadScore(bytes).score)).toEqual(heard(score));
+  });
+
+  it("reports a new part when every melodic channel is taken", () => {
+    const full = smf([conductor(), [0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15].flatMap((ch) => notes(ch, [[60 + ch, 0, 400, 80]]))], 1);
+    const { ed, save } = open(full);
+    ed.addPart(instrument("flute")!, "Flute");
+    ed.enter(at(0, 0, ed.score.parts.length - 1), { pitches: [P("A", 5)], quarters: 1 });
+    const { bytes, dropped } = save!();
+    expect(dropped).toEqual({ part: 1 });
+    expect(bytes).toEqual(full);
+  });
+
+  it("takes a deleted part's track out, and its channel's events out of a shared track", () => {
+    const two = smf([conductor(), piano(), [name("Bass"), [0, [0xc1, 32]], [0, [0xb1, 7, 90]], ...notes(1, [[36, 0, 1900, 70]])]]);
+    const one = open(two);
+    one.ed.removePart(1);
+    const { bytes } = one.save!();
+    expect(readMidiEvents(bytes).chunks.length).toBe(2);
+    expect([...bytes.subarray(10, 12)]).toEqual([0, 2]);
+    expect(others(bytes)).toEqual(others(two).slice(0, 2));
+    expect(played(bytes)).toEqual(played(two).slice(0, 2));
+    const zero = smf([[...conductor(), ...piano(), [0, [0xc1, 32]], [0, [0xb1, 7, 90]], ...notes(1, [[36, 0, 1900, 70]])]], 0);
+    const z = open(zero);
+    z.ed.removePart(1);
+    const out = z.save!().bytes;
+    expect(readMidiEvents(out).chunks[0].events!.some((e) => e.status < 0xf0 && (e.status & 15) === 1)).toBe(false);
+    // The piano, alone on its track now, is named for its channel so it keeps its name.
+    const kept = others(out)[0];
+    const i = kept.indexOf("0:255,32,1,0");
+    expect(kept[i + 1]).toBe("0:255,3,5,80,105,97,110,111");
+    expect([...kept.slice(0, i), ...kept.slice(i + 2)]).toEqual(others(zero)[0].filter((e) => !/:(193|177),/.test(e)));
+    expect(names(out)).toEqual(["Piano"]);
+  });
+
+  it("ends a sounding note where a new one of its pitch starts", () => {
+    const { ed, score, save } = open(file);
+    // A second voice playing C4 inside the held C4 of bar 2.
+    ed.enter({ ...at(1, 1), voice: ed.voiceId(0, 1, 2) }, { pitches: [P("C")], quarters: 1 });
+    const { bytes } = save!();
+    expect(overlap(bytes)).toBe(1);
+    expect(soundingNotes(score).filter((n) => n.pitch === 60 && n.start >= 4).map((n) => `${n.start}/${n.dur}`)).toEqual(["4/4", "5/1"]);
+    expect(played(bytes)[1].filter((n) => n.startsWith("60@19") || n.startsWith("60@2400"))).toEqual(["60@1921-2400 v60", "60@2400-2880 v64"]);
+    const back = soundingNotes(loadScore(bytes).score).filter((n) => n.pitch === 60 && n.start >= 4).map((n) => `${n.start}/${n.dur}`);
+    expect(back).toEqual(["4/1", "5/1"]);
+  });
+
+  it("deletes with their bars the played notes the score left out", () => {
+    // Dense overlapping playing, where the score shows one note less than was played.
+    const dense: [number, number, number, number][] = [
+      [61, 1689, 1880, 80], [62, 605, 775, 80], [60, 350, 799, 80], [62, 1085, 1301, 80], [61, 270, 372, 80], [60, 1527, 1880, 80],
+      [61, 1639, 1880, 80], [60, 1299, 1723, 80], [63, 136, 161, 80], [62, 279, 965, 80], [72, 3840, 4300, 80],
+    ];
+    const f = smf([conductor(), [name("Piano"), ...notes(0, dense)]]);
+    // The note at 279 is in the file but not in the score.
+    const shown = soundingNotes(loadScore(f).score);
+    expect(shown.some((n) => n.pitch === 62 && n.start <= 279 / 480 && n.start + n.dur > 279 / 480)).toBe(false);
+    const { ed, score, save } = open(f);
+    ed.deleteMeasures(0, 1);
+    const { bytes } = save!();
+    expect(played(bytes)[1]).toEqual(["72@1920-2380 v80"]);
+    expect(heard(loadScore(bytes).score)).toEqual(heard(score));
+  });
+
+  it("names a part that shares its track by its channel", () => {
+    const zero = smf([[...conductor(), program(0, 40), program(1, 0), ...notes(0, [[76, 0, 1900, 80]]), ...notes(1, [[48, 0, 1900, 80]])]], 0);
+    const { ed, save } = open(zero);
+    ed.changePart(0, instrument("violin")!, "Lead");
+    const { bytes, dropped } = save!();
+    expect(dropped).toEqual({});
+    expect(names(bytes)).toEqual(["Lead", "Piano"]);
+  });
+
+  it("moves a part to channel 10 when it becomes a drum kit", () => {
+    const two = smf([conductor(), piano(), [name("Perc"), [0, [0xc1, 0]], ...notes(1, [[36, 0, 240, 100], [38, 480, 720, 90]])]]);
+    const { score, save } = open(two);
+    // Marked as a drum kit in the part list (the editor itself does not switch kinds).
+    const mi = score.doc.getElementsByTagName("midi-instrument")[1];
+    const chn = score.doc.createElementNS(null, "midi-channel");
+    chn.textContent = "10";
+    mi.insertBefore(chn, mi.firstChild);
+    score.rescanParts();
+    const { bytes, dropped } = save!();
+    expect(dropped).toEqual({});
+    const evs = readMidiEvents(bytes).chunks[2].events!.filter((e) => e.status < 0xf0);
+    expect(evs.map((e) => e.status)).toEqual([0x99, 0x99, 0x99, 0x99]);
+    expect(loadScore(bytes).score.parts[1].program).toBe(128);
+  });
+
+  it("writes a metronome mark as a tempo, and reports tempo words with no number to play", () => {
+    const { ed, score, save } = open(file);
+    ed.text(at(0, 2), "staff", "Allegro");
+    const xml = "<direction><direction-type><metronome><beat-unit>half</beat-unit><per-minute>40</per-minute></metronome></direction-type></direction>";
+    const d = score.doc.importNode(new DOMParser().parseFromString(xml, "application/xml").documentElement, true);
+    score.changing(0, 1);
+    score.measures[0][1].insertBefore(d, score.measures[0][1].getElementsByTagName("note")[0]);
+    const { bytes, dropped } = save!();
+    expect(dropped).toEqual({ words: 1 });
+    // Half note = 40: 80 quarters a minute, at bar 2.
+    expect(others(bytes)[0]).toContain("1920:255,81,3,11,113,176");
+  });
 });
+
