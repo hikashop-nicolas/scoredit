@@ -1524,6 +1524,7 @@ export function keyName(fifths: number): string {
   const names = t("noteNames").split(" ");
   const MAJOR = ["C♭", "G♭", "D♭", "A♭", "E♭", "B♭", "F", "C", "G", "D", "A", "E", "B", "F♯", "C♯"];
   const MINOR = ["A♭", "E♭", "B♭", "F", "C", "G", "D", "A", "E", "B", "F♯", "C♯", "G♯", "D♯", "A♯"];
-  const local = (n: string) => (names[("CDEFGAB".indexOf(n[0]))] ?? n[0]) + n.slice(1);
+  // Where B natural is H (German, Polish), B flat is plain B.
+  const local = (n: string) => (n === "B♭" && names[6] === "H" ? "B" : (names[("CDEFGAB".indexOf(n[0]))] ?? n[0]) + n.slice(1));
   return t("keyName").replace("{0}", local(MAJOR[fifths + 7])).replace("{1}", local(MINOR[fifths + 7]));
 }

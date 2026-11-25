@@ -36,7 +36,8 @@ of the score. No server, no framework, MIT licence.
   at concert pitch, dynamics, articulations, ornaments, grace notes, arpeggios and fermatas.
 - A built-in synthesizer that needs no download; recorded instruments (MuseScore_General) on
   request, kept in Cache Storage.
-- UI strings in English, French, German, Spanish, Portuguese, Russian, Japanese and Chinese.
+- UI strings in English, French, German, Spanish, Portuguese, Russian, Japanese, Chinese,
+  Italian, Polish, Korean and Turkish.
 
 **Editing**
 - Note input from the computer keyboard (MuseScore's shortcuts), by tap or click, by touch and
